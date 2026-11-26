@@ -70,30 +70,23 @@ impl Delta {
 	}
 }
 
-/// The `Operation` enum is one change to one entity, which the editor applies to its copy and posts to the game. Its
-/// negation undoes it, and two on the same entity add into one. Next, record one in a [`History`].
+/// The `Operation` struct is one change to one entity's transform, which the editor applies to its copy and posts to
+/// the game as a `TransformationUpdate`. Its negation undoes it, and two on the same entity add into one. Next, record
+/// one in a [`History`].
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Operation {
-	/// Adds `delta` to the entity's transform, posted as a `TransformationUpdate`.
-	Transform { entity: Handle, delta: Delta },
+pub(crate) struct Operation {
+	pub(crate) entity: Handle,
+	/// What the entity's transform changes by.
+	pub(crate) delta: Delta,
 }
 
 impl Operation {
-	/// `self`, then `other`, as one operation, or `None` when they change different entities or values.
+	/// `self`, then `other`, as one operation, or `None` when they change different entities.
 	fn then(self, other: Self) -> Option<Self> {
-		match (self, other) {
-			(
-				Self::Transform { entity, delta },
-				Self::Transform {
-					entity: next,
-					delta: more,
-				},
-			) if entity == next => Some(Self::Transform {
-				entity,
-				delta: delta + more,
-			}),
-			_ => None,
-		}
+		(self.entity == other.entity).then(|| Self {
+			entity: self.entity,
+			delta: self.delta + other.delta,
+		})
 	}
 }
 
@@ -101,8 +94,9 @@ impl Neg for Operation {
 	type Output = Self;
 
 	fn neg(self) -> Self {
-		match self {
-			Self::Transform { entity, delta } => Self::Transform { entity, delta: -delta },
+		Self {
+			delta: -self.delta,
+			..self
 		}
 	}
 }
@@ -231,7 +225,7 @@ mod tests {
 
 	/// What applying `operations` to one entity leaves `start` as.
 	fn apply(start: &Transform, operations: impl Iterator<Item = Operation>) -> Transform {
-		operations.fold(start.clone(), |transform, Operation::Transform { delta, .. }| {
+		operations.fold(start.clone(), |transform, Operation { delta, .. }| {
 			delta.applied_to(&transform)
 		})
 	}
@@ -248,7 +242,7 @@ mod tests {
 		history.begin_gesture();
 		let mut at = start.clone();
 		for to in &moves {
-			history.record(Operation::Transform {
+			history.record(Operation {
 				entity,
 				delta: Delta::between(&at, to),
 			});
@@ -269,24 +263,24 @@ mod tests {
 		let (entity, other) = (Handle::new(), Handle::new());
 		let step = |x: f32| Delta::between(&transform([0.0; 3], 0.0, [1.0; 3]), &transform([x, 0.0, 0.0], 0.0, [1.0; 3]));
 		let mut history = History::default();
-		history.record(Operation::Transform {
+		history.record(Operation {
 			entity,
 			delta: step(1.0),
 		});
-		history.record(Operation::Transform {
+		history.record(Operation {
 			entity,
 			delta: step(2.0),
 		});
 		assert_eq!(
 			history.undo().collect::<Vec<_>>(),
-			[Operation::Transform {
+			[Operation {
 				entity,
 				delta: -step(2.0)
 			}],
 			"a typed edit is a step of its own"
 		);
 
-		history.record(Operation::Transform {
+		history.record(Operation {
 			entity: other,
 			delta: step(3.0),
 		});
@@ -294,23 +288,23 @@ mod tests {
 
 		// A gesture over two entities keeps one operation for each, undone in reverse order.
 		history.begin_gesture();
-		history.record(Operation::Transform {
+		history.record(Operation {
 			entity,
 			delta: step(1.0),
 		});
-		history.record(Operation::Transform {
+		history.record(Operation {
 			entity: other,
 			delta: step(1.0),
 		});
-		history.record(Operation::Transform {
+		history.record(Operation {
 			entity,
 			delta: step(1.0),
 		});
 		history.end_gesture();
 		let undone: Vec<_> = history.undo().collect();
 		assert_eq!(undone.len(), 2);
-		assert!(matches!(undone[0], Operation::Transform { entity: e, .. } if e == other));
-		assert!(matches!(undone[1], Operation::Transform { entity: e, delta } if e == entity
+		assert!(matches!(undone[0], Operation { entity: e, .. } if e == other));
+		assert!(matches!(undone[1], Operation { entity: e, delta } if e == entity
 			&& same(&delta.applied_to(&transform([0.0; 3], 0.0, [1.0; 3])), &transform([-2.0, 0.0, 0.0], 0.0, [1.0; 3]))));
 	}
 }

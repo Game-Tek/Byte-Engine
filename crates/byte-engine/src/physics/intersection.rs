@@ -1154,10 +1154,8 @@ mod tests {
 		];
 
 		assert_eq!(swept_pairs(&boxes), [(0, 1), (0, 3)]);
-	}
 
-	#[test]
-	fn boxes_that_only_touch_are_paired() {
+		// Boxes that only touch are paired too.
 		for axis in 0..3 {
 			let mut center = [0.0; 3];
 			center[axis] = 2.0;
@@ -1169,28 +1167,22 @@ mod tests {
 
 	#[test]
 	fn sweep_reports_the_pairs_an_exhaustive_test_finds() {
-		// More boxes than one group holds, in an order unrelated to their positions.
+		// More boxes than one group holds, in an order unrelated to their positions, swept on one lane and on
+		// several.
 		let boxes = scattered_boxes(67);
 		let expected = exhaustive_pairs(&boxes);
-
 		assert!(expected.len() > boxes.len());
 		assert_eq!(swept_pairs(&boxes), expected);
-	}
 
-	#[test]
-	fn split_ranges_report_the_same_sequence_as_one_scan() {
-		let boxes = scattered_boxes(67);
 		let mut sweep = SweepBounds::default();
-		sweep.rebuild(boxes.iter().copied().enumerate(), &mut one_lane());
-		let mut whole = Vec::new();
-		sweep.overlaps(0..sweep.count(), |pair| whole.push(pair));
-
-		let mut split = Vec::new();
-		for range in [0..9, 9..9, 9..40, 40..sweep.count()] {
-			sweep.overlaps(range, |pair| split.push(pair));
-		}
-
-		assert_eq!(split, whole);
+		sweep.rebuild(boxes.iter().copied().enumerate(), &mut Alley::with_parallelism(4));
+		assert_eq!(sweep.count(), 67);
+		let mut pairs = Vec::new();
+		sweep.overlaps(0..sweep.count(), |[first, second]| {
+			pairs.push((first.min(second), first.max(second)))
+		});
+		pairs.sort_unstable();
+		assert_eq!(pairs, expected);
 	}
 
 	/// Returns every pair of `boxes` that overlap, found by testing each pair.
@@ -1244,26 +1236,27 @@ mod tests {
 
 	#[test]
 	fn split_ranges_cover_cells_and_wide_boxes_like_one_scan() {
-		let boxes = spread_boxes();
-		let mut sweep = SweepBounds::default();
-		sweep.rebuild(boxes.iter().copied().enumerate(), &mut one_lane());
-		let mut whole = Vec::new();
-		sweep.overlaps(0..sweep.count(), |pair| whole.push(pair));
+		for boxes in [scattered_boxes(67), spread_boxes()] {
+			let mut sweep = SweepBounds::default();
+			sweep.rebuild(boxes.iter().copied().enumerate(), &mut one_lane());
+			let mut whole = Vec::new();
+			sweep.overlaps(0..sweep.count(), |pair| whole.push(pair));
 
-		let mut split = Vec::new();
-		let count = sweep.count();
-		for range in [
-			0..1,
-			1..3,
-			3..count / 3,
-			count / 3..count / 3,
-			count / 3..count - 5,
-			count - 5..count,
-		] {
-			sweep.overlaps(range, |pair| split.push(pair));
+			let mut split = Vec::new();
+			let count = sweep.count();
+			for range in [
+				0..1,
+				1..3,
+				3..count / 3,
+				count / 3..count / 3,
+				count / 3..count - 5,
+				count - 5..count,
+			] {
+				sweep.overlaps(range, |pair| split.push(pair));
+			}
+
+			assert_eq!(split, whole);
 		}
-
-		assert_eq!(split, whole);
 	}
 
 	#[test]
@@ -1305,82 +1298,33 @@ mod tests {
 
 	#[test]
 	fn boxes_that_trade_ends_along_the_sweep_axis_report_the_same_sequence_as_a_first_sweep() {
-		let boxes = spread_boxes();
-		// Every rebuild moves the boxes one way, the first ones the furthest, so they pass the others and gather at
-		// one end of the order.
-		let moved = |round: usize| {
-			let travel = |index: usize| Vector::new(1.0, 1.0, 1.0) * (round * (boxes.len() - index)) as f32 * 0.05;
-			let moved = boxes.iter().enumerate();
-			moved
-				.map(|(index, bounds)| AABB::new(bounds.min() + travel(index), bounds.max() + travel(index)))
-				.collect::<Vec<AABB>>()
-		};
-		let mut alley = Alley::with_parallelism(3);
-		let mut sweep = SweepBounds::default();
+		// Few boxes on one lane, and boxes in cells on several.
+		for (boxes, lanes) in [(scattered_boxes(67), 1), (spread_boxes(), 3)] {
+			// Every rebuild moves the boxes one way, the first ones the furthest, so they pass the others and gather
+			// at one end of the order.
+			let moved = |round: usize| {
+				let travel = |index: usize| Vector::new(1.0, 1.0, 1.0) * (round * (boxes.len() - index)) as f32 * 0.05;
+				let moved = boxes.iter().enumerate();
+				moved
+					.map(|(index, bounds)| AABB::new(bounds.min() + travel(index), bounds.max() + travel(index)))
+					.collect::<Vec<AABB>>()
+			};
+			let mut alley = Alley::with_parallelism(lanes);
+			let mut sweep = SweepBounds::default();
 
-		for round in 0..6 {
-			let boxes = moved(round);
-			sweep.rebuild(boxes.iter().copied().enumerate(), &mut alley);
-			let mut pairs = Vec::new();
-			sweep.overlaps(0..sweep.count(), |pair| pairs.push(pair));
+			for round in 0..6 {
+				let boxes = moved(round);
+				sweep.rebuild(boxes.iter().copied().enumerate(), &mut alley);
+				let mut pairs = Vec::new();
+				sweep.overlaps(0..sweep.count(), |pair| pairs.push(pair));
 
-			let mut first = SweepBounds::default();
-			first.rebuild(boxes.iter().copied().enumerate(), &mut one_lane());
-			let mut expected = Vec::new();
-			first.overlaps(0..first.count(), |pair| expected.push(pair));
-			assert_eq!(pairs, expected, "in round {round}");
+				let mut first = SweepBounds::default();
+				first.rebuild(boxes.iter().copied().enumerate(), &mut one_lane());
+				let mut expected = Vec::new();
+				first.overlaps(0..first.count(), |pair| expected.push(pair));
+				assert_eq!(pairs, expected, "in round {round} on {lanes} lanes");
+			}
 		}
-	}
-
-	#[test]
-	fn few_boxes_on_several_lanes_are_scanned_without_cells() {
-		let boxes = scattered_boxes(67);
-		let mut sweep = SweepBounds::default();
-
-		sweep.rebuild(boxes.iter().copied().enumerate(), &mut Alley::with_parallelism(4));
-
-		assert_eq!(sweep.count(), 67);
-		let mut pairs = Vec::new();
-		sweep.overlaps(0..sweep.count(), |[first, second]| {
-			pairs.push((first.min(second), first.max(second)))
-		});
-		pairs.sort_unstable();
-		assert_eq!(pairs, exhaustive_pairs(&boxes));
-	}
-
-	#[test]
-	fn rebuilding_moved_boxes_reports_the_same_sequence_as_a_first_sweep() {
-		let boxes = scattered_boxes(67);
-		let mut sweep = SweepBounds::default();
-		sweep.rebuild(boxes.iter().copied().enumerate(), &mut one_lane());
-
-		// The same boxes again, some moved a little and some moved far past their neighbors.
-		let moved = boxes
-			.iter()
-			.enumerate()
-			.map(|(index, bounds)| {
-				let shift = match index % 5 {
-					0 => 0.0,
-					4 => 7.5,
-					step => step as f32 * -0.15,
-				};
-				AABB::new(
-					bounds.min() + Vector::new(shift, shift * 0.5, 0.0),
-					bounds.max() + Vector::new(shift, shift * 0.5, 0.0),
-				)
-			})
-			.collect::<Vec<_>>();
-		sweep.rebuild(moved.iter().copied().enumerate(), &mut one_lane());
-		let mut repaired = Vec::new();
-		sweep.overlaps(0..sweep.count(), |pair| repaired.push(pair));
-
-		let mut first = SweepBounds::default();
-		first.rebuild(moved.iter().copied().enumerate(), &mut one_lane());
-		let mut expected = Vec::new();
-		first.overlaps(0..first.count(), |pair| expected.push(pair));
-
-		assert!(!expected.is_empty());
-		assert_eq!(repaired, expected);
 	}
 
 	#[test]

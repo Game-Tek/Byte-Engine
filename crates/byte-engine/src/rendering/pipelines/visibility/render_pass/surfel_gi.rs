@@ -24,10 +24,12 @@ use utils::Extent;
 
 use super::super::loader::ResidentEnvironment;
 use super::super::shader_data::LightingData;
-use super::min_depth_pyramid::{MIN_DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
+use super::device_buffer;
+use super::min_depth_pyramid::MinDepthPyramidPass;
 use super::ray_hits::{RayHits, RayStages, RayTracing, ShadeStage};
 use super::{ComputeStage, IndirectDiffuseTargets, Pipelines, SinkHistory};
 use crate::configuration::{Accepts, Read, Setting};
+use crate::rendering::debug_views::DEBUG_VIEW_TARGETS_BINDING;
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, SetBinder, SetLayout, Sink};
 
@@ -356,11 +358,6 @@ impl SurfelPool {
 		let surfel_gi_layout = set_layouts::layout(set_layouts::SURFEL_GI);
 		let descriptor_set = surfel_gi_layout.create_set(context, "Surfel GI Descriptor Set");
 		// Every buffer starts zeroed, which is an empty pool: no live slot, an empty free stack, and zero cell counts.
-		let device_buffer = |name, length: u32| {
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name(name)
-				.length(length as usize)
-		};
 		let records: ghi::BufferHandle<[SurfelRecord]> = context.build_buffer(device_buffer("Surfel Records", capacity));
 		let states: ghi::BufferHandle<[SurfelState]> = context.build_buffer(device_buffer("Surfel States", capacity));
 		let free: ghi::BufferHandle<[u32]> = context.build_buffer(device_buffer("Surfel Free Stack", capacity));
@@ -391,18 +388,8 @@ impl SurfelPool {
 		let counts =
 			context.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage | ghi::Uses::TransferSource).name("Surfel Pool"));
 		// Each frame copies the counts here, so the CPU reads a completed frame's copy while later frames run.
-		let counts_readback = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::TransferDestination)
-				.name("Surfel Pool Readback")
-				.host_access(ghi::HostAccess::Read)
-				.copies(ghi::Copies::PerFrame),
-		);
-		let parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Surfel GI Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
+		let counts_readback = context.build_buffer(super::readback_buffer("Surfel Pool Readback"));
+		let parameters = context.build_buffer(super::frame_buffer("Surfel GI Parameters"));
 		let set = surfel_gi_layout.binder(descriptor_set);
 		context.write(&[
 			set.buffer("surfel_parameters", parameters),
@@ -596,74 +583,63 @@ pub(super) struct SurfelResolvePass {
 impl SurfelResolvePass {
 	/// Wires the resolve, allocation, temporal accumulation, and spatial descriptor sets of one sink.
 	///
-	/// `min_depth_pyramid` and `view_data` come from [`super::min_depth_pyramid::MinDepthPyramidPass`]. `indirect_diffuse` are the sink's
-	/// indirect diffuse images, which the stages write, `surfels` its images from [`create_surfel_targets`], and
-	/// `debug_views` its debug target pool.
+	/// `min_depth_pyramid` must run first. `indirect_diffuse` are the sink's indirect diffuse images, which the stages write,
+	/// `surfels` its images from [`create_surfel_targets`], and `debug_views` its debug target pool.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
-		min_depth_pyramid: ghi::ImageHandle,
-		view_data: ghi::BufferHandle<ScreenViewData>,
+		min_depth_pyramid: &MinDepthPyramidPass,
 		indirect_diffuse: IndirectDiffuseTargets,
 		surfels: SurfelTargets,
 		debug_views: &crate::rendering::DebugViews,
 	) -> Self {
-		let screen_trace_layout = set_layouts::layout(set_layouts::SCREEN_TRACE);
-		let screen_trace_descriptor_set = screen_trace_layout.create_set(context, "Surfel Resolve Screen Trace Descriptor Set");
-		let surfel_resolve_layout = set_layouts::layout(set_layouts::SURFEL_RESOLVE);
-		let descriptor_set = surfel_resolve_layout.create_set(context, "Surfel Resolve Descriptor Set");
-		let surfel_temporal_layout = set_layouts::layout(set_layouts::SURFEL_TEMPORAL);
-		let temporal_descriptor_set = surfel_temporal_layout.create_set(context, "Surfel Temporal Descriptor Set");
-		let surfel_spatial_layout = set_layouts::layout(set_layouts::SURFEL_SPATIAL);
-		let spatial_descriptor_set = surfel_spatial_layout.create_set(context, "Surfel Spatial Descriptor Set");
-		let parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Surfel Resolve Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
+		let parameters = context.build_buffer(super::frame_buffer("Surfel Resolve Parameters"));
 		let spawns: ghi::BufferHandle<[SurfelSpawn]> = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Surfel Spawn Requests")
 				.length(MAX_SPAWN_TILES as usize),
 		);
-		let point_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Closest)
-				.mip_map_mode(ghi::FilteringModes::Closest)
-				.max_lod((MIN_DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
+		let point_sampler = min_depth_pyramid.trace_sampler;
+		let descriptor_set =
+			set_layouts::create_set(context, set_layouts::SURFEL_RESOLVE, "Surfel Resolve Descriptor Set", |set| {
+				set.image_elements(DEBUG_VIEW_TARGETS_BINDING, debug_views.targets())
+					.chain([
+						set.buffer("surfel_resolve_parameters", parameters),
+						set.buffer("surfel_spawns", spawns),
+						set.image("normal_output", indirect_diffuse.normals),
+					])
+					.collect::<Vec<_>>()
+			});
+		let temporal_descriptor_set = set_layouts::create_set(
+			context,
+			set_layouts::SURFEL_TEMPORAL,
+			"Surfel Temporal Descriptor Set",
+			|set| {
+				[
+					set.sampled_with_frame("surfel_previous_history", surfels.history, point_sampler, -1),
+					set.sampled_with_frame("surfel_previous_weights", surfels.weights, point_sampler, -1),
+					set.sampled_with_frame(
+						"surfel_previous_depth",
+						min_depth_pyramid.min_depth_pyramid,
+						point_sampler,
+						-1,
+					),
+					set.sampled_with_frame("surfel_previous_normals", indirect_diffuse.normals, point_sampler, -1),
+					set.image("surfel_history_output", surfels.history),
+					set.image("surfel_weights_output", surfels.weights),
+				]
+			},
 		);
-		let screen_trace = screen_trace_layout.binder(screen_trace_descriptor_set);
-		let resolve = surfel_resolve_layout.binder(descriptor_set);
-		let temporal = surfel_temporal_layout.binder(temporal_descriptor_set);
-		let spatial = surfel_spatial_layout.binder(spatial_descriptor_set);
-		let mut writes = debug_views
-			.targets()
-			.iter()
-			.enumerate()
-			.map(|(slot, image)| {
-				resolve.image_element(crate::rendering::debug_views::DEBUG_VIEW_TARGETS_BINDING, *image, slot as u32)
-			})
-			.collect::<Vec<_>>();
-		writes.extend([
-			screen_trace.buffer("screen_view", view_data),
-			screen_trace.sampled("depth_pyramid", min_depth_pyramid, point_sampler),
-			resolve.buffer("surfel_resolve_parameters", parameters),
-			resolve.buffer("surfel_spawns", spawns),
-			resolve.image("normal_output", indirect_diffuse.normals),
-			temporal.sampled_with_frame("surfel_previous_history", surfels.history, point_sampler, -1),
-			temporal.sampled_with_frame("surfel_previous_weights", surfels.weights, point_sampler, -1),
-			temporal.sampled_with_frame("surfel_previous_depth", min_depth_pyramid, point_sampler, -1),
-			temporal.sampled_with_frame("surfel_previous_normals", indirect_diffuse.normals, point_sampler, -1),
-			temporal.image("surfel_history_output", surfels.history),
-			temporal.image("surfel_weights_output", surfels.weights),
-			spatial.sampled("surfel_temporal_history", surfels.history, point_sampler),
-			spatial.sampled("surfel_temporal_weights", surfels.weights, point_sampler),
-			spatial.sampled("surfel_spatial_normals", indirect_diffuse.normals, point_sampler),
-			spatial.image("surfel_output", indirect_diffuse.history),
-		]);
-		context.write(&writes);
+		let spatial_descriptor_set =
+			set_layouts::create_set(context, set_layouts::SURFEL_SPATIAL, "Surfel Spatial Descriptor Set", |set| {
+				[
+					set.sampled("surfel_temporal_history", surfels.history, point_sampler),
+					set.sampled("surfel_temporal_weights", surfels.weights, point_sampler),
+					set.sampled("surfel_spatial_normals", indirect_diffuse.normals, point_sampler),
+					set.image("surfel_output", indirect_diffuse.history),
+				]
+			});
 		Self {
-			screen_trace_descriptor_set,
+			screen_trace_descriptor_set: min_depth_pyramid.screen_trace_descriptor_set,
 			descriptor_set,
 			temporal_descriptor_set,
 			spatial_descriptor_set,
@@ -845,46 +821,27 @@ mod tests {
 
 	#[test]
 	fn host_records_match_the_strides_their_layers_reflect() {
-		let stride = |layer: &str, name: &str| {
-			set_layouts::layout(layer)
-				.interface()
-				.binding(name)
-				.and_then(|binding| binding.buffer_stride)
-				.unwrap_or_else(|| panic!("Expected the layout to declare the buffer `{name}`")) as usize
-		};
-
-		assert_eq!(
-			stride(set_layouts::SURFEL_GI, "surfel_parameters"),
-			size_of::<SurfelGiParameters>()
-		);
-		assert_eq!(stride(set_layouts::SURFEL_GI, "surfel_records"), size_of::<SurfelRecord>());
-		assert_eq!(
-			stride(set_layouts::SURFEL_GI, "surfel_irradiance"),
-			size_of::<SurfelIrradiance>()
-		);
-		assert_eq!(
-			stride(set_layouts::SURFEL_GI, "surfel_ray_results"),
-			size_of::<SurfelRayResult>()
-		);
-		assert_eq!(stride(set_layouts::SURFEL_GI, "surfel_states"), size_of::<SurfelState>());
-		assert_eq!(stride(set_layouts::SURFEL_GI, "surfel_pool"), size_of::<SurfelPoolCounts>());
-		assert_eq!(
-			stride(set_layouts::SURFEL_GI, "surfel_cells"),
-			SURFEL_CELL_COUNT as usize * 4 * size_of::<u32>()
-		);
-		assert_eq!(
-			stride(set_layouts::SURFEL_GI, "surfel_hit_spawns"),
-			size_of::<SurfelHitSpawn>()
-		);
-		assert_eq!(
-			stride(set_layouts::SURFEL_GI, "surfel_lighting_data"),
-			size_of::<LightingData>()
-		);
-		assert_eq!(
-			stride(set_layouts::SURFEL_RESOLVE, "surfel_resolve_parameters"),
-			size_of::<SurfelResolveParameters>()
-		);
-		assert_eq!(stride(set_layouts::SURFEL_RESOLVE, "surfel_spawns"), size_of::<SurfelSpawn>());
+		set_layouts::assert_strides(&[
+			(set_layouts::SURFEL_GI, "surfel_parameters", size_of::<SurfelGiParameters>()),
+			(set_layouts::SURFEL_GI, "surfel_records", size_of::<SurfelRecord>()),
+			(set_layouts::SURFEL_GI, "surfel_irradiance", size_of::<SurfelIrradiance>()),
+			(set_layouts::SURFEL_GI, "surfel_ray_results", size_of::<SurfelRayResult>()),
+			(set_layouts::SURFEL_GI, "surfel_states", size_of::<SurfelState>()),
+			(set_layouts::SURFEL_GI, "surfel_pool", size_of::<SurfelPoolCounts>()),
+			(
+				set_layouts::SURFEL_GI,
+				"surfel_cells",
+				SURFEL_CELL_COUNT as usize * 4 * size_of::<u32>(),
+			),
+			(set_layouts::SURFEL_GI, "surfel_hit_spawns", size_of::<SurfelHitSpawn>()),
+			(set_layouts::SURFEL_GI, "surfel_lighting_data", size_of::<LightingData>()),
+			(
+				set_layouts::SURFEL_RESOLVE,
+				"surfel_resolve_parameters",
+				size_of::<SurfelResolveParameters>(),
+			),
+			(set_layouts::SURFEL_RESOLVE, "surfel_spawns", size_of::<SurfelSpawn>()),
+		]);
 	}
 
 	#[test]

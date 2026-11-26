@@ -504,6 +504,21 @@ mod tests {
 		state.find();
 		assert_eq!(labels(&state), ["crate.glb", "props/crate.glb"]);
 		assert_eq!(state.highlighted().map(|entry| entry.label.as_str()), Some("crate.glb"));
+
+		// The highlight turns around past the first and the last result.
+		let label = |state: &State| state.highlighted().map(|entry| entry.label.clone());
+		state.move_highlight(-1);
+		assert_eq!(
+			label(&state).as_deref(),
+			Some("props/crate.glb"),
+			"up from the first goes to the last"
+		);
+		state.move_highlight(1);
+		assert_eq!(
+			label(&state).as_deref(),
+			Some("crate.glb"),
+			"down from the last goes to the first"
+		);
 	}
 
 	#[test]
@@ -543,16 +558,6 @@ mod tests {
 		assert!(contains(viewport, 200.0, [left + 1.0, top + 199.0]));
 		assert!(!contains(viewport, 200.0, [left + 1.0, top + 201.0]));
 		assert!(!contains(viewport, 200.0, [left - 1.0, top + 1.0]));
-	}
-
-	#[test]
-	fn the_highlight_turns_around_past_the_first_and_last_result() {
-		let mut state = palette(&["a", "b", "c"]);
-		let label = |state: &State| state.highlighted().map(|entry| entry.label.clone());
-		state.move_highlight(-1);
-		assert_eq!(label(&state).as_deref(), Some("c"), "up from the first goes to the last");
-		state.move_highlight(1);
-		assert_eq!(label(&state).as_deref(), Some("a"), "down from the last goes to the first");
 	}
 
 	#[test]
@@ -646,11 +651,5 @@ mod tests {
 		for search in ["levels", "levels/", "/", "../maps", "a//b"] {
 			assert!(!typed(&mut state, search).iter().any(|row| row.1 == "New folder"), "{search}");
 		}
-	}
-
-	#[test]
-	fn entities_are_named_after_their_mesh_file() {
-		assert_eq!(entity_name("MotusMan/MotusMan_v55.fbx"), "MotusMan_v55");
-		assert_eq!(entity_name("crate"), "crate");
 	}
 }

@@ -25,7 +25,7 @@ fn wipe_clears_the_selected_backend_without_changing_its_storage_mode() {
 		let path = temporary_store();
 		let id = ResourceId::new("old.audio");
 		{
-			let storage = ReDBStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Packed).unwrap();
+			let storage = ReDBStorageBackend::new_writable(path.clone(), Some(ResourceStorageMode::Packed), None).unwrap();
 			storage
 				.store(
 					ProcessedAsset::new(
@@ -50,7 +50,7 @@ fn wipe_clears_the_selected_backend_without_changing_its_storage_mode() {
 			assert!(storage.list().await.unwrap().is_empty());
 			assert!(storage.read(id).await.is_none());
 		}
-		assert!(ReDBStorageBackend::new_writable_with_mode(path.clone(), ResourceStorageMode::Files).is_err());
+		assert!(ReDBStorageBackend::new_writable(path.clone(), Some(ResourceStorageMode::Files), None).is_err());
 
 		std::fs::remove_dir_all(path).unwrap();
 	});

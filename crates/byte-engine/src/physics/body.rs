@@ -8,14 +8,14 @@ use crate::physics::{LocalSpace, collider::Shapes};
 /// [`crate::gameplay::transform::TransformationUpdate`] with the same handle to place it in the world.
 #[derive(Debug, Clone)]
 pub struct Body {
-	body_type: BodyTypes,
-	shape: Shapes,
-	velocity: Vector,
-	mass: f32,
-	center_of_mass: Point<LocalSpace>,
-	elasticity: f32,
-	friction: f32,
-	rotates: bool,
+	pub(crate) body_type: BodyTypes,
+	pub(crate) shape: Shapes,
+	pub(crate) velocity: Vector,
+	pub(crate) mass: f32,
+	pub(crate) center_of_mass: Point<LocalSpace>,
+	pub(crate) elasticity: f32,
+	pub(crate) friction: f32,
+	pub(crate) rotates: bool,
 }
 
 impl Body {
@@ -23,7 +23,7 @@ impl Body {
 	///
 	/// The center of mass starts in the middle of `shape`: the `center` of a [`Shapes::Capsule`], the
 	/// [`crate::physics::ConvexHull::center_of_mass`] of a [`Shapes::ConvexHull`], and the collider origin for the
-	/// other shapes. Replace it with [`Self::with_center_of_mass`].
+	/// other shapes.
 	pub fn new(body_type: BodyTypes, shape: Shapes) -> Self {
 		Self {
 			body_type,
@@ -48,11 +48,6 @@ impl Body {
 	/// Returns this payload with a replacement mass in kilograms.
 	pub fn with_mass(self, mass: f32) -> Self {
 		Self { mass, ..self }
-	}
-
-	/// Returns this payload with a replacement collider-local center of mass.
-	pub fn with_center_of_mass(self, center_of_mass: Point<LocalSpace>) -> Self {
-		Self { center_of_mass, ..self }
 	}
 
 	/// Returns this payload with replacement collision elasticity.
@@ -80,44 +75,9 @@ impl Body {
 		self.body_type
 	}
 
-	/// Returns the collider-local geometry.
-	pub fn shape(&self) -> &Shapes {
-		&self.shape
-	}
-
-	/// Returns the initial world-space linear velocity.
-	pub fn velocity(&self) -> Vector {
-		self.velocity
-	}
-
-	/// Returns the mass in kilograms.
-	pub fn mass(&self) -> f32 {
-		self.mass
-	}
-
 	/// Returns the center of mass relative to the collider origin.
 	pub fn center_of_mass(&self) -> Point<LocalSpace> {
 		self.center_of_mass
-	}
-
-	/// Returns the collision elasticity.
-	pub fn elasticity(&self) -> f32 {
-		self.elasticity
-	}
-
-	/// Returns the collision friction.
-	pub fn friction(&self) -> f32 {
-		self.friction
-	}
-
-	/// Returns whether contacts turn the body and its shape follows its orientation.
-	pub fn rotates(&self) -> bool {
-		self.rotates
-	}
-
-	/// Takes the collider geometry without cloning its owned data.
-	pub(crate) fn into_shape(self) -> Shapes {
-		self.shape
 	}
 }
 

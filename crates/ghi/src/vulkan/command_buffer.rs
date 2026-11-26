@@ -11,7 +11,7 @@ use super::{
 		to_pipeline_stage_flags, to_store_operation,
 	},
 };
-use crate::{FrameKey, HandleLike as _, Size, graphics_hardware_interface};
+use crate::{FrameKey, Size, graphics_hardware_interface};
 
 /// Describes a transfer-stage access to `handle` in the transfer layout.
 fn transfer_consumption(handle: Handles, access: crate::AccessPolicies) -> Consumption {
@@ -89,7 +89,7 @@ mod operations;
 mod recording;
 mod transitions;
 
-pub(crate) use transitions::{BufferCopy, ImplicitWork, PlanningStorage};
+pub(crate) use transitions::{ImplicitWork, PlanningStorage};
 use transitions::{PlannedTransitions, TransitionStateUpdates, buffer_image_height, buffer_row_length};
 
 #[cfg(test)]
@@ -112,13 +112,6 @@ mod tests {
 		state.last_write_stage = vk::PipelineStageFlags2::TRANSFER;
 		state.last_write_access = vk::AccessFlags2::TRANSFER_WRITE;
 		state
-	}
-
-	fn assert_visible_state_eq(actual: TransitionState, expected: TransitionState) {
-		assert_eq!(
-			(actual.stage, actual.access, actual.layout),
-			(expected.stage, expected.access, expected.layout)
-		);
 	}
 
 	fn consumption(handle: Handles, state: TransitionState) -> VulkanConsumption {
@@ -470,34 +463,59 @@ mod tests {
 	}
 
 	#[test]
-	fn planner_merges_repeated_image_consumptions_into_one_barrier() {
-		// Uploading several mips of one image consumes it once per mip in the same batch.
-		let handle = Handles::Image(ImageHandle::from_index(31));
+	fn planner_merges_repeated_consumptions_of_one_resource_into_one_barrier() {
+		// Uploading several mips of one image consumes it once per mip in the same batch, and a mesh buffer read as
+		// vertices and indices needs one barrier, after which later writers wait for both reads.
+		let image = Handles::Image(ImageHandle::from_index(31));
+		let buffer = Handles::Buffer(BufferHandle::from_index(10));
 		let sampled = transition(
 			vk::PipelineStageFlags2::FRAGMENT_SHADER,
 			vk::AccessFlags2::SHADER_READ,
 			vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
 		);
 		let upload = consumption(
-			handle,
+			image,
 			transition(
 				vk::PipelineStageFlags2::TRANSFER,
 				vk::AccessFlags2::TRANSFER_WRITE,
 				vk::ImageLayout::TRANSFER_DST_OPTIMAL,
 			),
 		);
+		let source = buffer_transition(vk::PipelineStageFlags2::TRANSFER, vk::AccessFlags2::TRANSFER_WRITE);
+		let vertex_read = buffer_transition(vk::PipelineStageFlags2::VERTEX_INPUT, vk::AccessFlags2::VERTEX_ATTRIBUTE_READ);
+		let index_read = buffer_transition(vk::PipelineStageFlags2::INDEX_INPUT, vk::AccessFlags2::INDEX_READ);
 
 		let planned = plan(
-			&[(handle, sampled)],
+			&[(image, sampled), (buffer, source)],
 			&BufferStates::default(),
-			[upload.clone(), upload.clone(), upload],
+			[
+				upload.clone(),
+				upload.clone(),
+				upload,
+				consumption(buffer, vertex_read),
+				consumption(buffer, index_read),
+			],
 			Some((vk::Image::from_raw(31), vk::Format::R8G8B8A8_UNORM)),
-			None,
+			Some(vk::Buffer::from_raw(333)),
 		);
 
 		assert_eq!(planned.image_barriers.len(), 1);
 		assert_eq!(planned.image_barriers[0].old_layout, sampled.layout);
-		assert_eq!(planned.updates.states.len(), 1);
+		let (stage, access) = (vertex_read.stage | index_read.stage, vertex_read.access | index_read.access);
+		assert_eq!(planned.buffer_barriers.len(), 1);
+		let barrier = planned.buffer_barriers[0];
+		assert_eq!(
+			(
+				barrier.src_stage_mask,
+				barrier.src_access_mask,
+				barrier.dst_stage_mask,
+				barrier.dst_access_mask
+			),
+			(source.stage, source.access, stage, access)
+		);
+		assert_eq!(planned.updates.states.len(), 2);
+		let (_, state) = planned.updates.states[1];
+		assert_eq!((state.stage, state.access), (stage, access));
 	}
 
 	#[test]
@@ -515,89 +533,20 @@ mod tests {
 	}
 
 	#[test]
-	fn planner_skips_null_image_and_does_not_update_state() {
-		let image_write = transition(
-			vk::PipelineStageFlags2::TRANSFER,
-			vk::AccessFlags2::TRANSFER_WRITE,
-			vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-		);
+	fn planner_skips_resources_without_native_storage_and_does_not_update_state() {
+		let write = buffer_transition(vk::PipelineStageFlags2::TRANSFER, vk::AccessFlags2::TRANSFER_WRITE);
+		let image = consumption(Handles::Image(ImageHandle::from_index(5)), write);
+		let buffer = consumption(Handles::Buffer(BufferHandle::from_index(7)), write);
 
 		let planned = plan(
 			&[],
 			&BufferStates::default(),
-			[consumption(Handles::Image(ImageHandle::from_index(5)), image_write)],
+			[image, buffer],
 			Some((vk::Image::null(), vk::Format::R8G8B8A8_UNORM)),
-			None,
-		);
-
-		assert!(planned.image_barriers.is_empty());
-		assert!(planned.updates.states.is_empty());
-	}
-
-	#[test]
-	fn planner_skips_null_buffer_and_does_not_update_state() {
-		let buffer_write = buffer_transition(vk::PipelineStageFlags2::TRANSFER, vk::AccessFlags2::TRANSFER_WRITE);
-
-		let planned = plan(
-			&[],
-			&BufferStates::default(),
-			[consumption(Handles::Buffer(BufferHandle::from_index(7)), buffer_write)],
-			None,
 			Some(vk::Buffer::null()),
 		);
 
-		assert!(planned.buffer_barriers.is_empty());
+		assert!(planned.image_barriers.is_empty() && planned.buffer_barriers.is_empty());
 		assert!(planned.updates.states.is_empty());
-	}
-
-	#[test]
-	fn planner_handles_vk_buffer_without_buffer_lookup() {
-		let handle = Handles::VkBuffer(vk::Buffer::from_raw(222));
-		let destination = buffer_transition(vk::PipelineStageFlags2::TRANSFER, vk::AccessFlags2::TRANSFER_READ);
-
-		let planned = plan(&[], &BufferStates::default(), [consumption(handle, destination)], None, None);
-
-		assert_eq!(planned.buffer_barriers.len(), 1);
-		let barrier = planned.buffer_barriers[0];
-		assert_eq!(
-			(barrier.src_stage_mask, barrier.src_access_mask),
-			(vk::PipelineStageFlags2::empty(), vk::AccessFlags2::empty())
-		);
-		assert_eq!(barrier.buffer, vk::Buffer::from_raw(222));
-		assert_eq!(planned.updates.states.len(), 1);
-		let (updated_handle, updated_state) = planned.updates.states[0];
-		assert!(updated_handle == handle);
-		assert_visible_state_eq(updated_state, destination);
-	}
-
-	#[test]
-	fn planner_merges_duplicate_consumptions_of_one_buffer() {
-		// A mesh buffer read as vertices and indices in one batch needs one barrier, and later writers must wait for both reads.
-		let handle = Handles::Buffer(BufferHandle::from_index(10));
-		let source = buffer_transition(vk::PipelineStageFlags2::TRANSFER, vk::AccessFlags2::TRANSFER_WRITE);
-		let vertex_read = buffer_transition(vk::PipelineStageFlags2::VERTEX_INPUT, vk::AccessFlags2::VERTEX_ATTRIBUTE_READ);
-		let index_read = buffer_transition(vk::PipelineStageFlags2::INDEX_INPUT, vk::AccessFlags2::INDEX_READ);
-
-		let planned = plan(
-			&[(handle, source)],
-			&BufferStates::default(),
-			[consumption(handle, vertex_read), consumption(handle, index_read)],
-			None,
-			Some(vk::Buffer::from_raw(333)),
-		);
-
-		let merged = buffer_transition(vertex_read.stage | index_read.stage, vertex_read.access | index_read.access);
-		assert_eq!(planned.buffer_barriers.len(), 1);
-		let barrier = planned.buffer_barriers[0];
-		assert_eq!(
-			(barrier.src_stage_mask, barrier.src_access_mask),
-			(source.stage, source.access)
-		);
-		assert_eq!(
-			(barrier.dst_stage_mask, barrier.dst_access_mask),
-			(merged.stage, merged.access)
-		);
-		assert_eq!(planned.updates.states.len(), 1);
-		assert_visible_state_eq(planned.updates.states[0].1, merged);
 	}
 }

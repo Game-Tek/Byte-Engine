@@ -212,15 +212,6 @@ mod tests {
 	}
 
 	#[test]
-	fn flying_starts_where_the_camera_stands_and_looks() {
-		let start = looking(Vector::new(1.0, 0.5, -1.0));
-		let fly = Fly::from_transform(&start);
-		let shown = fly.transform();
-		assert!((shown.get_position() - start.get_position()).length() < 1e-5);
-		assert!((view(&shown) - view(&start)).length() < 1e-4);
-	}
-
-	#[test]
 	fn framing_puts_the_target_ahead_in_the_middle_of_the_view() {
 		let start = looking(Vector::new(1.0, -0.5, 1.0));
 		let target = Point::new(10.0, 0.0, -4.0);

@@ -22,13 +22,6 @@ pub struct Flipbook {
 	pub images: Vec<Reference<Image>>,
 }
 
-impl Flipbook {
-	/// Takes the images in playback order so each can be loaded.
-	pub fn into_images(self) -> Vec<Reference<Image>> {
-		self.images
-	}
-}
-
 /// The `FlipbookModel` struct persists a flipbook with the exact baked images it plays.
 #[derive(Debug, serde::Serialize, serde::Deserialize, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 pub struct FlipbookModel {

@@ -333,14 +333,12 @@ impl Device {
 			open_statistics: SmallVec::new(),
 			counter_frequencies: [0; crate::MAX_FRAMES_IN_FLIGHT],
 			untracked_present_work: false,
-			render_target_views: HashMap::default(),
-			depth_stencil_views: HashMap::default(),
+			attachment_views: HashMap::default(),
 			retained_clear_uav_descriptors: HashMap::default(),
 			clear_uav_descriptor_pages: Vec::new(),
 			free_clear_uav_descriptor_slots: Vec::new(),
 			buffer_states: HashMap::default(),
 			image_states: HashMap::default(),
-			native_counters: Dx12Counters::default(),
 			ray_tracing_supported,
 			acceleration_structures: Default::default(),
 			shader_binding_tables: Vec::new(),
@@ -374,46 +372,24 @@ impl Device {
 				continue;
 			}
 
+			// D3D12_MESSAGE storage keeps the header aligned; the description follows it in the same allocation.
 			let message_header_size = std::mem::size_of::<D3D12_MESSAGE>();
-			if message_byte_len < message_header_size {
-				self.log_debug_message(
-					"DX12 returned a debug message smaller than D3D12_MESSAGE. The most likely cause is an invalid debug-layer response.",
-				);
-				self.debug_log_count.fetch_add(10, Ordering::Relaxed);
-				continue;
-			}
 			let message_units = message_byte_len.div_ceil(message_header_size);
 			let mut message_storage = vec![std::mem::MaybeUninit::<D3D12_MESSAGE>::uninit(); message_units];
-			let storage_byte_len = message_units * message_header_size;
-			message_byte_len = storage_byte_len;
 			let message = message_storage.as_mut_ptr().cast::<D3D12_MESSAGE>();
-			if unsafe { info_queue.GetMessage(index, Some(message), &mut message_byte_len) }.is_err()
-				|| message_byte_len < message_header_size
-				|| message_byte_len > storage_byte_len
-			{
+			if unsafe { info_queue.GetMessage(index, Some(message), &mut message_byte_len) }.is_err() {
 				continue;
 			}
 
-			// GetMessage initialized the header and reported that it fits in the aligned allocation above.
+			// SAFETY: GetMessage initialized the header, and its description of `DescriptionByteLength` bytes, inside the
+			// allocation above.
 			let message = unsafe { &*message };
-			let description = if message.pDescription.is_null() || message.DescriptionByteLength == 0 {
+			let description = if message.pDescription.is_null() {
 				""
 			} else {
-				let storage_start = message_storage.as_ptr().cast::<u8>() as usize;
-				let storage_end = storage_start.checked_add(message_byte_len);
-				let description_start = message.pDescription as usize;
-				let description_end = description_start.checked_add(message.DescriptionByteLength);
-				match (storage_end, description_end) {
-					(Some(storage_end), Some(description_end))
-						if description_start >= storage_start && description_end <= storage_end =>
-					{
-						// The validated description range is part of message_storage and remains alive for this conversion.
-						let bytes = unsafe { std::slice::from_raw_parts(message.pDescription, message.DescriptionByteLength) };
-						let bytes = bytes.strip_suffix(&[0]).unwrap_or(bytes);
-						std::str::from_utf8(bytes).unwrap_or("<non-utf8 D3D12 debug message>")
-					}
-					_ => "<invalid D3D12 debug message description>",
-				}
+				let bytes = unsafe { std::slice::from_raw_parts(message.pDescription, message.DescriptionByteLength) };
+				let bytes = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+				std::str::from_utf8(bytes).unwrap_or("<non-utf8 D3D12 debug message>")
 			};
 			self.log_debug_message(format!(
 				"DX12 {:?} {:?} #{}: {}",
@@ -430,194 +406,6 @@ impl Device {
 		unsafe { info_queue.ClearStoredMessages() };
 	}
 
-	#[cfg(test)]
-	pub(crate) fn add_debug_message_for_test(&self, message: &str) {
-		let Some(info_queue) = &self.info_queue else {
-			return;
-		};
-		let Ok(message) = std::ffi::CString::new(message) else {
-			return;
-		};
-		if unsafe { info_queue.AddApplicationMessage(D3D12_MESSAGE_SEVERITY_ERROR, PCSTR(message.as_ptr().cast())) }.is_ok() {
-			self.drain_debug_messages();
-		}
-	}
-
-	/// Rebuilds frame-local chains and resources at a global native queue-idle boundary.
-	pub fn set_frames_in_flight(&mut self, frames: u8) {
-		assert!(
-			(1..=crate::MAX_FRAMES_IN_FLIGHT as u8).contains(&frames),
-			"Invalid frames-in-flight count. The most likely cause is that the requested count is zero or exceeds the engine maximum."
-		);
-		let previous_frames = self.frames;
-		if frames == previous_frames {
-			return;
-		}
-		assert!(
-			self.swapchains
-				.iter()
-				.all(|swapchain| swapchain.acquired_sequences.iter().all(|acquired| !acquired)),
-			"DX12 frame topology cannot change while a swapchain image is acquired. The most likely cause is that a present key was retained across set_frames_in_flight."
-		);
-		self.wait_for_all_queues_idle().expect(
-			"Failed to wait for DX12 queues before changing frames in flight. The most likely cause is that the device was removed.",
-		);
-		self.prepare_for_topology_change().expect(
-			"Failed to reset DX12 command lists before changing frames in flight. The most likely cause is that a completed command list became invalid.",
-		);
-		self.process_all_tasks_after_idle();
-		self.resize_command_buffer_frames(frames);
-		self.resize_descriptor_set_chains(frames);
-		self.frames = frames;
-		self.last_frame_synchronizers = [None; crate::MAX_FRAMES_IN_FLIGHT];
-
-		// Keep dormant chain nodes linked so repeated frame-count changes reuse their fences instead of growing device storage.
-		for master_index in 0..self.synchronizer_masters.len() {
-			let master = self.synchronizer_masters[master_index];
-			let handles = self.all_synchronizer_handles(master);
-			if frames as usize > handles.len() {
-				let mut tail = *handles.last().expect(
-					"Missing DX12 synchronizer master. The most likely cause is that its sequence chain was corrupted.",
-				);
-				for _ in handles.len()..frames as usize {
-					let next = self.create_synchronizer_internal(false);
-					self.synchronizers[tail.index() as usize].next = Some(next);
-					tail = next;
-				}
-			}
-		}
-
-		let retired_backbuffer_keys = self
-			.swapchains
-			.iter()
-			.filter(|swapchain| {
-				swapchain.image_count != swapchain_image_count(frames, swapchain.desired_image_count)
-					&& swapchain.extent.width() > 0
-					&& swapchain.extent.height() > 0
-			})
-			.flat_map(|swapchain| swapchain.backbuffers.iter().flatten().map(Self::native_resource_key))
-			.collect::<SmallVec<[usize; 8]>>();
-		self.invalidate_attachment_views_for_resources(&retired_backbuffer_keys);
-		for &key in &retired_backbuffer_keys {
-			self.image_states.remove(&key);
-		}
-
-		for swapchain in &mut self.swapchains {
-			let image_count = swapchain_image_count(frames, swapchain.desired_image_count);
-			if swapchain.image_count != image_count && swapchain.extent.width() > 0 && swapchain.extent.height() > 0 {
-				// DXGI requires every application-owned backbuffer reference to be released before ResizeBuffers.
-				swapchain.backbuffers = std::array::from_fn(|_| None);
-				let result = unsafe {
-					swapchain.swapchain.ResizeBuffers(
-						image_count as u32,
-						swapchain.extent.width(),
-						swapchain.extent.height(),
-						DXGI_FORMAT_B8G8R8A8_UNORM,
-						swapchain.flags,
-					)
-				};
-
-				if result.is_err() {
-					panic!(
-						"Failed to resize the DXGI swapchain buffers. The most likely cause is that the swapchain is still in use or the device was removed."
-					);
-				}
-				swapchain.image_count = image_count;
-			}
-
-			swapchain.next_image_index %= swapchain.image_count;
-			swapchain.acquired_sequences = [false; 8];
-		}
-
-		let retired_image_keys = self
-			.images
-			.iter()
-			.filter_map(|image| image.frame_resources.as_ref())
-			.flat_map(|resources| {
-				resources
-					.iter()
-					.skip(frames as usize)
-					.flatten()
-					.map(Self::native_resource_key)
-			})
-			.collect::<SmallVec<[usize; 8]>>();
-		self.invalidate_attachment_views_for_resources(&retired_image_keys);
-		self.invalidate_clear_uav_descriptors_for_resources(&retired_image_keys);
-		for &key in &retired_image_keys {
-			self.image_states.remove(&key);
-		}
-		for image in &mut self.images {
-			if let Some(frame_resources) = image.frame_resources.as_mut() {
-				frame_resources.resize(frames as usize, None);
-			}
-		}
-
-		// A buffer with a copy per frame gets copies for new sequences and drops those of removed ones, which no queued
-		// work uses now that the queues are idle.
-		let mut retired_buffer_keys = SmallVec::<[usize; 8]>::new();
-		for index in 0..self.buffers.len() {
-			let buffer = &self.buffers[index];
-			if buffer.copies != crate::Copies::PerFrame {
-				continue;
-			}
-			let wanted = frames as usize - 1;
-			let (size, host_access, uses, name) = (buffer.size, buffer.host_access, buffer.uses, buffer.name.clone());
-			let added = (buffer.frame_copies.len()..wanted)
-				.map(|_| self.create_buffer_memory(size, host_access, uses, name.as_deref()))
-				.collect::<Vec<_>>();
-			let frame_copies = &mut self.buffers[index].frame_copies;
-			retired_buffer_keys.extend(
-				frame_copies
-					.drain(wanted.min(frame_copies.len())..)
-					.filter_map(|memory| memory.resource.as_ref().map(Self::native_resource_key)),
-			);
-			frame_copies.extend(added);
-		}
-		self.invalidate_clear_uav_descriptors_for_resources(&retired_buffer_keys);
-		for &key in &retired_buffer_keys {
-			self.buffer_states.remove(&key);
-		}
-		// Frame offsets resolve to other sequences under the new count, so every descriptor is written again.
-		self.mark_stale_descriptors(|_, _| true);
-	}
-
-	pub fn add_mesh_from_vertices_and_indices(
-		&mut self,
-		_vertex_count: u32,
-		index_count: u32,
-		vertices: &[u8],
-		indices: &[u8],
-		vertex_layout: &[VertexElement],
-	) -> MeshHandle {
-		let vertex_size = vertex_layout.iter().map(|element| element.format.size()).sum::<usize>();
-		let (vertex_resource, vertex_pointer, _) = self.create_buffer_resource(vertices.len(), crate::HostAccess::Write);
-		let (index_resource, index_pointer, _) = self.create_buffer_resource(indices.len(), crate::HostAccess::Write);
-		if !vertex_pointer.is_null() {
-			unsafe {
-				std::ptr::copy_nonoverlapping(vertices.as_ptr(), vertex_pointer, vertices.len());
-			}
-		}
-		if !index_pointer.is_null() {
-			unsafe {
-				std::ptr::copy_nonoverlapping(indices.as_ptr(), index_pointer, indices.len());
-			}
-		}
-
-		self.meshes.push(Mesh {
-			index_count,
-			vertex_bytes: u32::try_from(vertices.len()).expect(
-				"Failed to add a DX12 mesh: its vertex data is 4 GiB or larger. The most likely cause is a mesh that was not split. Split the mesh into parts under 4 GiB.",
-			),
-			index_bytes: u32::try_from(indices.len()).expect(
-				"Failed to add a DX12 mesh: its index data is 4 GiB or larger. The most likely cause is a mesh that was not split. Split the mesh into parts under 4 GiB.",
-			),
-			vertex_size,
-			vertex_resource,
-			index_resource,
-		});
-		MeshHandle::from_index((self.meshes.len() - 1) as u64)
-	}
-
 	pub fn create_shader(
 		&mut self,
 		name: Option<&str>,
@@ -625,11 +413,10 @@ impl Device {
 		stage: ShaderTypes,
 		descriptor_sets: impl IntoIterator<Item = crate::shader::ShaderDescriptorSet>,
 	) -> Result<ShaderHandle, ()> {
-		let (spirv, dxil, variants) = match shader_source_type {
-			Sources::SPIRV(bytes) => (Some(bytes.into_owned()), None, Box::default()),
-			Sources::KeyedSPIRV { code, .. } => (Some(code.to_vec()), None, Box::default()),
+		// DX12 consumes only DXIL; a SPIR-V shader keeps its descriptor metadata and has no native bytecode.
+		let (dxil, variants) = match shader_source_type {
+			Sources::SPIRV(_) | Sources::KeyedSPIRV { .. } => (None, Box::default()),
 			Sources::DXIL { code, variants } => (
-				None,
 				Some(code.into()),
 				variants
 					.iter()
@@ -637,7 +424,6 @@ impl Device {
 					.collect(),
 			),
 			Sources::HLSL { source, entry_point } => (
-				None,
 				Some(self.compile_hlsl(name, source, entry_point, stage)?.into()),
 				Box::default(),
 			),
@@ -647,13 +433,11 @@ impl Device {
 		self.shaders.push(Shader {
 			name: name.map(Box::from),
 			stage,
-			spirv,
 			dxil,
 			variants,
 			descriptor_sets: descriptor_sets.into_iter().collect(),
 		});
 
-		// DX12 consumes native bytecode for PSO creation, while SPIR-V is retained as portable metadata.
 		Ok(ShaderHandle::from_index((self.shaders.len() - 1) as u64))
 	}
 

@@ -66,7 +66,7 @@
 /// - `render.lod.force`: Draws this detail level for every mesh instead of choosing by distance, where `0` is full detail; a mesh with fewer levels draws its coarsest one. Use it to compare levels or to measure what they save. The default is `off`.
 /// - `render.shadow-maps.budget-mb`: Sets the shadow-map memory, in mebibytes, that every shadow-casting light shares. The first directional light takes its cascades first, cone and point lights then share what remains by how much of the screen they light, and other directional lights take what is left. One sun takes 32 MiB at the default resolution and four times that per doubling of `render.directional-shadows.resolution`; a cone light takes 32 KiB to 8 MiB and a point light 192 KiB to 48 MiB, by how large it looks in the largest sink that sees it. Maps allocate on first use; the default is `128`.
 /// - `render.shadow-maps.update-texels`: Sets how many shadow-map texels each frame draws. Cascades 0 and 1 of every shadowed sun draw every frame and count first; the other cascades, cone maps, and point cube faces then draw by need within what's left, so a smaller budget spreads their updates over more frames. Texels a frame leaves unspent carry over to the next, so a budget smaller than one map still draws it every few frames. The default is `10485760`, two and a half cascades of one sun at 2,048 texels per side: cascades 2 and 3 take turns every other frame. Set `16777216` to draw all four every frame.
-/// - `render.directional-shadows.resolution`: Sets the directional shadow cascades' resolution in texels per side, a multiple of 16. Halving it quarters the shadow raster and depth pyramid work, and each sun's cost from the shadow-map budget. The default is `2048`.
+/// - `render.directional-shadows.resolution`: Sets the directional shadow cascades' resolution in texels per side, a multiple of 32. Halving it quarters the shadow raster and depth pyramid work, and each sun's cost from the shadow-map budget. The default is `2048`.
 ///
 /// See the [sample project guide](/docs/use/sample-project)
 /// for a complete `GraphicsApplication` setup.
@@ -309,7 +309,7 @@ impl GraphicsApplication {
 
 		let configuration = Configuration::new();
 		let metrics = Arc::clone(application.metrics());
-		let mut alley = crate::core::alley::Alley::new();
+		let alley = crate::core::alley::Alley::new();
 		// The renderer's ports take render-pass states and debug views; they subscribe before the startup parameters
 		// are queued below.
 		let render_pass_configuration = configuration.register(RENDER_PASS_CONFIGURATION);
@@ -317,142 +317,115 @@ impl GraphicsApplication {
 		let debug_views = Arc::new(rendering::DebugViewCatalog::default());
 		let renderer_debug_views = Arc::clone(&debug_views);
 		let transforms = world_messages.channel::<TransformationUpdate>();
-		let mut storage = None;
-		let mut services = None;
-		// Storage and CPU services own separate lanes while graphics creation stays on the caller.
-		let (graphics_device, mut renderer, pipeline_compilation_servers) = alley
-			.join_with_mut(
-				(&mut storage, &mut services),
-				|lane, (storage, services)| {
-					lane.only_one_runs_mut(storage, |storage| {
-						*storage = Some(
-							ReDBStorageBackend::new_writable_with_settings(
-								resources_path.clone(),
-								ResourceStorageSettings::new(ResourceStorageMode::Files)
-									.image_compression(ResourceGpuCompressionPolicy::native()),
-							)
-							// The message names the store, the cause, and the fix; startup has no caller to return it to.
-							.unwrap_or_else(|error| panic!("{error}")),
-						);
-					});
-					lane.only_one_runs_mut(services, |services| {
-						let action_events = world_messages.channel();
-						let mut input = input::InputCollector::new();
-						let actions = input::InputSink::new(input.add_sink(), action_events.clone())
-							.with_declarations(world_messages.factory::<Action>().listener());
-						let world = SceneRoutes::new(world_messages.clone());
-						let shown_transforms = ShownTransforms::new(&world_messages);
+		// The store and the CPU services open on threads of their own while graphics creation stays on the caller.
+		let (resource_storage, services, (graphics_device, mut renderer, pipeline_compilation_servers)) =
+			std::thread::scope(|scope| {
+				let storage = scope.spawn(|| {
+					ReDBStorageBackend::new_writable(
+						resources_path.clone(),
+						Some(ResourceStorageMode::Files),
+						Some(ResourceGpuCompressionPolicy::native()),
+					)
+					// The message names the store, the cause, and the fix; startup has no caller to return it to.
+					.unwrap_or_else(|error| panic!("{error}"))
+				});
+				let services = scope.spawn(|| {
+					let action_events = world_messages.channel();
+					let mut input = input::InputCollector::new();
+					let actions = input::InputSink::new(input.add_sink(), action_events.clone())
+						.with_declarations(world_messages.factory::<Action>().listener());
+					let world = SceneRoutes::new(world_messages.clone());
+					let shown_transforms = ShownTransforms::new(&world_messages);
 
-						// Register reflected posts after the shown transforms' future-only listener exists.
-						let mut inspector = DefaultInspector::new(
-							application_events.clone(),
-							configuration.clone(),
-							world_messages.clone(),
-							Arc::clone(&metrics),
-						);
-						inspector.set_debug_views(Arc::clone(&debug_views));
-						inspector
-							.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms.clone())
-							.unwrap_or_else(|error| panic!("{error}"));
-						// The renderer replaces a camera created again under its handle, so an update is a creation.
-						inspector
-							.register_message(
-								CAMERA_UPDATE_MESSAGE_TYPE,
-								world_messages.channel::<rendering::CameraUpdate>(),
-							)
-							.unwrap_or_else(|error| panic!("{error}"));
-						// So does a light, created again under its handle.
-						inspector
-							.register_message(
-								POINT_LIGHT_UPDATE_MESSAGE_TYPE,
-								world_messages.channel::<rendering::PointLightUpdate>(),
-							)
-							.unwrap_or_else(|error| panic!("{error}"));
-						inspector
-							.register_message(
-								CONE_LIGHT_UPDATE_MESSAGE_TYPE,
-								world_messages.channel::<rendering::ConeLightUpdate>(),
-							)
-							.unwrap_or_else(|error| panic!("{error}"));
-						inspector
-							.register_message(
-								DIRECTIONAL_LIGHT_UPDATE_MESSAGE_TYPE,
-								world_messages.channel::<rendering::DirectionalLightUpdate>(),
-							)
-							.unwrap_or_else(|error| panic!("{error}"));
-						for message_type in [DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE] {
-							inspector
-								.register_message(message_type, world_messages.channel::<DeleteMessage>())
-								.unwrap_or_else(|error| panic!("{error}"));
-						}
-						inspector
-							.register_message(TRIGGER_ACTION_MESSAGE_TYPE, action_events)
-							.unwrap_or_else(|error| panic!("{error}"));
-						let inspector = EntityHandle::from(inspector);
-						let screenshot_broker = inspector.screenshot_broker();
-						let inspector_events = inspector.event_signal();
-						let retained_streams = std::sync::Arc::clone(inspector.streams());
-						let waker = LoopWaker::default();
-						let console = crate::inspector::console::spawn(
-							inspector.clone(),
-							waker.clone(),
-							application_events.listener(),
-							parameters.scope("console"),
-						);
-						let http_inspector =
-							HttpInspectorServer::new(inspector.clone(), waker.clone(), parameters.scope("inspector"));
-
-						let window_factory = messages.factory();
-						let window_factory_listener = window_factory.listener();
-						let window_features = messages.channel().listener();
-						let window_pointers = messages.channel().listener();
-						let device_outputs = messages.channel().listener();
-						let window_cameras = messages.channel().listener();
-						let window_closes = messages.channel().listener();
-
-						let generator_factory = messages.factory();
-
-						let window_events = messages.channel();
-						*services = Some(Services {
-							input,
-							actions,
-							world,
-							shown_transforms,
-							inspector,
-							http_inspector,
-							console,
-							retained_streams,
-							screenshot_broker,
-							inspector_events,
-							waker,
-							window_factory,
-							window_factory_listener,
-							window_features,
-							window_pointers,
-							device_outputs,
-							window_cameras,
-							window_closes,
-							generator_factory,
-							window_events,
-						});
-					});
-				},
-				|| {
-					let graphics_device = rendering::GraphicsDevice::new(render_parameters);
-					let (renderer, servers) = rendering::renderer::Renderer::new(
-						&graphics_device,
-						render_parameters,
-						render_pass_configuration,
-						debug_view_configuration,
-						renderer_debug_views,
+					// Register reflected posts after the shown transforms' future-only listener exists.
+					let mut inspector = DefaultInspector::new(
+						application_events.clone(),
+						configuration.clone(),
+						world_messages.clone(),
 						Arc::clone(&metrics),
 					);
-					(graphics_device, renderer, servers)
-				},
-			)
-			.unwrap_or_else(|panic| std::panic::resume_unwind(panic));
-		let resource_storage = storage.unwrap();
-		let services = services.unwrap();
+					inspector.set_debug_views(Arc::clone(&debug_views));
+					inspector.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms.clone());
+					// The renderer replaces a camera or a light created again under its handle, so an update is a
+					// creation.
+					let scope = &world_messages;
+					inspector.register_message(CAMERA_UPDATE_MESSAGE_TYPE, scope.channel::<rendering::CameraUpdate>());
+					inspector.register_message(
+						POINT_LIGHT_UPDATE_MESSAGE_TYPE,
+						scope.channel::<rendering::PointLightUpdate>(),
+					);
+					inspector.register_message(CONE_LIGHT_UPDATE_MESSAGE_TYPE, scope.channel::<rendering::ConeLightUpdate>());
+					inspector.register_message(
+						DIRECTIONAL_LIGHT_UPDATE_MESSAGE_TYPE,
+						scope.channel::<rendering::DirectionalLightUpdate>(),
+					);
+					for message_type in [DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE] {
+						inspector.register_message(message_type, scope.channel::<DeleteMessage>());
+					}
+					inspector.register_message(TRIGGER_ACTION_MESSAGE_TYPE, action_events);
+					let inspector = EntityHandle::from(inspector);
+					let screenshot_broker = inspector.screenshot_broker();
+					let inspector_events = inspector.event_signal();
+					let retained_streams = std::sync::Arc::clone(inspector.streams());
+					let waker = LoopWaker::default();
+					let console = crate::inspector::console::spawn(
+						inspector.clone(),
+						waker.clone(),
+						application_events.listener(),
+						parameters.scope("console"),
+					);
+					let http_inspector =
+						HttpInspectorServer::new(inspector.clone(), waker.clone(), parameters.scope("inspector"));
+
+					let window_factory = messages.factory();
+					let window_factory_listener = window_factory.listener();
+					let window_features = messages.channel().listener();
+					let window_pointers = messages.channel().listener();
+					let device_outputs = messages.channel().listener();
+					let window_cameras = messages.channel().listener();
+					let window_closes = messages.channel().listener();
+
+					let generator_factory = messages.factory();
+
+					let window_events = messages.channel();
+					Services {
+						input,
+						actions,
+						world,
+						shown_transforms,
+						inspector,
+						http_inspector,
+						console,
+						retained_streams,
+						screenshot_broker,
+						inspector_events,
+						waker,
+						window_factory,
+						window_factory_listener,
+						window_features,
+						window_pointers,
+						device_outputs,
+						window_cameras,
+						window_closes,
+						generator_factory,
+						window_events,
+					}
+				});
+				let graphics_device = rendering::GraphicsDevice::new(render_parameters);
+				let (renderer, servers) = rendering::renderer::Renderer::new(
+					&graphics_device,
+					render_parameters,
+					render_pass_configuration,
+					debug_view_configuration,
+					renderer_debug_views,
+					Arc::clone(&metrics),
+				);
+				(
+					storage.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+					services.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+					(graphics_device, renderer, servers),
+				)
+			});
 
 		// Debug builds keep the store on a host thread, so the asset manager installed later bakes into it.
 		#[cfg(debug_assertions)]
@@ -896,7 +869,8 @@ impl GraphicsApplication {
 	fn process_gamepad_events(&mut self) {
 		let _span = debug_span!("GraphicsApplication::process_gamepad_events").entered();
 		while let Some(output) = self.device_outputs.read() {
-			self.gamepad_system.set_output(output.device(), output.output(), output.value());
+			self.gamepad_system
+				.set_output(output.device(), output.output(), output.value());
 		}
 		self.gamepad_system.poll(&mut self.input, self.gamepad_device_class_handle);
 	}
@@ -1274,7 +1248,7 @@ impl GraphicsApplication {
 	/// Borrows the persistent lanes for independent application or frame work.
 	///
 	/// Use [`crate::core::alley::Alley::join`] for caller-bound work or
-	/// [`crate::core::alley::Alley::execute_with_mut`] for resources with stable lane ownership.
+	/// [`crate::core::alley::Alley::execute`] to run every lane.
 	/// Every dispatch finishes before returning to the application's next phase.
 	///
 	/// Systems that step on the lanes, such as [`Physics::step`](crate::physics::Physics::step), take them from
@@ -1832,24 +1806,16 @@ mod tests {
 	}
 
 	#[test]
-	fn unattended_period_is_one_frame_at_the_given_rate() {
+	fn unattended_period_is_one_frame_at_the_given_rate_and_a_missing_rate_stops_startup() {
 		assert_eq!(unattended_period(None), None);
 		assert_eq!(
 			unattended_period(Some(&Parameter::new("unattended", "50"))),
 			Some(std::time::Duration::from_millis(20))
 		);
-	}
-
-	#[test]
-	#[should_panic(expected = "rendering rate")]
-	fn unattended_without_a_rate_stops_startup() {
-		unattended_period(Some(&Parameter::new("unattended", "")));
-	}
-
-	#[test]
-	#[should_panic(expected = "rendering rate")]
-	fn unattended_with_a_non_positive_rate_stops_startup() {
-		unattended_period(Some(&Parameter::new("unattended", "0")));
+		for rate in ["", "0"] {
+			let stopped = std::panic::catch_unwind(|| unattended_period(Some(&Parameter::new("unattended", rate))));
+			assert!(stopped.is_err(), "{rate:?} is no rendering rate");
+		}
 	}
 
 	#[test]
@@ -1881,7 +1847,7 @@ mod tests {
 	}
 
 	#[test]
-	fn simulation_steps_accumulate_without_drift() {
+	fn simulation_steps_accumulate_without_drift_and_drop_the_debt_past_the_frame_budget() {
 		let step = MediaTime::from_frames(1, 60).expect("expected test value");
 		let delta = MediaTime::from_frames(1, 144).expect("expected test value");
 		let mut pending = MediaTime::ZERO;
@@ -1896,16 +1862,9 @@ mod tests {
 
 		// Every frame's delta ends up either simulated or still pending, however the frame rate divides the step.
 		assert_eq!(simulated + pending, delta * 1_000);
-	}
 
-	#[test]
-	fn simulation_steps_drop_the_debt_past_the_frame_budget() {
-		let step = MediaTime::from_frames(1, 60).expect("expected test value");
-
-		let (steps, remainder) = simulation_steps(step * 20 + step / 2, step, 8);
-
-		assert_eq!(steps, 8);
-		assert_eq!(remainder, step / 2);
+		// Debt past the frame budget is dropped.
+		assert_eq!(simulation_steps(step * 20 + step / 2, step, 8), (8, step / 2));
 	}
 
 	#[test]
@@ -1962,8 +1921,7 @@ fn write_metrics(
 use std::sync::Arc;
 
 use resource_management::resource::{
-	ReDBStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode, ResourceStorageSettings,
-	resource_manager::ResourceManager,
+	ReDBStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode, resource_manager::ResourceManager,
 };
 use smallvec::SmallVec;
 use tracing::debug_span;

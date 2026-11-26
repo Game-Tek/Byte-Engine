@@ -14,7 +14,7 @@ use ghi::{
 	BufferDescriptor, BufferStridedRange, DataTypes, Formats, HostAccess, Layouts, QueueHandle, ShaderTypes, Uses,
 	command_buffer::{
 		BoundComputePipelineMode as _, BoundPipelineLayoutMode as _, BoundRasterizationPipelineMode as _,
-		BoundRayTracingPipelineMode as _, CommandBufferRecording as _, CommonCommandBufferMode as _,
+		BoundRayTracingPipelineMode as _, CommandBufferRecording, CommonCommandBufferMode as _,
 		RasterizationRenderPassMode as _,
 	},
 	frame::Frame as _,
@@ -25,6 +25,23 @@ use ghi::{
 	*,
 };
 use utils::{Extent, RGBA};
+
+/// Records frame `$index` through the [`common::Frames`] `$frames` and evaluates to what the recording returns. An
+/// optional `frame |frame| ...,` closure gets the open frame before recording, for resizes, mappings, and placements.
+macro_rules! record_frame {
+	($device:expr, $frames:expr, $index:expr, $(frame |$frame:ident| $setup:expr,)? |$recording:ident| $record:expr) => {{
+		let frames: common::Frames = $frames;
+		let mut recorded = None;
+		$device
+			.queue(frames.queue)
+			.execute(Some(FrameRequest::new($index, frames.synchronizer)), &[], frames.synchronizer, |execution| {
+				$(let $frame = execution.frame().unwrap(); $setup;)?
+				execution.record(frames.commands, |$recording| recorded = Some($record));
+				[]
+			});
+		recorded.unwrap()
+	}};
+}
 
 #[path = "rendering/common.rs"]
 mod common;
@@ -46,19 +63,15 @@ mod resources;
 #[path = "rendering/upscaler.rs"]
 mod upscaler;
 
-/// Creates the native device and raster queue used by one rendering scenario.
-///
-/// Bind the tuple in this order so reverse local drop order releases the context,
-/// then the device, and finally the instance.
-fn create_default_device_setup() -> (Instance, BackendDevice, BackendContext, QueueHandle) {
-	let features = ghi::device::Features::new().validation(true);
-	create_default_device_setup_with_features(features)
+/// Returns the features every scenario's device has: validation on.
+fn validated() -> ghi::device::Features {
+	ghi::device::Features::new().validation(true)
 }
 
-/// Creates the native device with the capabilities required by one rendering scenario.
-fn create_default_device_setup_with_features(
-	features: ghi::device::Features,
-) -> (Instance, BackendDevice, BackendContext, QueueHandle) {
+/// Runs one rendering scenario that also uses the device, on a fresh device setup with `features`.
+///
+/// The setup locals drop in reverse order, so the context goes before the device and the instance.
+fn run_on(features: ghi::device::Features, scenario: impl FnOnce(&BackendDevice, &mut BackendContext, QueueHandle)) {
 	let mut instance = Instance::new(features).expect(
 		"Failed to create the GHI test instance. The most likely cause is that the active backend has no available device.",
 	);
@@ -69,83 +82,30 @@ fn create_default_device_setup_with_features(
 			&mut [(ghi::QueueSelection::new(ghi::types::WorkloadTypes::RASTER), &mut queue_handle)],
 		)
 		.expect("Failed to create the GHI test device. The most likely cause is unavailable raster queue support.");
-	let context = ghi::device::Device::create_context(&device)
+	let mut context = ghi::device::Device::create_context(&device)
 		.expect("Failed to create the GHI test context. The most likely cause is unavailable backend command support.");
-	(instance, device, context, queue_handle.unwrap())
+	scenario(&device, &mut context, queue_handle.unwrap());
 }
 
-/// Creates a validated device setup whose counters write timestamps, for scenarios that read counter durations.
-fn create_counters_device_setup() -> (Instance, BackendDevice, BackendContext, QueueHandle) {
-	create_default_device_setup_with_features(ghi::device::Features::new().validation(true).counters(true))
+/// Runs one rendering scenario on a fresh device setup with `features`.
+fn run_with(features: ghi::device::Features, scenario: impl FnOnce(&mut BackendContext, QueueHandle)) {
+	run_on(features, |_, context, queue_handle| scenario(context, queue_handle));
+}
+
+/// Runs one ray tracing scenario on a fresh device setup with `features` and ray tracing, which the GPU must support.
+fn run_traced(features: ghi::device::Features, scenario: impl FnOnce(&mut BackendContext, QueueHandle)) {
+	run_with(features.ray_tracing(true), |context, queue_handle| {
+		assert!(
+			context.supports_ray_tracing(),
+			"The test device cannot trace rays. The most likely cause is a GPU without ray tracing support. Run the ray tracing tests on a GPU that supports it."
+		);
+		scenario(context, queue_handle);
+	});
 }
 
 /// Runs one rendering scenario on a fresh validated device setup.
-///
-/// The setup locals drop in reverse order, so the context goes before the device and the instance.
 fn run(scenario: impl FnOnce(&mut BackendContext, QueueHandle)) {
-	let (_instance, _device, mut context, queue_handle) = create_default_device_setup();
-	scenario(&mut context, queue_handle);
-}
-
-/// Runs one ray tracing scenario on a fresh validated device setup that enables ray tracing.
-fn run_with_ray_tracing(scenario: impl FnOnce(&mut BackendContext, QueueHandle)) {
-	run_ray_traced(ghi::device::Features::new().validation(true), scenario);
-}
-
-/// Runs `scenario` on a fresh device setup with `features` and ray tracing, which the GPU must support.
-fn run_ray_traced(features: ghi::device::Features, scenario: impl FnOnce(&mut BackendContext, QueueHandle)) {
-	let (_instance, _device, mut context, queue_handle) = create_default_device_setup_with_features(features.ray_tracing(true));
-	assert!(
-		context.supports_ray_tracing(),
-		"The test device cannot trace rays. The most likely cause is a GPU without ray tracing support. Run the ray tracing tests on a GPU that supports it."
-	);
-	scenario(&mut context, queue_handle);
-}
-
-#[test]
-fn disabled_counters_report_no_duration() {
-	let (_instance, _device, mut device, queue_handle) = create_default_device_setup();
-	counters::disabled_counters_report_no_duration(&mut device, queue_handle);
-}
-
-#[test]
-fn counters_measure_completed_frames() {
-	let (_instance, _device, mut device, queue_handle) = create_counters_device_setup();
-	counters::counters_measure_completed_frames(&mut device, queue_handle);
-}
-
-#[test]
-fn counters_measure_every_completed_frame() {
-	let (_instance, _device, mut device, queue_handle) = create_counters_device_setup();
-	counters::counters_measure_every_completed_frame(&mut device, queue_handle);
-}
-
-#[test]
-fn nested_counters_resolve_when_the_outer_end_closes_the_frame() {
-	let (_instance, _device, mut device, queue_handle) = create_counters_device_setup();
-	counters::nested_counters_resolve_when_the_outer_end_closes_the_frame(&mut device, queue_handle);
-}
-
-#[test]
-fn statistics_counters_count_compute_invocations() {
-	let (_instance, _device, mut device, queue_handle) = create_counters_device_setup();
-	counters::statistics_counters_count_compute_invocations(&mut device, queue_handle);
-}
-
-#[test]
-fn counters_ended_after_the_last_dispatch_resolve() {
-	let (_instance, _device, mut device, queue_handle) = create_counters_device_setup();
-	counters::counters_ended_after_the_last_dispatch_resolve(&mut device, queue_handle);
-}
-
-#[test]
-fn unordered_dispatches_write_their_own_rows() {
-	run(|context, queue_handle| compute::unordered_dispatches_write_their_own_rows(context, queue_handle, None));
-}
-
-#[test]
-fn bound_buffer_struct_members_read_at_their_offsets() {
-	run(compute::bound_buffer_struct_members_read_at_their_offsets);
+	run_with(validated(), scenario);
 }
 
 /// Runs the unordered dispatch scenario on a first device, then again on a second device that loaded the first
@@ -155,268 +115,134 @@ fn bound_buffer_struct_members_read_at_their_offsets() {
 /// On a backend without an application-owned cache there is never anything to save, and this only checks that
 /// asking for one leaves pipelines working.
 fn pipeline_from_a_loaded_pipeline_cache_works(shader_key: Option<u64>) {
-	let features = ghi::device::Features::new().validation(true).pipeline_cache(true);
-
-	let compiled = {
-		let (_instance, _device, mut context, queue_handle) = create_default_device_setup_with_features(features);
-		compute::unordered_dispatches_write_their_own_rows(&mut context, queue_handle, shader_key);
-		ghi::context::Context::pipeline_cache_data(&context, |data| [data.loaded, data.added].concat())
-	};
-
-	let (_instance, _device, mut context, queue_handle) = create_default_device_setup_with_features(features);
-	ghi::context::Context::load_pipeline_cache(&context, compiled.clone());
-	compute::unordered_dispatches_write_their_own_rows(&mut context, queue_handle, shader_key);
-	ghi::context::Context::pipeline_cache_data(&context, |data| {
-		assert_eq!(data.loaded, compiled);
-		assert!(data.added.is_empty());
+	let features = validated().pipeline_cache(true);
+	let mut compiled = Vec::new();
+	run_with(features, |context, queue_handle| {
+		compute::unordered_dispatches_write_their_own_rows(context, queue_handle, shader_key);
+		compiled = ghi::context::Context::pipeline_cache_data(context, |data| [data.loaded, data.added].concat());
+	});
+	run_with(features, |context, queue_handle| {
+		ghi::context::Context::load_pipeline_cache(context, compiled.clone());
+		compute::unordered_dispatches_write_their_own_rows(context, queue_handle, shader_key);
+		ghi::context::Context::pipeline_cache_data(context, |data| {
+			assert_eq!(data.loaded, compiled);
+			assert!(data.added.is_empty());
+		});
 	});
 }
 
-/// A pipeline whose shader the backend keeps the code of comes from a loaded pipeline cache.
-#[test]
-fn pipelines_created_from_a_loaded_pipeline_cache_work() {
-	pipeline_from_a_loaded_pipeline_cache_works(None);
+/// Declares one test per scenario, each a call of the runner that sets up its device.
+macro_rules! scenarios {
+	($($(#[$meta:meta])* $name:ident => $run:expr;)*) => {
+		$(
+			$(#[$meta])*
+			#[test]
+			fn $name() {
+				$run;
+			}
+		)*
+	};
 }
 
-/// A pipeline whose shader is named by a key and lends its code comes from a loaded pipeline cache, which also
-/// remembers the shader, so neither the shader nor the pipeline adds anything to save.
-#[test]
-fn keyed_shader_pipelines_created_from_a_loaded_pipeline_cache_work() {
-	pipeline_from_a_loaded_pipeline_cache_works(Some(0x5EED));
-}
+scenarios! {
+	disabled_counters_report_no_duration => run(counters::disabled_counters_report_no_duration);
+	counters_measure_every_completed_frame =>
+		run_with(validated().counters(true), counters::counters_measure_every_completed_frame);
+	statistics_counters_count_compute_invocations =>
+		run_with(validated().counters(true), counters::statistics_counters_count_compute_invocations);
+	counters_ended_after_the_last_dispatch_resolve =>
+		run_with(validated().counters(true), counters::counters_ended_after_the_last_dispatch_resolve);
 
-#[test]
-fn image_group_members_keep_their_contents_until_reused() {
-	run(image_groups::members_keep_their_contents_until_another_member_reuses_them);
-}
+	unordered_dispatches_write_their_own_rows =>
+		run(|context, queue_handle| compute::unordered_dispatches_write_their_own_rows(context, queue_handle, None));
+	bound_buffer_struct_members_read_at_their_offsets => run(compute::bound_buffer_struct_members_read_at_their_offsets);
+	/// A pipeline whose shader the backend keeps the code of comes from a loaded pipeline cache.
+	pipelines_created_from_a_loaded_pipeline_cache_work => pipeline_from_a_loaded_pipeline_cache_works(None);
+	/// A pipeline whose shader is named by a key and lends its code comes from a loaded pipeline cache, which also
+	/// remembers the shader, so neither the shader nor the pipeline adds anything to save.
+	keyed_shader_pipelines_created_from_a_loaded_pipeline_cache_work =>
+		pipeline_from_a_loaded_pipeline_cache_works(Some(0x5EED));
 
-#[test]
-fn image_group_member_placed_as_another_reads_its_image() {
-	run(image_groups::a_member_placed_as_another_members_image_reads_that_image);
-}
+	image_group_members_keep_their_contents_until_reused =>
+		run(image_groups::members_keep_their_contents_until_another_member_reuses_them);
+	image_group_member_placed_as_another_reads_its_image =>
+		run(image_groups::a_member_placed_as_another_members_image_reads_that_image);
+	#[cfg(debug_assertions)]
+	#[should_panic(expected = "was used without valid contents")]
+	image_group_member_read_after_reuse_fails_validation =>
+		run(image_groups::reading_a_member_after_another_reused_its_memory_fails);
 
-#[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "was used without valid contents")]
-fn image_group_member_read_after_reuse_fails_validation() {
-	run(image_groups::reading_a_member_after_another_reused_its_memory_fails);
-}
+	render_triangle_pixels =>
+		run(|context, queue_handle| raster::render_triangle(context, queue_handle, raster::TriangleDraw::Mesh));
+	render_triangle_with_indirect_draw =>
+		run(|context, queue_handle| raster::render_triangle(context, queue_handle, raster::TriangleDraw::Indirect));
+	#[cfg(target_os = "macos")]
+	raster_pipeline_can_disable_depth_writes => run(raster::render_without_depth_writes);
+	render_pass_without_attachments_writes_through_image_atomics =>
+		run(raster::render_without_attachments_through_image_atomics);
 
-#[test]
-fn render_triangle_pixels() {
-	run(|context, queue_handle| raster::render_triangle(context, queue_handle, raster::TriangleDraw::Mesh));
-}
+	resize_render_target => run(|context, queue_handle| resources::resize(context, queue_handle, ghi::Copies::PerFrame));
+	resize_static_render_target => run(|context, queue_handle| resources::resize(context, queue_handle, ghi::Copies::One));
+	resize_render_target_layers => run(resources::resize_layers);
+	resize_static_render_target_in_flight => run(resources::resize_render_target_in_flight);
+	array_buffer_round_trip => run(resources::array_buffer_round_trip);
+	resize_dynamic_buffer => run(resources::resize_dynamic_buffer);
+	update_dynamic_data => run(resources::dynamic_data);
+	dynamic_buffer_created_in_a_frame_has_a_copy_per_frame =>
+		run(resources::dynamic_buffer_created_in_a_frame_has_a_copy_per_frame);
+	transfer_previous_frame_textures => run(resources::previous_frame_transfers);
+	render_with_multiframe_resources => run(resources::multiframe_resources);
+	round_trip_texture3d_lut => run(resources::texture3d_lut_round_trip);
+	update_texture_regions => run(resources::texture_region_uploads);
+	exported_image_keeps_contents_and_mips => run_on(validated(), resources::exported_image_keeps_contents_and_mips);
+	imported_buffer_receives_copies => run_on(validated(), resources::imported_buffer_receives_copies);
+	imported_private_buffer_keeps_copies_made_before_its_owner_records =>
+		run_on(validated(), resources::imported_private_buffer_keeps_copies_made_before_its_owner_records);
+	imported_private_buffer_keeps_copies_made_while_its_zero_fill_runs =>
+		run_on(validated(), resources::imported_private_buffer_keeps_copies_made_while_its_zero_fill_runs);
+	transferred_mapping_feeds_every_later_copy => run(resources::transferred_mapping_feeds_every_later_copy);
 
-#[test]
-fn render_triangle_with_indirect_draw() {
-	run(|context, queue_handle| raster::render_triangle(context, queue_handle, raster::TriangleDraw::Indirect));
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn raster_pipeline_can_disable_depth_writes() {
-	run(raster::render_without_depth_writes);
-}
-
-#[test]
-fn render_pass_without_attachments_writes_through_image_atomics() {
-	run(raster::render_without_attachments_through_image_atomics);
-}
-
-#[test]
-fn change_frames_in_flight() {
-	run(resources::change_frames);
-}
-
-#[test]
-fn resize_render_target() {
-	run(|context, queue_handle| resources::resize(context, queue_handle, ghi::Copies::PerFrame));
-}
-
-#[test]
-fn resize_static_render_target() {
-	run(|context, queue_handle| resources::resize(context, queue_handle, ghi::Copies::One));
-}
-
-#[test]
-fn resize_render_target_layers() {
-	run(resources::resize_layers);
-}
-
-#[test]
-fn resize_static_render_target_in_flight() {
-	run(|context, queue_handle| resources::resize_render_target_in_flight(context, queue_handle, ghi::Copies::One));
-}
-
-#[test]
-fn array_buffer_round_trip() {
-	run(resources::array_buffer_round_trip);
-}
-
-#[test]
-fn resize_dynamic_buffer() {
-	run(resources::resize_dynamic_buffer);
-}
-
-#[test]
-fn update_dynamic_data() {
-	run(resources::dynamic_data);
-}
-
-#[test]
-fn dynamic_buffer_created_in_a_frame_has_a_copy_per_frame() {
-	run(resources::dynamic_buffer_created_in_a_frame_has_a_copy_per_frame);
-}
-
-#[test]
-fn update_dynamic_textures() {
-	run(resources::dynamic_textures);
-}
-
-#[test]
-fn transfer_previous_frame_textures() {
-	run(resources::previous_frame_transfers);
-}
-
-#[test]
-fn render_with_multiframe_resources() {
-	run(resources::multiframe_resources);
-}
-
-#[test]
-fn round_trip_texture3d_lut() {
-	run(resources::texture3d_lut_round_trip);
-}
-
-#[test]
-fn traced_structures_stay_resident_without_rebuilds() {
-	run_with_ray_tracing(ray_tracing::traced_structures_stay_resident_without_rebuilds);
-}
-
-#[test]
-fn counters_time_bottom_level_builds() {
-	let (_instance, _device, mut context, queue_handle) = create_default_device_setup_with_features(
-		ghi::device::Features::new().validation(true).ray_tracing(true).counters(true),
+	traced_structures_stay_resident_without_rebuilds =>
+		run_traced(validated(), ray_tracing::traced_structures_stay_resident_without_rebuilds);
+	counters_time_bottom_level_builds =>
+		run_traced(validated().counters(true), ray_tracing::counters_time_bottom_level_builds);
+	top_level_structures_have_a_copy_per_frame =>
+		run_traced(validated(), ray_tracing::top_level_structures_have_a_copy_per_frame);
+	instances_report_custom_indices_beyond_16_bits =>
+		run_traced(validated(), ray_tracing::instances_report_custom_indices_beyond_16_bits);
+	bottom_level_structures_hold_several_geometries =>
+		run_traced(validated(), ray_tracing::bottom_level_structures_hold_several_geometries);
+	compacted_structures_trace_like_the_original =>
+		run_traced(validated(), ray_tracing::compacted_structures_trace_like_the_original);
+	destroyed_structures_stay_valid_for_frames_in_flight =>
+		run_traced(validated(), ray_tracing::destroyed_structures_stay_valid_for_frames_in_flight);
+	stale_structure_handles_are_rejected =>
+		run_traced(validated(), ray_tracing::stale_structure_handles_are_rejected);
+	invoke_runs_the_hit_group_of_the_record_the_intersector_reports => run_traced(
+		validated(),
+		ray_tracing::invoke_runs_the_hit_group_of_the_record_the_intersector_reports
 	);
-	ray_tracing::counters_time_bottom_level_builds(&mut context, queue_handle);
-}
+	closest_hit_reads_sets_the_ray_generation_shader_does_not_use => run_traced(
+		validated(),
+		ray_tracing::closest_hit_reads_sets_the_ray_generation_shader_does_not_use
+	);
+	trace_rays_launches_exactly_the_requested_grid =>
+		run_traced(validated(), ray_tracing::trace_rays_launches_exactly_the_requested_grid);
+	rebuilt_pipeline_with_more_hit_groups_invokes_the_new_group =>
+		run_traced(validated(), ray_tracing::rebuilt_pipeline_with_more_hit_groups_invokes_the_new_group);
+	// The measurement spikes run without validation, which would add its own time to every pipeline creation.
+	#[cfg(target_os = "linux")]
+	#[ignore = "Measurement spike; run it explicitly."]
+	ray_tracing_spikes_building_a_pipeline_again_compiles_only_the_new_hit_group => run_traced(
+		ghi::device::Features::new(),
+		ray_tracing_spikes::building_a_pipeline_again_compiles_only_the_new_hit_group
+	);
+	#[cfg(target_os = "linux")]
+	#[ignore = "Measurement spike; run it explicitly."]
+	ray_tracing_spikes_sorted_closest_hit_calls_against_random_ones => run_traced(
+		ghi::device::Features::new(),
+		ray_tracing_spikes::sorted_closest_hit_calls_against_random_ones
+	);
 
-#[test]
-fn top_level_structures_have_a_copy_per_frame() {
-	run_with_ray_tracing(ray_tracing::top_level_structures_have_a_copy_per_frame);
-}
-
-#[test]
-fn instances_report_custom_indices_beyond_16_bits() {
-	run_with_ray_tracing(ray_tracing::instances_report_custom_indices_beyond_16_bits);
-}
-
-#[test]
-fn bottom_level_structures_hold_several_geometries() {
-	run_with_ray_tracing(ray_tracing::bottom_level_structures_hold_several_geometries);
-}
-
-#[test]
-fn compacted_structures_trace_like_the_original() {
-	run_with_ray_tracing(ray_tracing::compacted_structures_trace_like_the_original);
-}
-
-#[test]
-fn destroyed_structures_stay_valid_for_frames_in_flight() {
-	run_with_ray_tracing(ray_tracing::destroyed_structures_stay_valid_for_frames_in_flight);
-}
-
-#[test]
-fn stale_structure_handles_are_rejected() {
-	run_with_ray_tracing(ray_tracing::stale_structure_handles_are_rejected);
-}
-
-#[test]
-fn invoke_runs_the_hit_group_of_the_record_the_intersector_reports() {
-	run_with_ray_tracing(ray_tracing::invoke_runs_the_hit_group_of_the_record_the_intersector_reports);
-}
-
-#[test]
-fn closest_hit_reads_sets_the_ray_generation_shader_does_not_use() {
-	run_with_ray_tracing(ray_tracing::closest_hit_reads_sets_the_ray_generation_shader_does_not_use);
-}
-
-#[test]
-fn trace_rays_launches_exactly_the_requested_grid() {
-	run_with_ray_tracing(ray_tracing::trace_rays_launches_exactly_the_requested_grid);
-}
-
-#[test]
-fn rebuilt_pipeline_with_more_hit_groups_invokes_the_new_group() {
-	run_with_ray_tracing(ray_tracing::rebuilt_pipeline_with_more_hit_groups_invokes_the_new_group);
-}
-
-/// Runs one measurement spike on a device that traces rays, without validation, which would add its own time to
-/// every pipeline creation.
-#[cfg(target_os = "linux")]
-fn run_spike(scenario: impl FnOnce(&mut BackendContext, QueueHandle)) {
-	run_ray_traced(ghi::device::Features::new(), scenario);
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-#[ignore = "Measurement spike; run it explicitly."]
-fn ray_tracing_spikes_building_a_pipeline_again_compiles_only_the_new_hit_group() {
-	run_spike(ray_tracing_spikes::building_a_pipeline_again_compiles_only_the_new_hit_group);
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-#[ignore = "Measurement spike; run it explicitly."]
-fn ray_tracing_spikes_sorted_closest_hit_calls_against_random_ones() {
-	run_spike(ray_tracing_spikes::sorted_closest_hit_calls_against_random_ones);
-}
-
-#[test]
-fn exported_image_keeps_contents_and_mips() {
-	let (_instance, device, mut context, queue_handle) = create_default_device_setup();
-	resources::exported_image_keeps_contents_and_mips(&device, &mut context, queue_handle);
-}
-
-#[test]
-fn imported_buffer_receives_copies() {
-	let (_instance, device, mut context, queue_handle) = create_default_device_setup();
-	resources::imported_buffer_receives_copies(&device, &mut context, queue_handle);
-}
-
-#[test]
-fn imported_private_buffer_keeps_copies_made_before_its_owner_records() {
-	let (_instance, device, mut context, queue_handle) = create_default_device_setup();
-	resources::imported_private_buffer_keeps_copies_made_before_its_owner_records(&device, &mut context, queue_handle);
-}
-
-#[test]
-fn imported_private_buffer_keeps_copies_made_while_its_zero_fill_runs() {
-	let (_instance, device, mut context, queue_handle) = create_default_device_setup();
-	resources::imported_private_buffer_keeps_copies_made_while_its_zero_fill_runs(&device, &mut context, queue_handle);
-}
-
-#[test]
-fn transferred_mapping_feeds_every_later_copy() {
-	run(resources::transferred_mapping_feeds_every_later_copy);
-}
-
-#[test]
-fn workload_is_complete_when_record_returns() {
-	run(resources::workload_is_complete_when_record_returns);
-}
-
-#[test]
-fn buffer_copy_fills_every_depth_slice_of_a_volume() {
-	run(resources::buffer_copy_fills_every_depth_slice_of_a_volume);
-}
-
-#[test]
-fn update_texture_regions() {
-	run(resources::texture_region_uploads);
-}
-
-#[test]
-fn a_still_frame_upscales_to_its_own_color() {
-	run(upscaler::a_still_frame_upscales_to_its_own_color);
+	a_still_frame_upscales_to_its_own_color => run(upscaler::a_still_frame_upscales_to_its_own_color);
 }

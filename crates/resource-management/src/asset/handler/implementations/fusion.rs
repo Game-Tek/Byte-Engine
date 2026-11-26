@@ -39,7 +39,7 @@ impl AssetHandler for FusionAssetHandler {
 		let fusion_id = id.get_base().as_ref().to_string();
 		let shader_id = format!("{fusion_id}#shader");
 
-		let (source, _) = context.resolve(id).await?;
+		let source = context.resolve(id).await?;
 		let fusion: FusionSource = serde_json::from_slice(&source).map_err(|error| {
 			fail(format!(
 				"Fusion '{fusion_id}' could not be parsed: {error}. The most likely cause is invalid JSON or a field other than `name` and `steps`. Write the fusion as `{{\"name\": ..., \"steps\": [...]}}`."
@@ -75,7 +75,7 @@ impl AssetHandler for FusionAssetHandler {
 		let mut stage = None;
 		for shader in &shaders {
 			let shader_id = ResourceId::new(shader);
-			let (bytes, _) = context.resolve(shader_id).await.map_err(|error| {
+			let bytes = context.resolve(shader_id).await.map_err(|error| {
 				if !error.blames_source() {
 					return error;
 				}

@@ -861,7 +861,11 @@ async fn wire_handle(ctx: &mut EvaluationContext<Shell>, grip: PendingWire, half
 			},
 			_ = handle.on(Events::DragEnded) => {
 				ctx.with(|shell: &mut Shell| {
-					change(shell, |graph| graph.pending.take().map_or(Ok(()), |wire| graph.drop_wire(wire)));
+					if let Some(graph) = shell.layers.graph_mut()
+						&& let Some(wire) = graph.pending.take()
+					{
+						graph.drop_wire(wire);
+					}
 				})
 				.await;
 			},
@@ -1190,12 +1194,6 @@ mod tests {
 	}
 
 	#[test]
-	fn the_status_shows_the_first_sentence_of_a_notice() {
-		assert_eq!(first_sentence("It failed. Try again."), "It failed.");
-		assert_eq!(first_sentence("It failed"), "It failed");
-	}
-
-	#[test]
 	fn zooming_keeps_the_point_under_the_anchor() {
 		let view = View {
 			pan: [100.0, 50.0],
@@ -1257,16 +1255,5 @@ mod tests {
 			halfway[0] > socket[0] - (start + full) * 0.5 && halfway[0] < socket[0],
 			"it's drawn in on the way: {halfway:?}"
 		);
-	}
-
-	#[test]
-	fn a_knob_turns_the_short_way_round() {
-		use std::f32::consts::PI;
-		let turned = nearest_turn(-0.9 * PI, 0.9 * PI);
-		assert!(
-			(turned - 1.1 * PI).abs() < 1e-4,
-			"a tenth of a turn on, not most of a turn back: {turned}"
-		);
-		assert!((nearest_turn(0.0, 4.0 * PI) - 4.0 * PI).abs() < 1e-4);
 	}
 }

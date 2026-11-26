@@ -244,6 +244,17 @@ impl SetBinder<'_> {
 		ghi::DescriptorWrite::image(self.set, self.slot(name), image, ghi::Layouts::General).with_array_element(index)
 	}
 
+	/// Binds `images` to the first elements of an arrayed storage image, such as a sink's debug target pool.
+	pub fn image_elements<'b>(
+		&'b self,
+		name: &'b str,
+		images: &'b [ghi::BaseImageHandle],
+	) -> impl Iterator<Item = ghi::DescriptorWrite> + 'b {
+		(0..)
+			.zip(images)
+			.map(move |(index, image)| self.image_element(name, *image, index))
+	}
+
 	/// Binds one mip of a storage image.
 	pub fn image_mip(&self, name: &str, image: impl Into<ghi::BaseImageHandle>, mip_level: u32) -> ghi::DescriptorWrite {
 		ghi::DescriptorWrite::image_mip(self.set, self.slot(name), image, ghi::Layouts::General, mip_level)
@@ -370,12 +381,7 @@ impl PipelineSets {
 /// Keep one next to the pipeline's [`PipelineRef`](crate::rendering::PipelineRef) and call [`Self::get`] each
 /// frame before recording.
 #[derive(Clone, Copy, Default)]
-pub struct PublishedSets {
-	/// The pipeline revision the sets, or the failure, belong to.
-	revision: u64,
-	sets: Option<PipelineSets>,
-	failed: bool,
-}
+pub struct PublishedSets(crate::rendering::render_pass::Adoption<PipelineSets>);
 
 impl PublishedSets {
 	/// Returns the pipeline's sets, creating them with [`create_sets`] the first time the pipeline is available and
@@ -389,26 +395,12 @@ impl PublishedSets {
 		name: &str,
 		resources: &[Resource],
 	) -> Option<PipelineSets> {
-		let revision = pipeline_manager.revision(pipeline);
-		if self.revision != revision {
-			*self = Self {
-				revision,
-				..Self::default()
-			};
-		}
-		if self.sets.is_some() || self.failed {
-			return self.sets;
-		}
-
-		let layouts = pipeline_manager.sets(pipeline)?;
-		match create_sets(frame, name, &layouts, resources) {
-			Ok(sets) => self.sets = Some(sets),
-			Err(error) => {
-				log::error!("Descriptor sets `{name}` could not be created: {error}");
-				self.failed = true;
-			}
-		}
-		self.sets
+		self.0.get(pipeline_manager, pipeline, name, || {
+			let layouts = pipeline_manager.sets(pipeline).expect(
+				"A published pipeline has no descriptor set layouts. The most likely cause is a publish that set the pipeline ready without its sets.",
+			);
+			create_sets(frame, name, &layouts, resources)
+		})
 	}
 }
 
@@ -466,7 +458,6 @@ pub const CUBE_FACES: u32 = 6;
 #[derive(Clone, Copy)]
 pub enum Resource {
 	Buffer(&'static str, ghi::BaseBufferHandle),
-	PlannedBuffer(&'static str, ghi::BaseBufferHandle),
 	Image(&'static str, ghi::ImageOrSwapchain),
 	/// One mip of every face of a cube, through one 2D-array view; see [`Resource::cube_mip`].
 	CubeMip(&'static str, ghi::BaseImageHandle, u32),
@@ -481,11 +472,6 @@ pub enum Resource {
 impl Resource {
 	pub fn buffer(name: &'static str, buffer: impl Into<ghi::BaseBufferHandle>) -> Self {
 		Self::Buffer(name, buffer.into())
-	}
-
-	/// Keeps a buffer ready for a BESL binding that is intentionally not reachable yet.
-	pub fn planned_buffer(name: &'static str, buffer: impl Into<ghi::BaseBufferHandle>) -> Self {
-		Self::PlannedBuffer(name, buffer.into())
 	}
 
 	/// Binds a storage-image destination without exposing whether it is an image or swapchain.
@@ -538,7 +524,6 @@ impl Resource {
 	fn name(&self) -> &str {
 		match self {
 			Self::Buffer(name, ..)
-			| Self::PlannedBuffer(name, ..)
 			| Self::Image(name, ..)
 			| Self::CubeMip(name, ..)
 			| Self::ImageArray(name, ..)
@@ -557,7 +542,7 @@ impl Resource {
 			// A storage image the shader only reads binds as a sampled image. A cube's mip binds every face through one
 			// `StorageImageArray`.
 			(BindingKind::StorageImage { layered: true } | BindingKind::SampledImage { layered: true }, Self::CubeMip(..)) => count == 1,
-			(BindingKind::StorageBuffer, Self::Buffer(..) | Self::PlannedBuffer(..))
+			(BindingKind::StorageBuffer, Self::Buffer(..))
 			// A texture whose sampler the shader fixes binds only its image.
 			| (
 				BindingKind::StorageImage { layered: false } | BindingKind::SampledImage { layered: false } | BindingKind::CombinedImageSampler { sampler: Some(_), .. },
@@ -579,7 +564,7 @@ impl Resource {
 		writes: &mut SmallVec<[ghi::DescriptorWrite; 8]>,
 	) {
 		match *self {
-			Self::Buffer(_, buffer) | Self::PlannedBuffer(_, buffer) => {
+			Self::Buffer(_, buffer) => {
 				writes.push(ghi::DescriptorWrite::buffer(set, slot, buffer));
 			}
 			Self::Image(_, ghi::ImageOrSwapchain::Image(image)) => {
@@ -620,10 +605,6 @@ impl Resource {
 				);
 			}
 		}
-	}
-
-	fn is_planned(&self) -> bool {
-		matches!(self, Self::PlannedBuffer(..))
 	}
 }
 
@@ -687,7 +668,7 @@ fn validate_binding_schema(sets: &[SetLayout]) -> Result<(), &'static str> {
 fn validate_resources(sets: &[SetLayout], resources: &[Resource]) -> Result<(), String> {
 	if let Some(resource) = resources
 		.iter()
-		.find(|resource| !resource.is_planned() && !declared_bindings(sets).any(|binding| binding.name == resource.name()))
+		.find(|resource| !declared_bindings(sets).any(|binding| binding.name == resource.name()))
 	{
 		return Err(format!(
 			"Unknown compute resource `{}`. The most likely cause is that the resource name does not match a BESL binding of the shader or of a layer its `main` takes.",
@@ -857,12 +838,5 @@ mod tests {
 				.expect_err("Expected an unknown resource")
 				.starts_with("Unknown compute resource `typo`.")
 		);
-		let planned = [
-			resources[0],
-			resources[1],
-			resources[2],
-			Resource::planned_buffer("future", buffer),
-		];
-		validate_resources(&layouts(&bindings), &planned).expect("planned resources should validate");
 	}
 }

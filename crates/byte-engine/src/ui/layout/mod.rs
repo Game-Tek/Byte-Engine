@@ -266,12 +266,9 @@ fn measure_element(
 	{
 		return size;
 	}
-	let size = match &element.primitive {
-		Primitives::Container(container) => box_size(container.width, container.height, available),
-		Primitives::Curve(curve) => box_size(curve.path.width, curve.path.height, available),
-		Primitives::Path(path) => box_size(path.path.width, path.path.height, available),
-		Primitives::Image(image) => box_size(image.width, image.height, available),
-		Primitives::Text(value) => {
+	let size = match (&element.primitive, sizings(&element.primitive)) {
+		(_, Some((width, height))) => box_size(width, height, available),
+		(Primitives::Text(value), None) => {
 			let settings = value.settings();
 			let font_size = settings.font_size * text_scale;
 			// A wrapping text takes the offered width, and breaks its lines against it in multiples of its font size.
@@ -283,6 +280,7 @@ fn measure_element(
 				None => text.measure(value.content(), settings.font, font_size, None),
 			}
 		}
+		(_, None) => unreachable!("every element but text has sizings"),
 	};
 	*cached = Some((element.revision, available, size));
 	size
@@ -629,6 +627,31 @@ fn layout_elements<'a>(
 		output[slots[index]].content = on_fit_axes(container, reached, size);
 	}
 
+	/// Lists `children` by relative depth at the end of `siblings`, and queues the absolute-depth ones in `layers`.
+	fn queue(
+		tree: &retained_tree::RetainedTree,
+		children: &[usize],
+		siblings: &mut Vec<(i32, usize), &bumpalo::Bump>,
+		layers: &mut Layers<'_>,
+	) {
+		let start = siblings.len();
+		for &child in children {
+			match &tree.elements[child].primitive {
+				Primitives::Container(container) => match container.depth {
+					Depth::Relative(depth) => siblings.push((depth, child)),
+					Depth::Absolute(depth) => layers.push(depth, child),
+				},
+				_ => siblings.push((1, child)),
+			}
+		}
+		// The sort is stable, so children at the same depth keep their declaration order. Siblings usually share one
+		// depth, and skipping their sort also skips the scratch buffer a stable sort of a long list allocates.
+		let level = &mut siblings[start..];
+		if !level.is_sorted_by_key(|&(depth, _)| depth) {
+			level.sort_by_key(|&(depth, _)| depth);
+		}
+	}
+
 	// Depth is an element's rank in the paint order. A container is painted before its children and
 	// its children in the order of their relative depths, so a subtree takes one contiguous range of
 	// ranks and none of its elements can end up over or under another component's.
@@ -649,21 +672,7 @@ fn layout_elements<'a>(
 		}
 		// Every level sorts its own tail of the shared scratch list.
 		let start = siblings.len();
-		for &child in &tree.children[index] {
-			match &tree.elements[child].primitive {
-				Primitives::Container(container) => match container.depth {
-					Depth::Relative(depth) => siblings.push((depth, child)),
-					Depth::Absolute(depth) => layers.push(depth, child),
-				},
-				_ => siblings.push((1, child)),
-			}
-		}
-		// The sort is stable, so children at the same depth keep their declaration order. Siblings usually share one
-		// depth, and skipping their sort also skips the scratch buffer a stable sort of a long list allocates.
-		let level = &mut siblings[start..];
-		if !level.is_sorted_by_key(|&(depth, _)| depth) {
-			level.sort_by_key(|&(depth, _)| depth);
-		}
+		queue(tree, &tree.children[index], siblings, layers);
 		let end = siblings.len();
 		for sibling in start..end {
 			let child = siblings[sibling].1;
@@ -765,18 +774,7 @@ fn layout_elements<'a>(
 		found: 0,
 	};
 	// Roots order among themselves like siblings: by relative depth, then in tree order.
-	for &root in &roots {
-		match &tree.elements[root].primitive {
-			Primitives::Container(container) => match container.depth {
-				Depth::Relative(depth) => siblings.push((depth, root)),
-				Depth::Absolute(depth) => layers.push(depth, root),
-			},
-			_ => siblings.push((1, root)),
-		}
-	}
-	if !siblings.is_sorted_by_key(|&(depth, _)| depth) {
-		siblings.sort_by_key(|&(depth, _)| depth);
-	}
+	queue(tree, &roots, &mut siblings, &mut layers);
 	for sibling in 0..siblings.len() {
 		let root = siblings[sibling].1;
 		rank(tree, root, &mut next, &slots, &mut siblings, &mut layers, &mut elements);
@@ -1075,63 +1073,39 @@ mod tests {
 	use super::engine::properties::detached_container;
 	use crate::ui::{font::TextSystem, layout::IdedElement, primitive::Primitives};
 
-	/// Supplies retained topology to the layout seam from declarative test fixtures.
-	fn layout_elements<'a>(
-		elements: Vec<IdedElement>,
-		relations: &[(Id, Id)],
-		size: Size,
-		text: &mut TextSystem,
-		allocator: &'a bumpalo::Bump,
-	) -> Vec<LayoutElement, &'a bumpalo::Bump> {
-		let mut tree = super::retained_tree::RetainedTree::new();
-		tree.parents.resize(elements.len(), usize::MAX);
-		tree.children.resize_with(elements.len(), Vec::new);
-		let index = |id: Id| {
-			elements
-				.iter()
-				.position(|element| element.id == id)
-				.expect("a fixture element")
-		};
-		for &(parent, child) in relations {
-			let (parent, child) = (index(parent), index(child));
-			tree.parents[child] = parent;
-			tree.children[parent].push(child);
-		}
-		tree.elements = elements;
-		super::layout_elements(&tree, size, text, 1.0, &mut Vec::new(), allocator)
-	}
-
-	fn make_elements(elements: impl IntoIterator<Item = Container>) -> Vec<IdedElement> {
-		let mut counter = Id::MIN;
-
-		elements
-			.into_iter()
-			.map(|e| {
-				let id = counter;
-
-				counter = counter.checked_add(1).expect("expected test value");
-
-				IdedElement::new(id, id.get() as u32, 0, Primitives::Container(e))
-			})
-			.collect()
-	}
-
-	/// Lays out test containers whose relationships refer to their array indexes.
+	/// Lays out test containers whose parent and child pairs refer to their array indexes, in paint order; each
+	/// element's [`LayoutElement::index`] is its container's array index.
 	fn layout(
 		containers: impl IntoIterator<Item = Container>,
 		relations: &[(usize, usize)],
 		viewport: Size,
 	) -> std::vec::Vec<LayoutElement> {
-		let elements = make_elements(containers);
-		let relations = relations
-			.iter()
-			.map(|&(parent, child)| (elements[parent].id, elements[child].id))
-			.collect::<std::vec::Vec<_>>();
-		let frame_allocator = bumpalo::Bump::new();
-
-		layout_elements(elements, &relations, viewport, &mut TextSystem::new(), &frame_allocator)
+		let mut tree = super::retained_tree::RetainedTree::new();
+		tree.elements = containers
 			.into_iter()
-			.collect()
+			.enumerate()
+			.map(|(index, container)| {
+				let id = Id::MIN.checked_add(index as u64).expect("a fixture id");
+				IdedElement::new(id, id.get() as u32, 0, Primitives::Container(container))
+			})
+			.collect();
+		tree.parents.resize(tree.elements.len(), usize::MAX);
+		tree.children.resize_with(tree.elements.len(), Vec::new);
+		for &(parent, child) in relations {
+			tree.parents[child] = parent;
+			tree.children[parent].push(child);
+		}
+		let frame_allocator = bumpalo::Bump::new();
+		super::layout_elements(
+			&tree,
+			viewport,
+			&mut TextSystem::new(),
+			1.0,
+			&mut Vec::new(),
+			&frame_allocator,
+		)
+		.into_iter()
+		.collect()
 	}
 
 	fn assert_layout(element: &LayoutElement, size: Size, position: Location3) {
@@ -1224,47 +1198,62 @@ mod tests {
 	}
 
 	#[test]
-	fn a_fill_child_of_a_fit_axis_gets_nothing_on_it() {
-		let fit = detached_container(|c| c.width(Sizing::fit()).height(Sizing::pixels(20)).flow(flow::row));
+	fn a_fit_container_takes_the_extent_of_its_flow_children() {
 		let fill = detached_container(|c| c.width(Sizing::fill()).height(Sizing::pixels(10)));
-		assert_eq!(fit_size(fit, [pixels(30, 10), fill]), Size::new(30, 20));
-	}
-
-	#[test]
-	fn a_fit_row_is_as_wide_as_its_children_and_as_tall_as_the_tallest() {
-		let fit = detached_container(|c| c.size(Sizing::fit()).flow(flow::row));
-		assert_eq!(fit_size(fit, [pixels(20, 10), pixels(30, 25)]), Size::new(50, 25));
-	}
-
-	#[test]
-	fn a_fit_container_leaves_out_the_gap_after_its_last_child() {
-		let fit = detached_container(|c| c.size(Sizing::fit()).flow(flow::row_with_gap(8)));
-		assert_eq!(fit_size(fit, [pixels(20, 10), pixels(20, 10)]), Size::new(48, 10));
-	}
-
-	#[test]
-	fn a_centered_flow_packs_its_children_on_a_fit_axis() {
-		let fit = detached_container(|c| c.size(Sizing::fit()).flow(flow::centered_row));
-		assert_eq!(fit_size(fit, [pixels(20, 10), pixels(20, 40)]), Size::new(40, 40));
-	}
-
-	#[test]
-	fn a_fit_axis_only_follows_the_children_on_that_axis() {
-		let fit = detached_container(|c| c.width(Sizing::fit()).height(Sizing::Relative(1, 2)).flow(flow::column));
-		assert_eq!(fit_size(fit, [pixels(20, 10), pixels(35, 10)]), Size::new(35, 150));
-	}
-
-	#[test]
-	fn absolutely_placed_children_dont_size_a_fit_container() {
-		let fit = detached_container(|c| c.size(Sizing::fit()).flow(flow::row));
 		let anchored = detached_container(|c| c.size(Sizing::pixels(90)).absolute_position(100, 100));
 		let layer = detached_container(|c| c.size(Sizing::pixels(90)).depth(Depth::absolute(1)));
-		assert_eq!(fit_size(fit, [pixels(20, 10), anchored, layer]), Size::new(20, 10));
-	}
-
-	#[test]
-	fn an_empty_fit_container_measures_zero() {
-		assert_eq!(fit_size(detached_container(|c| c.size(Sizing::fit())), []), Size::new(0, 0));
+		for (container, children, expected) in [
+			// A fill child gets nothing on a fit axis.
+			(
+				detached_container(|c| c.width(Sizing::fit()).height(Sizing::pixels(20)).flow(flow::row)),
+				vec![pixels(30, 10), fill],
+				Size::new(30, 20),
+			),
+			// A row is as wide as its children and as tall as the tallest.
+			(
+				detached_container(|c| c.size(Sizing::fit()).flow(flow::row)),
+				vec![pixels(20, 10), pixels(30, 25)],
+				Size::new(50, 25),
+			),
+			// The gap after the last child is left out.
+			(
+				detached_container(|c| c.size(Sizing::fit()).flow(flow::row_with_gap(8))),
+				vec![pixels(20, 10), pixels(20, 10)],
+				Size::new(48, 10),
+			),
+			// A centered flow packs its children.
+			(
+				detached_container(|c| c.size(Sizing::fit()).flow(flow::centered_row)),
+				vec![pixels(20, 10), pixels(20, 40)],
+				Size::new(40, 40),
+			),
+			// A fit axis only follows the children on that axis.
+			(
+				detached_container(|c| c.width(Sizing::fit()).height(Sizing::Relative(1, 2)).flow(flow::column)),
+				vec![pixels(20, 10), pixels(35, 10)],
+				Size::new(35, 150),
+			),
+			// Absolutely placed children don't count.
+			(
+				detached_container(|c| c.size(Sizing::fit()).flow(flow::row)),
+				vec![pixels(20, 10), anchored, layer],
+				Size::new(20, 10),
+			),
+			(detached_container(|c| c.size(Sizing::fit())), vec![], Size::new(0, 0)),
+			// Padding counts on both sides.
+			(
+				detached_container(|c| c.size(Sizing::fit()).padding(6.0, 4.0).flow(flow::row_with_gap(8))),
+				vec![pixels(20, 10), pixels(20, 10)],
+				Size::new(60, 18),
+			),
+			(
+				detached_container(|c| c.size(Sizing::fit()).padding(6.0, 4.0)),
+				vec![],
+				Size::new(12, 8),
+			),
+		] {
+			assert_eq!(fit_size(container, children), expected);
+		}
 	}
 
 	#[test]
@@ -1301,14 +1290,6 @@ mod tests {
 	}
 
 	#[test]
-	fn a_fit_container_counts_its_padding_on_both_sides() {
-		let fit = detached_container(|c| c.size(Sizing::fit()).padding(6.0, 4.0).flow(flow::row_with_gap(8)));
-		assert_eq!(fit_size(fit, [pixels(20, 10), pixels(20, 10)]), Size::new(60, 18));
-		let empty = detached_container(|c| c.size(Sizing::fit()).padding(6.0, 4.0));
-		assert_eq!(fit_size(empty, []), Size::new(12, 8));
-	}
-
-	#[test]
 	fn padding_moves_flow_children_in_and_shrinks_their_space_but_not_an_absolute_childs() {
 		let padded = detached_container(|c| c.size(Sizing::pixels(100)).padding(10.0, 20.0).flow(flow::center));
 		let full = Container::default();
@@ -1332,282 +1313,121 @@ mod tests {
 
 	/// Returns each container's depth, in the order the containers were given to `layout`.
 	fn depths(containers: impl IntoIterator<Item = Container>, relations: &[(usize, usize)]) -> std::vec::Vec<u32> {
-		let elements = make_elements(containers);
-		let ids: std::vec::Vec<Id> = elements.iter().map(|element| element.id).collect();
-		let relations: std::vec::Vec<(Id, Id)> = relations.iter().map(|&(parent, child)| (ids[parent], ids[child])).collect();
-		let frame_allocator = bumpalo::Bump::new();
-		let placed = layout_elements(
-			elements,
-			&relations,
-			Size::new(100, 100),
-			&mut TextSystem::new(),
-			&frame_allocator,
-		);
-		ids.iter()
-			.map(|id| placed.iter().find(|element| element.id == *id).expect("placed").position.z())
-			.collect()
+		let placed = layout(containers, relations, Size::new(100, 100));
+		let mut depths = vec![0; placed.len()];
+		for element in placed {
+			depths[element.index] = element.position.z();
+		}
+		depths
 	}
 
 	#[test]
-	fn layout_relative_depth_orders_siblings_inside_their_parent() {
-		let raised = detached_container(|c| c.depth(Depth::relative(2)));
-		// root -> [raised -> raised_child, regular]
-		let depths = depths(
-			[Container::default(), raised, Container::default(), Container::default()],
-			&[(0, 1), (1, 2), (0, 3)],
-		);
-
-		// The regular sibling paints first although it is declared last, and the raised child follows its parent.
-		assert_eq!(depths, [0, 2, 3, 1]);
+	fn layout_depth_orders_painting() {
+		let plain = Container::default;
+		let relative = |depth| detached_container(move |c| c.depth(Depth::relative(depth)));
+		let absolute = |depth| detached_container(move |c| c.depth(Depth::absolute(depth)));
+		// The containers, their parent and child pairs, and the depth each one paints at.
+		for (containers, relations, expected) in [
+			// root -> [raised -> raised_child, regular]: the regular sibling paints first although it is declared last,
+			// and the raised child follows its parent.
+			(
+				vec![plain(), relative(2), plain(), plain()],
+				&[(0, 1), (1, 2), (0, 3)][..],
+				&[0, 2, 3, 1][..],
+			),
+			// root -> [first -> overlay -> overlay_child, second -> second_child]: a relative depth stays inside its
+			// component, under everything in the next one.
+			(
+				vec![plain(), plain(), relative(8), plain(), plain(), plain()],
+				&[(0, 1), (1, 2), (2, 3), (0, 4), (4, 5)],
+				&[0, 1, 2, 3, 4, 5],
+			),
+			// root -> [toolbar -> modal -> modal_child, graph -> overlay -> overlay_child]: an absolute depth paints
+			// above a deeper, later component.
+			(
+				vec![plain(), plain(), absolute(1), plain(), plain(), relative(8), plain()],
+				&[(0, 1), (1, 2), (2, 3), (0, 4), (4, 5), (5, 6)],
+				&[0, 1, 5, 6, 2, 3, 4],
+			),
+			// root -> [toast -> popup, modal -> nested_modal]: absolute layers stack by value and above their host, so
+			// the modals come first, the nested one over its host, then the toast and the popup it opened.
+			(
+				vec![plain(), absolute(4), absolute(1), absolute(1), absolute(1)],
+				&[(0, 1), (0, 2), (2, 3), (1, 4)],
+				&[0, 3, 1, 2, 4],
+			),
+		] {
+			assert_eq!(depths(containers, relations), expected);
+		}
 	}
 
 	#[test]
-	fn layout_relative_depth_cannot_cross_into_another_component() {
-		let overlay = detached_container(|c| c.depth(Depth::relative(8)));
-		// root -> [first -> overlay -> overlay_child, second -> second_child]
-		let depths = depths(
-			[
-				Container::default(),
-				Container::default(),
-				overlay,
-				Container::default(),
-				Container::default(),
-				Container::default(),
-			],
-			&[(0, 1), (1, 2), (2, 3), (0, 4), (4, 5)],
-		);
+	fn absolute_children_leave_their_parents_flow_cursor_alone() {
+		let square = |size| detached_container(move |c| c.size(Sizing::pixels(size)));
+		let row = || detached_container(|c| c.flow(flow::row));
+		let relations = [(0, 1), (0, 2), (0, 3)];
 
-		// Everything in the first component stays under everything in the second one.
-		assert_eq!(depths, [0, 1, 2, 3, 4, 5]);
-	}
-
-	#[test]
-	fn layout_absolute_depth_paints_above_a_deeper_later_component() {
-		let modal = detached_container(|c| c.depth(Depth::absolute(1)));
-		let overlay = detached_container(|c| c.depth(Depth::relative(8)));
-		// root -> [toolbar -> modal -> modal_child, graph -> overlay -> overlay_child]
-		let depths = depths(
-			[
-				Container::default(),
-				Container::default(),
-				modal,
-				Container::default(),
-				Container::default(),
-				overlay,
-				Container::default(),
-			],
-			&[(0, 1), (1, 2), (2, 3), (0, 4), (4, 5), (5, 6)],
-		);
-
-		assert_eq!(depths, [0, 1, 5, 6, 2, 3, 4]);
-	}
-
-	#[test]
-	fn layout_absolute_depth_layers_stack_by_value_and_above_their_host() {
-		let toast = detached_container(|c| c.depth(Depth::absolute(4)));
-		let modal = detached_container(|c| c.depth(Depth::absolute(1)));
-		let nested_modal = detached_container(|c| c.depth(Depth::absolute(1)));
-		let popup = detached_container(|c| c.depth(Depth::absolute(1)));
-		// root -> [toast -> popup, modal -> nested_modal]
-		let depths = depths(
-			[Container::default(), toast, modal, nested_modal, popup],
-			&[(0, 1), (0, 2), (2, 3), (1, 4)],
-		);
-
-		// The modals come first, the nested one over its host, then the toast and the popup it opened.
-		assert_eq!(depths, [0, 3, 1, 2, 4]);
-	}
-
-	#[test]
-	fn layout_absolute_position_places_child_without_advancing_flow() {
-		let frame_allocator = bumpalo::Bump::new();
-		let root = detached_container(|c| c.flow(flow::row));
-		let first = detached_container(|c| c.size(Sizing::pixels(20)));
+		// An absolute position places the child there, and the next sibling takes the space it would have.
 		let positioned = detached_container(|c| c.size(Sizing::pixels(30)).position(Position::absolute(70, 12)));
-		let second = detached_container(|c| c.size(Sizing::pixels(20)));
-
-		let elements = make_elements([root, first, positioned, second]);
-
-		let root = &elements[0];
-		let first = &elements[1];
-		let positioned = &elements[2];
-		let second = &elements[3];
-
-		let relations = [(root.id, first.id), (root.id, positioned.id), (root.id, second.id)];
-
-		let elements = layout_elements(
-			elements,
-			&relations,
-			Size::new(100, 100),
-			&mut TextSystem::new(),
-			&frame_allocator,
+		let elements = layout([row(), square(20), positioned, square(20)], &relations, Size::new(100, 100));
+		assert_eq!(
+			[1, 2, 3].map(|index| elements[index].position),
+			[Location3::new(0, 0, 1), Location3::new(70, 12, 2), Location3::new(20, 0, 3)]
 		);
 
-		assert_eq!(elements[1].position, Location3::new(0, 0, 1));
-		assert_eq!(elements[2].position, Location3::new(70, 12, 2));
-		assert_eq!(elements[3].position, Location3::new(20, 0, 3));
-	}
-
-	#[test]
-	fn layout_absolute_depth_uses_absolute_position_in_root_space() {
-		let frame_allocator = bumpalo::Bump::new();
-		let root = detached_container(|c| c.flow(flow::row));
-		let first = detached_container(|c| c.size(Sizing::pixels(20)));
+		// An absolute depth takes its absolute position in root space, and its child follows it.
 		let dropdown = detached_container(|c| c.size(Sizing::pixels(30)).depth(Depth::absolute(1)).absolute_position(24, 32));
-		let child = detached_container(|c| c.size(Sizing::pixels(10)));
-
-		let elements = make_elements([root, first, dropdown, child]);
-
-		let root = &elements[0];
-		let first = &elements[1];
-		let dropdown = &elements[2];
-		let child = &elements[3];
-
-		let relations = [(root.id, first.id), (root.id, dropdown.id), (dropdown.id, child.id)];
-
-		let elements = layout_elements(
-			elements,
-			&relations,
+		let elements = layout(
+			[row(), square(20), dropdown, square(10)],
+			&[(0, 1), (0, 2), (2, 3)],
 			Size::new(100, 100),
-			&mut TextSystem::new(),
-			&frame_allocator,
+		);
+		assert_eq!(
+			[1, 2, 3].map(|index| elements[index].position),
+			[Location3::new(0, 0, 1), Location3::new(24, 32, 2), Location3::new(24, 32, 3)]
 		);
 
-		assert_eq!(elements[1].position, Location3::new(0, 0, 1));
-		assert_eq!(elements[2].position, Location3::new(24, 32, 2));
-		assert_eq!(elements[3].position, Location3::new(24, 32, 3));
-	}
-
-	#[test]
-	fn layout_absolute_depth_does_not_advance_parent_flow_cursor() {
-		let frame_allocator = bumpalo::Bump::new();
-		let root = detached_container(|c| c.flow(flow::row_with_gap(10)));
-		let first = detached_container(|c| c.size(Sizing::pixels(20)));
+		// An absolute depth without a position sits at its parent's origin and paints last.
+		let gapped = detached_container(|c| c.flow(flow::row_with_gap(10)));
 		let modal = detached_container(|c| c.size(Sizing::pixels(30)).depth(Depth::absolute(1)));
-		let second = detached_container(|c| c.size(Sizing::pixels(20)));
-
-		let elements = make_elements([root, first, modal, second]);
-
-		let root = &elements[0];
-		let first = &elements[1];
-		let modal_id = elements[2].id;
-		let modal = &elements[2];
-		let second = &elements[3];
-
-		let relations = [(root.id, first.id), (root.id, modal.id), (root.id, second.id)];
-
-		let elements = layout_elements(
-			elements,
-			&relations,
-			Size::new(100, 100),
-			&mut TextSystem::new(),
-			&frame_allocator,
-		);
-
-		assert_eq!(elements[1].position, Location3::new(0, 0, 1));
+		let elements = layout([gapped, square(20), modal, square(20)], &relations, Size::new(100, 100));
 		assert_eq!(elements[2].position, Location3::new(30, 0, 2));
-		assert_eq!(elements[3].id, modal_id);
-		assert_eq!(elements[3].position, Location3::new(0, 0, 3));
+		assert_eq!((elements[3].index, elements[3].position), (2, Location3::new(0, 0, 3)));
 	}
 
 	#[test]
-	fn layout_centered_column() {
-		let frame_allocator = bumpalo::Bump::new();
-		let root = detached_container(|c| c.flow(flow::centered_column));
-		let a = detached_container(|c| c.width(Sizing::pixels(64)).height(Sizing::pixels(32)));
-		let b = detached_container(|c| c.width(Sizing::pixels(20)).height(Sizing::pixels(16)));
-
-		let elements = make_elements([root, a, b]);
-
-		let root = &elements[0];
-		let a = &elements[1];
-		let b = &elements[2];
-
-		let relations = [(root.id, a.id), (root.id, b.id)];
-
-		let elements = layout_elements(
-			elements,
-			&relations,
-			Size::new(100, 100),
-			&mut TextSystem::new(),
-			&frame_allocator,
-		);
-
-		assert_eq!(elements.len(), 3);
-
-		let element = &elements[1];
-
-		assert_eq!(element.position, Location3::new(18, 0, 1));
-		assert_eq!(element.size, Size::new(64, 32));
-
-		let element = &elements[2];
-
-		assert_eq!(element.position, Location3::new(40, 32, 2));
-		assert_eq!(element.size, Size::new(20, 16));
-	}
-
-	#[test]
-	fn layout_centered_row_keeps_siblings_on_same_baseline() {
-		let frame_allocator = bumpalo::Bump::new();
-		let root = detached_container(|c| c.flow(flow::centered_row));
-		let a = detached_container(|c| c.width(Sizing::pixels(20)).height(Sizing::pixels(10)));
-		let b = detached_container(|c| c.width(Sizing::pixels(20)).height(Sizing::pixels(10)));
-
-		let elements = make_elements([root, a, b]);
-
-		let root = &elements[0];
-		let a = &elements[1];
-		let b = &elements[2];
-
-		let relations = [(root.id, a.id), (root.id, b.id)];
-
-		let elements = layout_elements(
-			elements,
-			&relations,
-			Size::new(100, 80),
-			&mut TextSystem::new(),
-			&frame_allocator,
-		);
-
-		assert_eq!(elements.len(), 3);
-		assert_eq!(elements[1].position, Location3::new(0, 35, 1));
-		assert_eq!(elements[2].position, Location3::new(20, 35, 2));
-	}
-
-	#[test]
-	fn layout_center() {
-		let frame_allocator = bumpalo::Bump::new();
-		let root = detached_container(|c| c.flow(flow::center));
-		let a = detached_container(|c| c.width(Sizing::pixels(20)).height(Sizing::pixels(10)));
-		let b = detached_container(|c| c.width(Sizing::pixels(40)).height(Sizing::pixels(20)));
-
-		let elements = make_elements([root, a, b]);
-
-		let root = &elements[0];
-		let a = &elements[1];
-		let b = &elements[2];
-
-		let relations = [(root.id, a.id), (root.id, b.id)];
-
-		let elements = layout_elements(
-			elements,
-			&relations,
-			Size::new(100, 80),
-			&mut TextSystem::new(),
-			&frame_allocator,
-		);
-
-		assert_eq!(elements.len(), 3);
-
-		let element = &elements[1];
-
-		assert_eq!(element.position, Location3::new(40, 35, 1));
-		assert_eq!(element.size, Size::new(20, 10));
-
-		let element = &elements[2];
-
-		assert_eq!(element.position, Location3::new(30, 30, 2));
-		assert_eq!(element.size, Size::new(40, 20));
+	fn centering_flows_center_their_children() {
+		type Flow = fn(flow::FlowInput) -> flow::FlowOutput;
+		// The flow, the viewport, and each of two children's size and position.
+		for (centering, viewport, children) in [
+			(
+				flow::centered_column as Flow,
+				Size::new(100, 100),
+				[((64, 32), (18, 0)), ((20, 16), (40, 32))],
+			),
+			// A row keeps its children on the same line.
+			(
+				flow::centered_row,
+				Size::new(100, 80),
+				[((20, 10), (0, 35)), ((20, 10), (20, 35))],
+			),
+			(flow::center, Size::new(100, 80), [((20, 10), (40, 35)), ((40, 20), (30, 30))]),
+		] {
+			let root = detached_container(move |c| c.flow(centering));
+			let elements = layout(
+				[
+					root,
+					pixels(children[0].0.0, children[0].0.1),
+					pixels(children[1].0.0, children[1].0.1),
+				],
+				&[(0, 1), (0, 2)],
+				viewport,
+			);
+			for (index, (size, (x, y))) in children.into_iter().enumerate() {
+				assert_eq!(elements[index + 1].size, Size::new(size.0, size.1));
+				assert_eq!(elements[index + 1].position, Location3::new(x, y, index as u32 + 1));
+			}
+		}
 	}
 
 	#[test]
@@ -1616,15 +1436,8 @@ mod tests {
 		// moves the box right by as much. Without one, the box centers by its middle.
 		for (center, x) in [(Some([0.4375, 0.5]), 39.5), (None, 38.0)] {
 			let icon = detached_container(|c| c.size(Sizing::pixels(24)).visual_center(center));
-			let frame_allocator = bumpalo::Bump::new();
 			let root = detached_container(|c| c.flow(flow::center));
-			let placed = layout_elements(
-				make_elements([root, icon]),
-				&[(Id::MIN, Id::MIN.checked_add(1).unwrap())],
-				Size::new(100, 80),
-				&mut TextSystem::new(),
-				&frame_allocator,
-			);
+			let placed = layout([root, icon], &[(0, 1)], Size::new(100, 80));
 			assert!((placed[1].position.x() - x).abs() < 1e-3, "{:?}", placed[1].position);
 			assert!((placed[1].position.y() - 28.0).abs() < 1e-3, "{:?}", placed[1].position);
 		}

@@ -34,9 +34,9 @@ impl Session {
 	/// Call it on every application tick, with or without packets, so the session can resend unacknowledged
 	/// messages, send keepalives, and end a connection whose client has gone quiet for [`crate::TIMEOUT`]. Read the
 	/// payloads it delivered with [`Self::drain_received`].
-	pub fn update(&mut self, packets: &[Packets], current_time: Instant) -> Result<Vec<Packets>, PacketHandlingResults> {
+	pub fn update(&mut self, packets: &[Packets], current_time: Instant) -> Vec<Packets> {
 		match &mut self.state {
-			State::Initial => Ok(Vec::new()),
+			State::Initial => Vec::new(),
 			State::Connected { id, last_seen } => {
 				let id = *id;
 				for packet in packets {
@@ -46,7 +46,7 @@ impl Session {
 					}
 					if let Packets::Disconnect(_) = packet {
 						self.state = State::Disconnecting { id };
-						return Ok(Vec::new());
+						return Vec::new();
 					}
 
 					self.stream.receive(packet);
@@ -55,15 +55,15 @@ impl Session {
 
 				if current_time.duration_since(*last_seen) > TIMEOUT {
 					self.state = State::Disconnecting { id };
-					return Ok(Vec::new());
+					return Vec::new();
 				}
 
-				Ok(self.stream.flush(id, current_time))
+				self.stream.flush(id, current_time)
 			}
 			State::Disconnecting { id } => {
 				let id = *id;
 
-				Ok(vec![DisconnectPacket::new(id).into()])
+				vec![DisconnectPacket::new(id).into()]
 			}
 		}
 	}
@@ -151,9 +151,9 @@ mod tests {
 		let mut session = Session::new();
 		session.accept(7, start);
 
-		assert_eq!(session.update(&[], start), Ok(vec![keep_alive(7)]));
-		assert_eq!(session.update(&[], start + KEEPALIVE_INTERVAL / 2), Ok(Vec::new()));
-		assert_eq!(session.update(&[], start + KEEPALIVE_INTERVAL), Ok(vec![keep_alive(7)]));
+		assert_eq!(session.update(&[], start), vec![keep_alive(7)]);
+		assert_eq!(session.update(&[], start + KEEPALIVE_INTERVAL / 2), Vec::new());
+		assert_eq!(session.update(&[], start + KEEPALIVE_INTERVAL), vec![keep_alive(7)]);
 	}
 
 	#[test]
@@ -163,7 +163,7 @@ mod tests {
 		session.accept(7, start);
 		session.send(false, Payload::filled(1));
 
-		assert!(matches!(session.update(&[], start).unwrap()[..], [Packets::Data(_)]));
+		assert!(matches!(session.update(&[], start)[..], [Packets::Data(_)]));
 	}
 
 	#[test]
@@ -171,10 +171,10 @@ mod tests {
 		let start = Instant::now();
 		let mut session = Session::new();
 		session.accept(7, start);
-		session.update(&[], start).unwrap();
+		session.update(&[], start);
 		let message = MessagePacket::new(7, 0, Acknowledgement::default(), Payload::filled(3)).into();
 
-		let sent = session.update(&[message], start).unwrap();
+		let sent = session.update(&[message], start);
 
 		assert_eq!(session.drain_received().collect::<Vec<_>>(), [Payload::filled(3)]);
 		assert_eq!(sent, [KeepAlivePacket::new(7, Acknowledgement::new(0, 1)).into()]);
@@ -186,14 +186,11 @@ mod tests {
 		let mut session = Session::new();
 		session.accept(7, now);
 
-		assert_eq!(
-			session.update(&[DisconnectPacket::new(8).into()], now),
-			Ok(vec![keep_alive(7)])
-		);
+		assert_eq!(session.update(&[DisconnectPacket::new(8).into()], now), vec![keep_alive(7)]);
 		assert!(session.is_connected());
-		assert_eq!(session.update(&[DisconnectPacket::new(7).into()], now), Ok(Vec::new()));
+		assert_eq!(session.update(&[DisconnectPacket::new(7).into()], now), Vec::new());
 		assert!(!session.is_connected());
-		assert_eq!(session.update(&[], now), Ok(vec![DisconnectPacket::new(7).into()]));
+		assert_eq!(session.update(&[], now), vec![DisconnectPacket::new(7).into()]);
 	}
 
 	#[test]
@@ -202,9 +199,9 @@ mod tests {
 		let mut session = Session::new();
 		session.accept(7, start);
 
-		session.update(&[], start + TIMEOUT).unwrap();
+		session.update(&[], start + TIMEOUT);
 		assert!(session.is_connected());
-		assert_eq!(session.update(&[], start + TIMEOUT + Duration::from_nanos(1)), Ok(Vec::new()));
+		assert_eq!(session.update(&[], start + TIMEOUT + Duration::from_nanos(1)), Vec::new());
 		assert!(!session.is_connected());
 	}
 
@@ -220,8 +217,8 @@ mod tests {
 			keep_alive(8),
 			ChallengePacket::new(1, 2).into(),
 		];
-		session.update(&packets, start + Duration::from_secs(4)).unwrap();
-		session.update(&[], start + Duration::from_secs(6)).unwrap();
+		session.update(&packets, start + Duration::from_secs(4));
+		session.update(&[], start + Duration::from_secs(6));
 
 		assert!(!session.is_connected());
 		assert_eq!(session.drain_received().count(), 0);
@@ -234,8 +231,8 @@ mod tests {
 			let mut session = Session::new();
 			session.accept(7, start);
 
-			session.update(&[packet], start + Duration::from_secs(4)).unwrap();
-			session.update(&[], start + Duration::from_secs(6)).unwrap();
+			session.update(&[packet], start + Duration::from_secs(4));
+			session.update(&[], start + Duration::from_secs(6));
 
 			assert!(session.is_connected());
 		}
@@ -247,6 +244,5 @@ use std::time::Instant;
 use crate::{
 	TIMEOUT,
 	packets::{DisconnectPacket, Packets, Payload},
-	server::PacketHandlingResults,
 	stream::Stream,
 };

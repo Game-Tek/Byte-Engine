@@ -43,10 +43,7 @@ impl AssetHandler for LightmapAssetHandler {
 
 	/// Parses the file, bakes what it lights, traces its light on the GPU, and stores the image and the lightmap.
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (source, asset_type) = context.resolve(id).await?;
-		if !self.can_handle(&asset_type) {
-			return Err(LoadErrors::UnsupportedType);
-		}
+		let source = context.resolve(id).await?;
 		let invalid = |cause: &str| {
 			context.error(format_args!(
 				"Lightmap '{}' is invalid. The most likely cause is {cause}. Fix the file or its level as the format specifies; see {}.",

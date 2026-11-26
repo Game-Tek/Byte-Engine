@@ -5,5 +5,3 @@ mod commands;
 mod descriptors;
 mod images;
 mod io;
-mod pipelines;
-mod staging;

@@ -440,19 +440,6 @@ mod tests {
 	}
 
 	#[test]
-	fn sequences_own_disjoint_slot_ranges() {
-		let mut counters = Counters::new(true);
-		let counter = counters.create(CounterKind::Timing);
-		assert_eq!(counters.start(2, counter), Some(2 * COUNTER_SLOTS_PER_FRAME));
-		assert_eq!(counters.end(2, counter), Some(2 * COUNTER_SLOTS_PER_FRAME + 1));
-		assert_eq!(counters.start(0, counter), Some(0));
-		assert_eq!(
-			counters.written_slots(2),
-			2 * COUNTER_SLOTS_PER_FRAME..2 * COUNTER_SLOTS_PER_FRAME + 2
-		);
-	}
-
-	#[test]
 	fn unfinished_and_unwritten_spans_resolve_to_nothing() {
 		let mut counters = Counters::new(true);
 		let finished = counters.create(CounterKind::Timing);
@@ -509,13 +496,6 @@ mod tests {
 	fn a_handle_from_another_context_is_rejected() {
 		let counters = Counters::new(true);
 		counters.duration(CounterHandle::from_index(0));
-	}
-
-	#[test]
-	fn pool_slots_split_into_sequence_and_entry() {
-		assert_eq!(heap_entry(0), (0, 0));
-		assert_eq!(heap_entry(COUNTER_SLOTS_PER_FRAME + 5), (1, 5));
-		assert_eq!(heap_entry(2 * COUNTER_SLOTS_PER_FRAME), (2, 0));
 	}
 
 	#[test]

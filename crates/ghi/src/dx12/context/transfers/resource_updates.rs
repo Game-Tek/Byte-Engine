@@ -16,27 +16,16 @@ impl Device {
 			sequence_index < self.frames,
 			"Invalid DX12 image sequence. The most likely cause is that the frame predates a frames-in-flight change."
 		);
-		let Some((current_extent, is_3d, array_layers, dynamic)) = self
-			.images
-			.get(image_handle.0.index() as usize)
-			.map(|image| (image.extent, image.is_3d, image.array_layers, image.frame_resources.is_some()))
-		else {
-			return;
-		};
-		let array_layers = new_array_layers.unwrap_or(array_layers);
-		if current_extent == extent && self.images[image_handle.0.index() as usize].array_layers == array_layers {
+		let image = &self.images[image_handle.0.index() as usize];
+		let (is_3d, dynamic) = (image.is_3d, image.frame_resources.is_some());
+		let array_layers = new_array_layers.unwrap_or(image.array_layers);
+		if image.extent == extent && image.array_layers == array_layers {
 			return;
 		}
 		Self::validate_image_dimension(extent, is_3d, array_layers, false);
 		if !dynamic {
 			// A static texture can be referenced by every sequence, so replace it only at a global idle boundary.
-			self.wait_for_all_queues_idle().expect(
-				"Failed to wait for DX12 queues before resizing a shared image. The most likely cause is that the device was removed.",
-			);
-			self.prepare_for_topology_change().expect(
-				"Failed to reset DX12 command lists before resizing a shared image. The most likely cause is that a completed command list became invalid.",
-			);
-			self.process_all_tasks_after_idle();
+			self.idle_for_topology_change("resizing a shared image");
 		}
 
 		let image = &mut self.images[image_handle.0.index() as usize];
@@ -65,13 +54,7 @@ impl Device {
 		let Some(requests) = self.image_groups.requests_in_member_order(group, requests) else {
 			return;
 		};
-		self.wait_for_all_queues_idle().expect(
-			"Failed to wait for DX12 queues before placing an image group. The most likely cause is that the device was removed.",
-		);
-		self.prepare_for_topology_change().expect(
-			"Failed to reset DX12 command lists before placing an image group. The most likely cause is that a completed command list became invalid.",
-		);
-		self.process_all_tasks_after_idle();
+		self.idle_for_topology_change("placing an image group");
 
 		let separate_render_targets = self.resource_heap_tier() == D3D12_RESOURCE_HEAP_TIER_1;
 		let members = requests
@@ -187,9 +170,7 @@ impl Device {
 				name.as_deref(),
 			);
 			if let Some(key) = self.images[index].resource.take().as_ref().map(Self::native_resource_key) {
-				self.invalidate_attachment_views_for_resources(&[key]);
-				self.invalidate_clear_uav_descriptors_for_resources(&[key]);
-				self.image_states.remove(&key);
+				self.forget_native_resources(&[key]);
 			}
 			self.materialize_image_attachment_views(&resource, format, uses, array_layers);
 			// The member starts in the undefined layout, so the barrier that first initializes it discards its contents.
@@ -231,9 +212,7 @@ impl Device {
 	/// Replaces one sequence's native image after that sequence's fence has made its old resource safe to retire.
 	fn resize_image_resource_for_sequence(&mut self, image_handle: ImageHandle, extent: Extent, sequence_index: u8) {
 		let image_index = image_handle.0.index() as usize;
-		let Some(image) = self.images.get(image_index) else {
-			return;
-		};
+		let image = &self.images[image_index];
 		let (is_3d, format, uses, array_layers, mip_levels, optimized_clear_value, dynamic, name) = (
 			image.is_3d,
 			image.format,
@@ -254,9 +233,7 @@ impl Device {
 			self.images[image_index].resource.take()
 		};
 		if let Some(key) = old_resource.as_ref().map(Self::native_resource_key) {
-			self.invalidate_attachment_views_for_resources(&[key]);
-			self.invalidate_clear_uav_descriptors_for_resources(&[key]);
-			self.image_states.remove(&key);
+			self.forget_native_resources(&[key]);
 		}
 		// Each frame copy rewrites its descriptors of the image when it next binds, which is after this sequence's fence.
 		self.mark_stale_descriptors(|descriptor, _| Self::references_image(descriptor, image_handle.0));

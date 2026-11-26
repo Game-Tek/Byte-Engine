@@ -224,6 +224,16 @@ pub enum VmError {
 	DiscardInRayTracing,
 }
 
+impl VmError {
+	/// Reports that a value described by `found` was used where one described by `expected` is required.
+	pub(crate) fn mismatch(expected: impl Into<String>, found: impl Into<String>) -> Self {
+		Self::TypeMismatch {
+			expected: expected.into(),
+			found: found.into(),
+		}
+	}
+}
+
 impl std::fmt::Display for VmError {
 	// Keep every error variant's complete user-facing diagnostic in the exhaustive Display match.
 	#[allow(clippy::too_many_lines)]

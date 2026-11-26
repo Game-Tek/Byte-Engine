@@ -32,8 +32,7 @@ pub(crate) const VIRTUAL_SHADOW_ORIGIN_BIAS: i32 = 1 << 20;
 
 /// The `DirectionalShadowTechnique` enum chooses how directional lights cast shadows.
 ///
-/// Pass it to [`super::VisibilityPipelineSettings::with_directional_shadow_technique`], or set
-/// `render.directional-shadows.technique` at startup.
+/// Set it with `render.directional-shadows.technique` at startup.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DirectionalShadowTechnique {
 	/// Four cascades per light, up to four lights, fitted to what the camera sees and redrawn on a texel budget.
@@ -61,7 +60,8 @@ impl std::str::FromStr for DirectionalShadowTechnique {
 /// The `VirtualShadowSettings` struct sizes a virtual shadow map: how large its finest level is, how coarse a level
 /// receivers pick, and how many pages hold depth at once.
 ///
-/// Pass it to [`super::VisibilityPipelineSettings::with_virtual_shadow_settings`].
+/// Set it with the startup parameters under `render.directional-shadows`; see
+/// [`super::VIRTUAL_SHADOW_LEVEL_SIZE_PARAMETER`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct VirtualShadowSettings {
 	first_level_size: f32,
@@ -382,14 +382,6 @@ mod tests {
 		let turned = place_virtual_shadow_levels(turned_direction, Point::origin(), 4.0, Some(&still));
 		assert!(turned.free_all);
 		assert_eq!(turned.previous_origin_pages, turned.origin_pages);
-	}
-
-	#[test]
-	fn range_union_covers_both_ranges_and_ignores_empty_ones() {
-		assert_eq!(range_union(0..0, 10..10), 0..0);
-		assert_eq!(range_union(3..5, 10..10), 3..5);
-		assert_eq!(range_union(0..0, 8..10), 8..10);
-		assert_eq!(range_union(2..4, 10..12), 2..12);
 	}
 
 	#[test]

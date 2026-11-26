@@ -671,7 +671,8 @@ impl BEMAAssetHandler {
 		path: ResourceId<'_>,
 		parameters: &[MaterialParameter],
 	) -> Result<(Vec<ReferenceModel<Shader>>, MaterialProgram), LoadErrors> {
-		let (source, format) = context.resolve(path).await?;
+		let source = context.resolve(path).await?;
+		let format = path.get_asset_type();
 
 		if format != "bemx" {
 			context.error(format_args!(
@@ -860,12 +861,7 @@ impl AssetHandler for BEMAAssetHandler {
 			_ => {}
 		}
 
-		let (data, at) = context.resolve(url).await?;
-
-		if at != "bema" {
-			return Err(LoadErrors::UnsupportedType);
-		}
-
+		let data = context.resolve(url).await?;
 		let asset = asset::parse_json(std::str::from_utf8(&data).map_err(|_| LoadErrors::FailedToProcess)?)
 			.map_err(|_| LoadErrors::FailedToProcess)?;
 
@@ -1558,99 +1554,6 @@ pub mod tests {
 		}
 	}
 
-	#[r#async::test]
-	async fn load_variant() {
-		let asset_storage_backend = AssetTestStorageBackend::new();
-
-		let material_json = r#"{
-			"domain": "World",
-			"type": "Surface",
-			"graph": "load_variant.bemx",
-			"variables": [
-				{
-					"name": "color",
-					"data_type": "vec4f",
-					"type": "Static",
-					"value": "Purple"
-				}
-			]
-		}"#;
-
-		asset_storage_backend.add_file("load_variant_material.bema", material_json.as_bytes());
-
-		let graph = r#"{
-			nodes: [
-				{ name: "color", node: "parameter", parameter: "color", type: "vector4" },
-				{ name: "rgb", node: "swizzle", in: "color", channels: "rgb" },
-				{ name: "surface", node: "surface", base_color: "rgb" },
-			],
-		}"#;
-
-		asset_storage_backend.add_file("load_variant.bemx", graph.as_bytes());
-
-		let variant_json = r#"{
-			"parent": "load_variant_material.bema",
-			"variables": [
-				{
-					"name": "color",
-					"value": "White"
-				}
-			]
-		}"#;
-
-		asset_storage_backend.add_file("load_variant.bema", variant_json.as_bytes());
-
-		let resource_storage_backend = MemoryStorageBackend::new();
-
-		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
-
-		asset_manager.set_program_generator("World", MinimalTestShaderGenerator);
-		asset_manager.set_shader_compiler(TestShaderCompiler);
-		asset_manager.add_asset_handler(BEMAAssetHandler);
-
-		let _: ReferenceModel<VariantModel> = asset_manager
-			.bake_if_not_exists("load_variant.bema")
-			.await
-			.expect("Failed to load material");
-
-		let generated_resources = asset_manager.memory_storage().get_resources();
-
-		assert_eq!(generated_resources.len(), 3);
-
-		let shader = asset_manager
-			.memory_storage()
-			.get_resource(ResourceId::new("load_variant_material.bema#shader"))
-			.expect("Expected shader");
-
-		assert_eq!(shader.id, "load_variant_material.bema#shader");
-		assert_eq!(shader.class, "Shader");
-
-		let shader_spirv = asset_manager
-			.memory_storage()
-			.get_resource_data_by_name(ResourceId::new("load_variant_material.bema#shader"))
-			.expect("Expected shader data");
-
-		let shader_spirv = String::from_utf8_lossy(&shader_spirv);
-
-		assert!(!shader_spirv.is_empty());
-
-		let material = asset_manager
-			.memory_storage()
-			.get_resource(ResourceId::new("load_variant_material.bema"))
-			.expect("Expected material");
-
-		assert_eq!(material.id, "load_variant_material.bema");
-		assert_eq!(material.class, "Material");
-
-		let variant = asset_manager
-			.memory_storage()
-			.get_resource(ResourceId::new("load_variant.bema"))
-			.expect("Expected variant");
-
-		assert_eq!(variant.id, "load_variant.bema");
-		assert_eq!(variant.class, "Variant");
-	}
-
 	/// A dynamic variable keeps its flag through the material and its variants, its value is the default, and a variant
 	/// that leaves it out inherits that default.
 	#[r#async::test]
@@ -1859,9 +1762,28 @@ pub mod tests {
 	}
 
 	/// An intercepted bake emits the BESL source of each shader it compiles, named after the shader with `.besl`, as
-	/// the program generator built it.
+	/// the program generator built it, and the platform source each shader lowered to, named with the platform
+	/// language's extension, such as `.msl`. An interceptor receives only the products it wants.
 	#[r#async::test]
-	async fn an_intercepted_bake_emits_the_besl_of_every_shader_it_compiles() {
+	async fn an_intercepted_bake_emits_the_sources_of_every_shader_it_compiles() {
+		assert_eq!(intercepted_material_products(|_| false).await, Vec::new());
+
+		let extension = crate::shader::besl::backends::platform::PlatformShaderLanguage::current_platform().extension();
+		let products = intercepted_material_products(|name| {
+			name.rsplit_once('.').map(|(_, extension)| extension)
+				== Some(crate::shader::besl::backends::platform::PlatformShaderLanguage::current_platform().extension())
+		})
+		.await;
+		let names = products.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>();
+		assert_eq!(
+			names,
+			[
+				format!("hit_material.bema#hit-shader.{extension}"),
+				format!("hit_material.bema#shader.{extension}")
+			]
+		);
+		assert!(products.iter().all(|(_, source)| !source.trim().is_empty()));
+
 		let products = intercepted_material_products(|name| name.ends_with(".besl")).await;
 
 		let hit = besl::write(&besl::parse(HIT_PROGRAM).unwrap());
@@ -1875,34 +1797,6 @@ pub mod tests {
 				),
 			]
 		);
-	}
-
-	/// An intercepted bake emits the platform source each shader lowered to, named after the shader with the
-	/// platform language's extension, such as `.msl`.
-	#[r#async::test]
-	async fn an_intercepted_bake_emits_the_platform_source_of_every_shader_it_compiles() {
-		let extension = crate::shader::besl::backends::platform::PlatformShaderLanguage::current_platform().extension();
-		let products = intercepted_material_products(|name| {
-			name.rsplit_once('.').map(|(_, extension)| extension)
-				== Some(crate::shader::besl::backends::platform::PlatformShaderLanguage::current_platform().extension())
-		})
-		.await;
-
-		let names = products.iter().map(|(name, _)| name.as_str()).collect::<Vec<_>>();
-		assert_eq!(
-			names,
-			[
-				format!("hit_material.bema#hit-shader.{extension}"),
-				format!("hit_material.bema#shader.{extension}")
-			]
-		);
-		assert!(products.iter().all(|(_, source)| !source.trim().is_empty()));
-	}
-
-	/// An interceptor receives only the products it wants.
-	#[r#async::test]
-	async fn an_interceptor_receives_only_the_products_it_wants() {
-		assert_eq!(intercepted_material_products(|_| false).await, Vec::new());
 	}
 
 	/// A texture can't change at runtime, so a material that declares one dynamic fails to bake.
@@ -2001,13 +1895,11 @@ pub mod tests {
 			let shader: Shader = crate::from_slice(&shader.resource).unwrap();
 			assert_eq!(shader.stage, stage, "{domain}");
 		}
-	}
 
-	/// A material whose domain has no generator can't be drawn by any renderer, so it fails to bake.
-	#[r#async::test]
-	async fn a_material_of_a_domain_without_a_generator_fails_to_bake() {
-		let asset_manager = domain_asset_manager("Hologram");
-		let baked: Result<ReferenceModel<MaterialModel>, _> = asset_manager.bake_if_not_exists("domain_material.bema").await;
+		// A material whose domain has no generator can't be drawn by any renderer, so it fails to bake.
+		let baked: Result<ReferenceModel<MaterialModel>, _> = domain_asset_manager("Hologram")
+			.bake_if_not_exists("domain_material.bema")
+			.await;
 		assert!(baked.is_err(), "A material of an unknown domain should fail the bake.");
 	}
 

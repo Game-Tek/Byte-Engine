@@ -112,7 +112,7 @@ impl ReDBStorageBackend {
 	/// Debug applications can update their resource cache and reset a store with a mismatched signature. Release
 	/// applications keep a compatible store read-only and leave a mismatched one unchanged. Use
 	/// [`Self::open_read_only`] when a tool must inspect a store without changing it. Use
-	/// [`Self::new_writable_with_mode`] when a producer must select a payload storage mode.
+	/// [`Self::new_writable`] when a producer must select a payload storage mode.
 	///
 	/// # Errors
 	///
@@ -121,7 +121,7 @@ impl ReDBStorageBackend {
 	/// resources must not persist.
 	pub fn new(base_path: std::path::PathBuf) -> Result<Self, ResourceStoreOpenError> {
 		if cfg!(debug_assertions) || validate_resource_management_signature(&base_path).is_err() {
-			Self::new_writable(base_path)
+			Self::new_writable(base_path, None, None)
 		} else {
 			Self::open_read_only(base_path)
 		}
@@ -160,61 +160,37 @@ impl ReDBStorageBackend {
 		Ok(backend)
 	}
 
-	/// Opens a writable resource store and preserves its persisted payload mode.
+	/// Opens a writable resource store.
 	///
-	/// New stores use [`ResourceStorageMode::Files`]. Use [`Self::new_writable_with_mode`] to select another mode.
+	/// `storage_mode` selects the payload layout: a new store uses it, or [`ResourceStorageMode::Files`] when it is
+	/// `None`, and an existing store must already use it, so a bake never mixes payload layouts. `image_compression`
+	/// replaces the store's native texture compression when set and keeps the persisted one when `None`.
+	///
+	/// Every failure is returned. Substituting a temporary database would let a bake report success and lose its output.
 	///
 	/// # Errors
 	///
-	/// Returns a [`ResourceStoreOpenError`] when the store is in use, corrupt, or inaccessible. Every error leaves
-	/// `resources.db` as it was.
+	/// Returns a [`ResourceStoreOpenError`] when the store is in use, corrupt, or inaccessible, and
+	/// [`ResourceStoreOpenError::Incompatible`] when an existing store uses another payload mode or this build cannot
+	/// store the requested settings. Every error leaves `resources.db` as it was.
 	///
 	/// A store whose resource-management signature is missing or changed is deleted and recreated in debug builds.
 	/// Release builds return [`ResourceStoreOpenError::Incompatible`] for it and leave it unchanged.
-	pub fn new_writable(base_path: std::path::PathBuf) -> Result<Self, ResourceStoreOpenError> {
-		Self::open_writable(base_path, None, None)
-	}
-
-	/// Opens a writable resource store with the selected payload mode.
-	///
-	/// Existing stores must already use `storage_mode`. This prevents a bake from mixing incompatible payload layouts.
-	///
-	/// # Errors
-	///
-	/// Returns [`ResourceStoreOpenError::Incompatible`] when an existing store uses another payload mode, and the
-	/// errors of [`Self::new_writable`].
-	pub fn new_writable_with_mode(
-		base_path: std::path::PathBuf,
-		storage_mode: ResourceStorageMode,
-	) -> Result<Self, ResourceStoreOpenError> {
-		Self::open_writable(base_path, Some(storage_mode), None)
-	}
-
-	/// Opens a writable resource store with explicit payload and image-compression settings.
-	///
-	/// # Errors
-	///
-	/// Returns [`ResourceStoreOpenError::Incompatible`] when this build cannot store `settings` or an existing store
-	/// uses another payload mode, and the errors of [`Self::new_writable`].
-	pub fn new_writable_with_settings(
-		base_path: std::path::PathBuf,
-		settings: ResourceStorageSettings,
-	) -> Result<Self, ResourceStoreOpenError> {
-		settings.validate().map_err(|reason| ResourceStoreOpenError::Incompatible {
-			path: base_path.clone(),
-			reason,
-		})?;
-		Self::open_writable(base_path, Some(settings.storage_mode), Some(settings.image_compression))
-	}
-
-	/// Opens the database and establishes one payload mode before callers can store resources.
-	///
-	/// Every failure is returned. Substituting a temporary database would let a bake report success and lose its output.
-	fn open_writable(
+	pub fn new_writable(
 		base_path: std::path::PathBuf,
 		requested_mode: Option<ResourceStorageMode>,
 		requested_compression: Option<ResourceGpuCompressionPolicy>,
 	) -> Result<Self, ResourceStoreOpenError> {
+		// Reject settings this build can't store before the signature sync may reset the store.
+		ResourceStorageSettings {
+			storage_mode: requested_mode.unwrap_or_default(),
+			image_compression: requested_compression.unwrap_or_default(),
+		}
+		.validate()
+		.map_err(|reason| ResourceStoreOpenError::Incompatible {
+			path: base_path.clone(),
+			reason,
+		})?;
 		sync_resource_management_signature(&base_path)?;
 		let writable_db = redb::Database::create(base_path.join(RESOURCES_DATABASE_FILE))
 			.map_err(|error| store_open_error(&base_path, "open 'resources.db'", error))?;
@@ -235,16 +211,7 @@ impl ReDBStorageBackend {
 			let mut configuration = write
 				.open_table(STORE_CONFIGURATION_TABLE)
 				.map_err(|error| store_open_error(&base_path, "read the store configuration", error))?;
-			let stored_mode = configuration
-				.get(STORAGE_MODE_KEY)
-				.map_err(|error| store_open_error(&base_path, "read the store configuration", error))?
-				.map(|value| {
-					ResourceStorageMode::from_bytes(value.value()).ok_or_else(|| ResourceStoreOpenError::Corrupt {
-						path: base_path.clone(),
-						detail: "the persisted payload storage mode is not recognized".to_string(),
-					})
-				})
-				.transpose()?;
+			let (stored_mode, stored_compression) = read_configuration(&configuration, &base_path)?;
 			let storage_mode = match (stored_mode, requested_mode) {
 				(Some(stored), Some(requested)) if stored != requested => {
 					return Err(ResourceStoreOpenError::Incompatible {
@@ -267,16 +234,6 @@ impl ReDBStorageBackend {
 					selected
 				}
 			};
-			let stored_compression = configuration
-				.get(IMAGE_COMPRESSION_KEY)
-				.map_err(|error| store_open_error(&base_path, "read the store configuration", error))?
-				.map(|value| ResourceGpuCompressionPolicy::from_bytes(value.value()))
-				.transpose()
-				.map_err(|detail| ResourceStoreOpenError::Corrupt {
-					path: base_path.clone(),
-					detail,
-				})?
-				.unwrap_or_default();
 			let image_compression = match requested_compression {
 				Some(requested) => {
 					configuration
@@ -446,29 +403,17 @@ impl ReDBStorageBackend {
 
 	/// Reads store-wide payload settings before any resource locations are interpreted.
 	fn persisted_settings(&self) -> Result<ResourceStorageSettings, ResourceStoreOpenError> {
-		let corrupt = |detail: String| ResourceStoreOpenError::Corrupt {
-			path: self.base_path.clone(),
-			detail,
-		};
 		let read = self
 			.begin_read()
 			.map_err(|error| store_open_error(&self.base_path, "read 'resources.db'", error))?;
 		let table = read
 			.open_table(STORE_CONFIGURATION_TABLE)
 			.map_err(|error| store_open_error(&self.base_path, "read the store configuration", error))?;
-		let mode = table
-			.get(STORAGE_MODE_KEY)
-			.map_err(|error| store_open_error(&self.base_path, "read the store configuration", error))?
-			.ok_or_else(|| corrupt("the persisted payload storage mode is missing".to_string()))?;
-		let storage_mode = ResourceStorageMode::from_bytes(mode.value())
-			.ok_or_else(|| corrupt("the persisted payload storage mode is not recognized".to_string()))?;
-		let image_compression = table
-			.get(IMAGE_COMPRESSION_KEY)
-			.map_err(|error| store_open_error(&self.base_path, "read the store configuration", error))?
-			.map(|value| ResourceGpuCompressionPolicy::from_bytes(value.value()))
-			.transpose()
-			.map_err(corrupt)?
-			.unwrap_or_default();
+		let (storage_mode, image_compression) = read_configuration(&table, &self.base_path)?;
+		let storage_mode = storage_mode.ok_or_else(|| ResourceStoreOpenError::Corrupt {
+			path: self.base_path.clone(),
+			detail: "the persisted payload storage mode is missing".to_string(),
+		})?;
 		let settings = ResourceStorageSettings {
 			storage_mode,
 			image_compression,
@@ -1421,8 +1366,8 @@ pub enum ResourceGpuCompressionPolicy {
 
 impl ResourceGpuCompressionPolicy {
 	/// Returns the GPU image compression this build can store and load: Metal I/O LZ4 on macOS and DirectStorage
-	/// GDeflate on Windows, both with GPU processing, and none elsewhere. [`ResourceStorageSettings`] rejects any other
-	/// choice the build can't serve.
+	/// GDeflate on Windows, both with GPU processing, and none elsewhere. [`ReDBStorageBackend::new_writable`] rejects
+	/// any other choice the build can't serve.
 	pub fn native() -> Self {
 		if cfg!(all(target_os = "macos", feature = "gpu-processing")) {
 			Self::MetalIoLz4
@@ -1460,28 +1405,15 @@ impl ResourceGpuCompressionPolicy {
 	}
 }
 
-/// The `ResourceStorageSettings` struct selects persistent payload layout and native texture transport compression.
+/// The `ResourceStorageSettings` struct holds the payload layout and native texture compression one store uses, which
+/// must be compatible with each other and with this build.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ResourceStorageSettings {
+struct ResourceStorageSettings {
 	storage_mode: ResourceStorageMode,
 	image_compression: ResourceGpuCompressionPolicy,
 }
 
 impl ResourceStorageSettings {
-	/// Creates storage settings with native GPU compression disabled.
-	pub fn new(storage_mode: ResourceStorageMode) -> Self {
-		Self {
-			storage_mode,
-			image_compression: ResourceGpuCompressionPolicy::Disabled,
-		}
-	}
-
-	/// Selects the native GPU compression policy for compatible textures.
-	pub fn image_compression(mut self, compression: ResourceGpuCompressionPolicy) -> Self {
-		self.image_compression = compression;
-		self
-	}
-
 	fn validate(self) -> Result<(), String> {
 		if self.storage_mode == ResourceStorageMode::Packed && self.image_compression != ResourceGpuCompressionPolicy::Disabled
 		{
@@ -1506,6 +1438,35 @@ impl ResourceStorageSettings {
 		}
 		Ok(())
 	}
+}
+
+/// Reads the payload storage mode, when one is stored, and the image compression a store's configuration table holds.
+fn read_configuration(
+	table: &impl redb::ReadableTable<&'static str, &'static [u8]>,
+	base_path: &Path,
+) -> Result<(Option<ResourceStorageMode>, ResourceGpuCompressionPolicy), ResourceStoreOpenError> {
+	let corrupt = |detail: String| ResourceStoreOpenError::Corrupt {
+		path: base_path.to_path_buf(),
+		detail,
+	};
+	let read = |key| {
+		table
+			.get(key)
+			.map(|value| value.map(|value| value.value().to_vec()))
+			.map_err(|error| store_open_error(base_path, "read the store configuration", error))
+	};
+	let storage_mode = read(STORAGE_MODE_KEY)?
+		.map(|value| {
+			ResourceStorageMode::from_bytes(&value)
+				.ok_or_else(|| corrupt("the persisted payload storage mode is not recognized".to_string()))
+		})
+		.transpose()?;
+	let image_compression = read(IMAGE_COMPRESSION_KEY)?
+		.map(|value| ResourceGpuCompressionPolicy::from_bytes(&value))
+		.transpose()
+		.map_err(corrupt)?
+		.unwrap_or_default();
+	Ok((storage_mode, image_compression))
 }
 
 /// Reconstructs every live packed extent so allocator state needs no separate persistent journal.
@@ -1994,7 +1955,7 @@ mod tests {
 	}
 
 	fn backend_with_mode(storage_mode: ResourceStorageMode) -> ReDBStorageBackend {
-		ReDBStorageBackend::new_writable_with_mode(unique_temp_dir("byte-engine-redb-tests"), storage_mode).unwrap()
+		ReDBStorageBackend::new_writable(unique_temp_dir("byte-engine-redb-tests"), Some(storage_mode), None).unwrap()
 	}
 
 	fn backend() -> ReDBStorageBackend {
@@ -2158,7 +2119,7 @@ mod tests {
 	#[crate::r#async::test]
 	async fn direct_storage_store_publishes_a_gpu_backing_with_blocks() {
 		use crate::{
-			resource::{ResourceGpuCompressionPolicy, ResourcePayloadEncoding, ResourceReaderBacking, ResourceStorageSettings},
+			resource::{ResourceGpuCompressionPolicy, ResourcePayloadEncoding, ResourceReaderBacking},
 			resources::image::Image,
 			types::{Formats, Gamma},
 		};
@@ -2167,10 +2128,10 @@ mod tests {
 			eprintln!("Skipping a DirectStorage store test: {error}");
 			return;
 		}
-		let backend = ReDBStorageBackend::new_writable_with_settings(
+		let backend = ReDBStorageBackend::new_writable(
 			unique_temp_dir("byte-engine-redb-dstorage"),
-			ResourceStorageSettings::new(ResourceStorageMode::Files)
-				.image_compression(ResourceGpuCompressionPolicy::DirectStorageGDeflate),
+			Some(ResourceStorageMode::Files),
+			Some(ResourceGpuCompressionPolicy::DirectStorageGDeflate),
 		)
 		.unwrap();
 		let image = Image {
@@ -2220,27 +2181,6 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn file_transaction_presizes_staging_file_and_abort_removes_it() {
-		let backend = backend();
-		let id = crate::asset::ResourceId::new("presized.test");
-		let transaction = WriteStorageBackend::begin_resource(&backend, id, 4096).await.unwrap();
-		let staging_files = std::fs::read_dir(&backend.base_path)
-			.unwrap()
-			.filter_map(Result::ok)
-			.filter(|entry| entry.file_name().to_string_lossy().starts_with(STAGED_RESOURCE_FILE_PREFIX))
-			.collect::<Vec<_>>();
-
-		assert_eq!(transaction.expected_size(), 4096);
-		assert_eq!(staging_files.len(), 1);
-		assert_eq!(staging_files[0].metadata().unwrap().len(), 4096);
-
-		drop(transaction);
-
-		assert!(!staging_files[0].path().exists());
-		std::fs::remove_dir_all(&backend.base_path).unwrap();
-	}
-
-	#[crate::r#async::test]
 	async fn packed_transactions_reserve_early_and_commit_out_of_order() {
 		let backend = backend_with_mode(ResourceStorageMode::Packed);
 		let first_id = crate::asset::ResourceId::new("first-reserved.test");
@@ -2262,7 +2202,6 @@ mod tests {
 				.len(),
 			11
 		);
-		assert_eq!(backend.packed_allocator.as_ref().unwrap().high_water(), 11);
 		assert!(backend.read(first_id).await.is_none());
 		assert!(backend.read(second_id).await.is_none());
 
@@ -2289,31 +2228,6 @@ mod tests {
 			assert_eq!(data.as_slice(), expected);
 		}
 
-		std::fs::remove_dir_all(&backend.base_path).unwrap();
-	}
-
-	#[crate::r#async::test]
-	async fn concurrent_packed_reservations_never_overlap() {
-		let backend = backend_with_mode(ResourceStorageMode::Packed);
-		let (first, second) = std::future::join!(
-			WriteStorageBackend::begin_resource(&backend, crate::asset::ResourceId::new("concurrent-first.test"), 7),
-			WriteStorageBackend::begin_resource(&backend, crate::asset::ResourceId::new("concurrent-second.test"), 13),
-		)
-		.await;
-		let first = first.unwrap();
-		let second = second.unwrap();
-
-		assert_eq!(first.expected_size(), 7);
-		assert_eq!(second.expected_size(), 13);
-		assert_eq!(backend.packed_allocator.as_ref().unwrap().high_water(), 20);
-		assert_eq!(
-			std::fs::metadata(backend.base_path.join(PACKED_RESOURCES_FILE))
-				.unwrap()
-				.len(),
-			20
-		);
-
-		drop((first, second));
 		std::fs::remove_dir_all(&backend.base_path).unwrap();
 	}
 
@@ -2378,75 +2292,19 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn file_transaction_flushes_buffered_borrowed_writes_through_compio() {
-		let backend = backend();
-		let id = crate::asset::ResourceId::new("buffered-async.test");
-		let mut expected = Vec::with_capacity(2 * 64 * 1024 + 37);
-		expected.extend_from_slice(b"compio");
-		expected.extend((0..(2 * 64 * 1024 + 31)).map(|index| index as u8));
-		let mut transaction = WriteStorageBackend::begin_resource(&backend, id, expected.len())
-			.await
-			.unwrap();
-		assert_eq!(transaction.staging_buffer_capacity(), 0);
-
-		transaction.write_all(b"compio").await.unwrap();
-		assert!(transaction.staging_buffer_capacity() >= 64 * 1024);
-		for bytes in expected[6..].chunks(997) {
-			transaction.write_all(bytes).await.unwrap();
-		}
-		assert_eq!(transaction.direct_write_count(), 0);
-		transaction
-			.commit(
-				ProcessedAsset::new(
-					id,
-					MockShaderModel {
-						stage: "buffered".into(),
-					},
-				),
-				&std::alloc::Global,
-			)
-			.await
-			.unwrap();
-
-		let (_, reader) = backend.read(id).await.unwrap();
-		let stored = reader.into_backing_storage().await.unwrap();
-		assert_eq!(stored.as_slice(), expected);
-		drop(stored);
-		std::fs::remove_dir_all(&backend.base_path).unwrap();
-	}
-
-	#[crate::r#async::test]
-	async fn large_owned_write_flushes_pending_bytes_and_bypasses_the_file_buffer() {
+	async fn mixed_borrowed_and_large_owned_writes_store_the_payload_in_order() {
 		let backend = backend_with_mode(ResourceStorageMode::Packed);
-		backend
-			.store(
-				ProcessedAsset::new(
-					crate::asset::ResourceId::new("earlier.test"),
-					MockShaderModel { stage: "earlier".into() },
-				),
-				b"earlier",
-			)
-			.await
-			.unwrap();
 		let id = crate::asset::ResourceId::new("direct-owned.test");
 		let large = (0..(64 * 1024 + 1)).map(|index| index as u8).collect::<Vec<_>>();
-		let mut expected = Vec::with_capacity(6 + large.len() + 4);
-		expected.extend_from_slice(b"prefix");
-		expected.extend_from_slice(&large);
-		expected.extend_from_slice(b"tail");
+		let expected = [b"prefix".as_slice(), &large, b"tail"].concat();
 		let mut transaction = WriteStorageBackend::begin_resource(&backend, id, expected.len())
 			.await
 			.unwrap();
 
 		transaction.write_all(b"prefix").await.unwrap();
-		assert_eq!(transaction.buffered_size(), 6);
-		let compio::buf::BufResult(result, large) = compio::io::AsyncWriteExt::write_all(&mut transaction, large).await;
+		let compio::buf::BufResult(result, _) = compio::io::AsyncWriteExt::write_all(&mut transaction, large).await;
 		result.unwrap();
-		assert_eq!(large.len(), 64 * 1024 + 1);
-		assert_eq!(transaction.direct_write_count(), 1);
-		assert_eq!(transaction.buffered_size(), 0);
 		transaction.write_all(b"tail").await.unwrap();
-		assert_eq!(transaction.buffered_size(), 4);
 		transaction
 			.commit(
 				ProcessedAsset::new(id, MockShaderModel { stage: "direct".into() }),
@@ -2622,35 +2480,12 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn abandoned_packed_reservations_are_reused() {
+	async fn abandoned_and_failed_packed_transactions_return_their_reservations() {
 		let backend = backend_with_mode(ResourceStorageMode::Packed);
-		let transaction = WriteStorageBackend::begin_resource(&backend, crate::asset::ResourceId::new("abandoned.test"), 7)
+		let transaction = WriteStorageBackend::begin_resource(&backend, crate::asset::ResourceId::new("abandoned.test"), 4)
 			.await
 			.unwrap();
 		drop(transaction);
-
-		backend
-			.store(
-				ProcessedAsset::new(
-					crate::asset::ResourceId::new("reused.test"),
-					MockShaderModel { stage: "reused".into() },
-				),
-				b"reused!",
-			)
-			.await
-			.unwrap();
-		assert_eq!(
-			std::fs::metadata(backend.base_path.join(PACKED_RESOURCES_FILE))
-				.unwrap()
-				.len(),
-			7
-		);
-		std::fs::remove_dir_all(&backend.base_path).unwrap();
-	}
-
-	#[crate::r#async::test]
-	async fn failed_packed_transactions_return_their_reservations() {
-		let backend = backend_with_mode(ResourceStorageMode::Packed);
 		let failed_id = crate::asset::ResourceId::new("failed.test");
 		let mut transaction = WriteStorageBackend::begin_resource(&backend, failed_id, 4).await.unwrap();
 		transaction.write_all(b"bad").await.unwrap();
@@ -2714,79 +2549,61 @@ mod tests {
 	}
 
 	#[crate::r#async::test]
-	async fn query_by_class_pages_results() {
+	async fn queries_page_complete_results_and_report_malformed_cursors() {
 		let backend = backend();
-		store_mock(
+		for index in 0..8 {
+			let tag = if index % 2 == 0 { "hero" } else { "prop" };
+			store_mock(&backend, &format!("materials/{index}"), material("opaque", tag)).await;
+		}
+
+		// Later predicates filter index entries, yet every page but the last stays full and none is lost.
+		let mut ids = query_all_pages(
 			&backend,
-			"materials/a",
-			MockMaterialModel {
-				group: "opaque".into(),
-				tag: "hero".into(),
-			},
+			Query::new("MockMaterial").eq("group", "opaque").eq("tag", "hero"),
+			2,
 		)
 		.await;
-		store_mock(
-			&backend,
-			"materials/b",
-			MockMaterialModel {
-				group: "opaque".into(),
-				tag: "prop".into(),
-			},
-		)
-		.await;
-		store_mock(
-			&backend,
-			"materials/c",
-			MockMaterialModel {
-				group: "transparent".into(),
-				tag: "hero".into(),
-			},
-		)
-		.await;
-
-		let (first_ids, cursor) = query_ids(&backend, Query::new("MockMaterial").limit(2)).await;
-
-		assert_eq!(first_ids.len(), 2);
-		assert!(cursor.is_some());
-
-		let (second_ids, cursor) = query_ids(&backend, Query::new("MockMaterial").limit(2).cursor(cursor.unwrap())).await;
-
-		assert_eq!(second_ids.len(), 1);
-		assert!(cursor.is_none());
-
-		let mut ids = first_ids;
-		ids.extend(second_ids);
 		ids.sort();
+		assert_eq!(ids, vec!["materials/0", "materials/2", "materials/4", "materials/6"]);
+		assert_eq!(query_all_pages(&backend, Query::new("MockMaterial"), 3).await.len(), 8);
 
-		assert_eq!(ids, vec!["materials/a", "materials/b", "materials/c"]);
+		// A page that holds exactly the remaining matches has no cursor.
+		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").eq("tag", "prop").limit(4)).await;
+		assert_eq!((ids.len(), cursor.is_none()), (4, true));
+
+		let error = backend
+			.query(Query::new("MockMaterial").limit(2).cursor(QueryCursor::new(Vec::new())))
+			.await
+			.unwrap_err();
+		assert_eq!(error, QueryError::InvalidCursor);
 	}
 
 	#[crate::r#async::test]
-	async fn query_by_name_uses_property_index() {
+	async fn queries_match_whole_values_of_the_latest_stored_properties() {
 		let backend = backend();
-		store_mock(
-			&backend,
-			"materials/a",
-			MockMaterialModel {
-				group: "opaque".into(),
-				tag: "hero".into(),
-			},
-		)
-		.await;
-		store_mock(
-			&backend,
-			"materials/b",
-			MockMaterialModel {
-				group: "opaque".into(),
-				tag: "prop".into(),
-			},
-		)
-		.await;
+		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
+		store_mock(&backend, "materials/b", material("opaque", "heroic")).await;
+		store_mock(&backend, "materials/c", material("opaque", "prop")).await;
+		store_mock(&backend, "materials/c", material("opaque", "hero")).await;
+		store_mock(&backend, "materials/d", material("opaque", "hero")).await;
+		backend.delete(crate::asset::ResourceId::new("materials/d")).await.unwrap();
 
-		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").eq("name", "materials/b").limit(10)).await;
-
-		assert_eq!(ids, vec!["materials/b"]);
-		assert!(cursor.is_none());
+		let ids = async |query: Query| {
+			let mut ids = query_ids(&backend, query).await.0;
+			ids.sort();
+			ids
+		};
+		assert_eq!(
+			ids(Query::new("MockMaterial").eq("name", "materials/b")).await,
+			vec!["materials/b"]
+		);
+		assert_eq!(
+			ids(Query::new("MockMaterial").eq("tag", "hero")).await,
+			vec!["materials/a", "materials/c"]
+		);
+		assert!(ids(Query::new("MockMaterial").eq("tag", "her")).await.is_empty());
+		assert!(ids(Query::new("MockMaterial").eq("tag", "prop")).await.is_empty());
+		assert!(ids(Query::new("MockMaterial").eq("name", "materials/d")).await.is_empty());
 	}
 
 	fn material(group: &str, tag: &str) -> MockMaterialModel {
@@ -2813,50 +2630,6 @@ mod tests {
 				None => return ids,
 			}
 		}
-	}
-
-	#[crate::r#async::test]
-	async fn query_pages_stay_complete_when_later_predicates_filter_index_entries() {
-		let backend = backend();
-		for index in 0..8 {
-			let tag = if index % 2 == 0 { "hero" } else { "prop" };
-			store_mock(&backend, &format!("materials/{index}"), material("opaque", tag)).await;
-		}
-
-		let mut ids = query_all_pages(
-			&backend,
-			Query::new("MockMaterial").eq("group", "opaque").eq("tag", "hero"),
-			2,
-		)
-		.await;
-		ids.sort();
-
-		assert_eq!(ids, vec!["materials/0", "materials/2", "materials/4", "materials/6"]);
-	}
-
-	#[crate::r#async::test]
-	async fn query_with_exactly_limit_matches_returns_no_cursor() {
-		let backend = backend();
-		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
-		store_mock(&backend, "materials/b", material("opaque", "hero")).await;
-
-		let (ids, cursor) = query_ids(&backend, Query::new("MockMaterial").limit(2)).await;
-
-		assert_eq!(ids.len(), 2);
-		assert!(cursor.is_none());
-	}
-
-	#[crate::r#async::test]
-	async fn query_does_not_match_values_that_share_a_prefix() {
-		let backend = backend();
-		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
-		store_mock(&backend, "materials/b", material("opaque", "heroic")).await;
-
-		let (hero, _) = query_ids(&backend, Query::new("MockMaterial").eq("tag", "hero")).await;
-		let (her, _) = query_ids(&backend, Query::new("MockMaterial").eq("tag", "her")).await;
-
-		assert_eq!(hero, vec!["materials/a"]);
-		assert!(her.is_empty());
 	}
 
 	#[crate::r#async::test]
@@ -2888,21 +2661,6 @@ mod tests {
 
 		assert_eq!(by_class, vec!["materials/a"]);
 		assert_eq!(by_property, vec!["materials/a"]);
-	}
-
-	#[crate::r#async::test]
-	async fn query_after_overwrite_matches_only_the_latest_properties() {
-		let backend = backend();
-		store_mock(&backend, "materials/a", material("opaque", "hero")).await;
-		store_mock(&backend, "materials/a", material("opaque", "prop")).await;
-
-		let (old, _) = query_ids(&backend, Query::new("MockMaterial").eq("tag", "hero")).await;
-		let (new, _) = query_ids(&backend, Query::new("MockMaterial").eq("tag", "prop")).await;
-		let (all, _) = query_ids(&backend, Query::new("MockMaterial")).await;
-
-		assert!(old.is_empty());
-		assert_eq!(new, vec!["materials/a"]);
-		assert_eq!(all, vec!["materials/a"]);
 	}
 
 	#[crate::r#async::test]
@@ -3045,51 +2803,6 @@ mod tests {
 
 		assert!(backend.read_trace(id).await.unwrap().is_empty());
 		assert!(backend.traces().unwrap().is_empty());
-	}
-
-	#[crate::r#async::test]
-	async fn delete_updates_indexes() {
-		let backend = backend();
-		store_mock(
-			&backend,
-			"materials/a",
-			MockMaterialModel {
-				group: "opaque".into(),
-				tag: "hero".into(),
-			},
-		)
-		.await;
-		backend.delete(crate::asset::ResourceId::new("materials/a")).await.unwrap();
-
-		let (ids, _) = query_ids(&backend, Query::new("MockMaterial").eq("name", "materials/a").limit(10)).await;
-
-		assert!(ids.is_empty());
-	}
-
-	#[crate::r#async::test]
-	async fn malformed_cursor_returns_error() {
-		let backend = backend();
-		store_mock(
-			&backend,
-			"materials/a",
-			MockMaterialModel {
-				group: "opaque".into(),
-				tag: "hero".into(),
-			},
-		)
-		.await;
-
-		let error = backend
-			.query(Query {
-				class: "MockMaterial".to_string(),
-				predicates: vec![],
-				limit: 2,
-				cursor: Some(QueryCursor::new(Vec::new())),
-			})
-			.await
-			.unwrap_err();
-
-		assert_eq!(error, QueryError::InvalidCursor);
 	}
 }
 

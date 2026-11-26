@@ -28,10 +28,9 @@ pub(super) fn build_ui_primitives<'a>(
 ) -> UiPrimitives<'a> {
 	// A render cannot contain more images than the engine's 32-bit element IDs allow.
 	debug_assert!(u32::try_from(draw_list.images.len()).is_ok());
-	let viewport_width = viewport.width().max(1) as f32;
-	let viewport_height = viewport.height().max(1) as f32;
-	let sx = viewport_width / draw_list.layout_size[0].max(1.0);
-	let sy = viewport_height / draw_list.layout_size[1].max(1.0);
+	let [viewport_width, viewport_height] = viewport_size(viewport);
+	let viewport_bounds = [0.0, 0.0, viewport_width, viewport_height];
+	let [sx, sy] = pixel_scale(viewport, draw_list.layout_size);
 	let radius_scale = sx.min(sy);
 	if let Some(caches) = caches.as_deref_mut() {
 		caches.rectangles.begin(viewport, draw_list.layout_size);
@@ -71,12 +70,12 @@ pub(super) fn build_ui_primitives<'a>(
 	let (mut blurs, mut elements, mut curves, mut images, mut texts, mut fills) = (0, 0, 0, 0, 0, 0);
 	loop {
 		let heads = [
-			draw_list.blurs.get(blurs).map(|blur| (blur.depth, blur.order)),
-			draw_list.elements.get(elements).map(|element| (element.depth, element.order)),
-			draw_list.curves.get(curves).map(|curve| (curve.depth, curve.order)),
-			draw_list.images.get(images).map(|image| (image.depth, image.order)),
-			draw_list.texts.get(texts).map(|text| (text.depth, text.order)),
-			draw_list.paths.get(fills).map(|path| (path.depth, path.order)),
+			draw_list.blurs.get(blurs).map(|blur| blur.place.order_key()),
+			draw_list.elements.get(elements).map(|element| element.place.order_key()),
+			draw_list.curves.get(curves).map(|curve| curve.place.order_key()),
+			draw_list.images.get(images).map(|image| image.place.order_key()),
+			draw_list.texts.get(texts).map(|text| text.place.order_key()),
+			draw_list.paths.get(fills).map(|path| path.place.order_key()),
 		];
 		let Some((_, next)) = heads
 			.iter()
@@ -103,34 +102,22 @@ pub(super) fn build_ui_primitives<'a>(
 					};
 					let sigma_pixels = (shadow.sigma * radius_scale).clamp(0.0, UI_MAX_SAMPLED_SHADOW_SIGMA);
 					let reach = sigma_pixels * SHADOW_EXTENT_SIGMAS + 1.0;
-					let mut bounds = [
-						(caster.bounds[0] - reach).max(0.0),
-						(caster.bounds[1] - reach).max(0.0),
-						(caster.bounds[2] + reach).min(viewport_width),
-						(caster.bounds[3] + reach).min(viewport_height),
-					];
-					if let Some(clip) = blur.clip {
-						let clip = snapped_rect(clip.position, clip.size, sx, sy);
-						bounds = [
-							bounds[0].max(clip[0]),
-							bounds[1].max(clip[1]),
-							bounds[2].min(clip[2]),
-							bounds[3].min(clip[3]),
-						];
-					}
-					if bounds[2] <= bounds[0] || bounds[3] <= bounds[1] {
+					let [x0, y0, x1, y1] = caster.bounds;
+					let spread = intersect_bounds([x0 - reach, y0 - reach, x1 + reach, y1 + reach], viewport_bounds);
+					let bounds = clipped_bounds(spread, blur.place.clip, sx, sy);
+					if is_empty_bounds(bounds) {
 						continue;
 					}
 					let margin = UI_DAMAGE_MARGIN_PIXELS;
 					let damaged = [bounds[0] - margin, bounds[1] - margin, bounds[2] + margin, bounds[3] + margin];
-					if !damage_intersects(damage, turned_bounds(damaged, blur.clip_mask, sx, sy)) {
+					if !damage_intersects(damage, turned_bounds(damaged, blur.place.clip_mask, sx, sy)) {
 						continue;
 					}
 					if output.primitives.len() + 2 > MAX_UI_PRIMITIVES {
 						output.truncated = true;
 						break;
 					}
-					let mask = masks.index(None, blur.clip_mask, sx, sy);
+					let mask = masks.index(None, blur.place.clip_mask, sx, sy);
 					caster.set_mask(mask);
 					// The filter is planned from a backdrop blur radius, whose sigma is `scale * sqrt(radius)`.
 					let effective_radius = (sigma_pixels / UI_BLUR_SIGMA_SCALE).powi(2).clamp(0.0, 64.0);
@@ -176,19 +163,20 @@ pub(super) fn build_ui_primitives<'a>(
 					output.truncated = true;
 					break;
 				}
-				primitive.set_mask(masks.index(None, blur.clip_mask, sx, sy));
+				primitive.set_mask(masks.index(None, blur.place.clip_mask, sx, sy));
 				// The draw list gives a path blur no fade, so its band location in `data0` stays.
-				if let Some(fade) =
-					layer_fade_mask(blur.position, blur.size, blur.fade, blur.corner_radii, blur.corner_exponent)
-				{
+				if let Some(fade) = layer_fade_mask(
+					blur.place.position,
+					blur.place.size,
+					blur.fade,
+					blur.corner_radii,
+					blur.corner_exponent,
+				) {
 					primitive.set_fade(masks.index(None, Some(fade), sx, sy));
 				}
 				// A moving blur's quad sweeps past its bounds, and the blurred backdrop must cover all of it.
 				let reach = match masks.motion_of(primitive.mask()) {
-					Some(motion) => {
-						let [x0, y0, x1, y1] = motion.swept(primitive.bounds);
-						[x0.max(0.0), y0.max(0.0), x1.min(viewport_width), y1.min(viewport_height)]
-					}
+					Some(motion) => intersect_bounds(motion.swept(primitive.bounds), viewport_bounds),
 					None => primitive.bounds,
 				};
 				// The blur reads the layer below it, so the primitives so far are drawn first.
@@ -208,29 +196,18 @@ pub(super) fn build_ui_primitives<'a>(
 			1 => {
 				let element = &draw_list.elements[elements];
 				elements += 1;
-				let rect_width = (element.size[0] * sx).max(0.0);
-				let rect_height = (element.size[1] * sy).max(0.0);
-				if rect_width <= 0.0 || rect_height <= 0.0 || element.paint.alpha() <= 0.0 {
+				if element.place.size[0] * sx <= 0.0 || element.place.size[1] * sy <= 0.0 || element.paint.alpha() <= 0.0 {
 					// Omit element if 0 sized in any dimension or if fully transparent
 					continue;
 				}
 				if matches!(element.layer_kind, LayerKind::Stroke { .. }) && largest(element.stroke_widths) <= 0.0 {
 					continue;
 				}
-				if !damage_intersects(
+				if !element.place.damaged(
 					damage,
-					turned_bounds(
-						element_bounds(
-							element.position,
-							[rect_width, rect_height],
-							sx,
-							sy,
-							UI_DAMAGE_MARGIN_PIXELS + shadow_outset(element.layer_kind, sx, sy),
-						),
-						element.clip_mask,
-						sx,
-						sy,
-					),
+					sx,
+					sy,
+					UI_DAMAGE_MARGIN_PIXELS + shadow_outset(element.layer_kind, sx, sy),
 				) {
 					continue;
 				}
@@ -238,10 +215,16 @@ pub(super) fn build_ui_primitives<'a>(
 					Some(caches) => {
 						// Depth only orders the merge. It shifts whenever an element is added earlier in
 						// the paint order, which must not invalidate a settled rectangle.
-						let key = UiDrawElement { depth: 0, ..*element };
+						let key = UiDrawElement {
+							place: UiDrawPlace {
+								depth: 0,
+								..element.place
+							},
+							..*element
+						};
 						caches
 							.rectangles
-							.get(element.order, &key, || rectangle_primitive(element, sx, sy))
+							.get(element.place.order, &key, || rectangle_primitive(element, sx, sy))
 					}
 					None => rectangle_primitive(element, sx, sy),
 				};
@@ -251,11 +234,11 @@ pub(super) fn build_ui_primitives<'a>(
 						break;
 					}
 					// Mask and paint indices belong to this frame's tables, so a retained primitive gets its own each frame.
-					primitive.set_mask(masks.index(None, element.clip_mask, sx, sy));
+					primitive.set_mask(masks.index(None, element.place.clip_mask, sx, sy));
 					// The draw list gives a shadow no fade, so its shape in `data0` stays.
 					if let Some(fade) = layer_fade_mask(
-						element.position,
-						element.size,
+						element.place.position,
+						element.place.size,
 						element.fade,
 						element.corner_radii,
 						element.corner_exponent,
@@ -264,7 +247,7 @@ pub(super) fn build_ui_primitives<'a>(
 					}
 					// A gradient's axis is placed from the element's own rectangle, which a shadow's offset doesn't move.
 					if !element.paint.is_flat() {
-						let origin = snapped_rect(element.position, element.size, sx, sy);
+						let origin = snapped_rect(element.place.position, element.place.size, sx, sy);
 						primitive.set_paint(paints.index(&element.paint.placed([origin[0], origin[1]], [sx, sy])));
 					}
 					if let Some(material) = element.paint.material {
@@ -281,33 +264,24 @@ pub(super) fn build_ui_primitives<'a>(
 					continue;
 				}
 				let half_width = stroke_width * 0.5;
-				if !damage_intersects(
-					damage,
-					turned_bounds(
-						element_bounds(
-							curve.position,
-							[curve.size[0] * sx, curve.size[1] * sy],
-							sx,
-							sy,
-							half_width + CURVE_AA_WIDTH_PIXELS + UI_DAMAGE_MARGIN_PIXELS,
-						),
-						curve.clip_mask,
-						sx,
-						sy,
-					),
-				) {
+				if !curve
+					.place
+					.damaged(damage, sx, sy, half_width + CURVE_AA_WIDTH_PIXELS + UI_DAMAGE_MARGIN_PIXELS)
+				{
 					continue;
 				}
-				let mask = masks.index(curve.clip, curve.clip_mask, sx, sy);
+				let mask = masks.index(curve.place.clip, curve.place.clip_mask, sx, sy);
 				// Every piece of the curve shares one paint entry.
-				let paint = curve.paint.placed([curve.position[0] * sx, curve.position[1] * sy], [sx, sy]);
+				let paint = curve
+					.paint
+					.placed([curve.place.position[0] * sx, curve.place.position[1] * sy], [sx, sy]);
 				let paint_index = paints.index(&paint);
 				cubics.clear();
 				cubics.extend(
 					curve
 						.segments
 						.iter()
-						.filter_map(|segment| segment_cubic(segment, curve.position, sx, sy)),
+						.filter_map(|segment| segment_cubic(segment, curve.place.position, sx, sy)),
 				);
 				for (index, cubic) in cubics.iter().enumerate() {
 					// A smooth joint is split between its two segments, and a corner is rounded by the segment that starts at it.
@@ -343,27 +317,13 @@ pub(super) fn build_ui_primitives<'a>(
 				if !should_draw_image(image) {
 					continue;
 				}
-				if !damage_intersects(
-					damage,
-					turned_bounds(
-						element_bounds(
-							image.position,
-							[image.size[0] * sx, image.size[1] * sy],
-							sx,
-							sy,
-							UI_DAMAGE_MARGIN_PIXELS,
-						),
-						image.clip_mask,
-						sx,
-						sy,
-					),
-				) {
+				if !image.place.damaged(damage, sx, sy, UI_DAMAGE_MARGIN_PIXELS) {
 					continue;
 				}
 				let primitive = match caches.as_deref_mut() {
 					Some(caches) => {
-						let key = (image.position, image.size, image.clip, image.opacity);
-						caches.images.get(image.order, &key, || image_primitive(image, sx, sy))
+						let key = (image.place.position, image.place.size, image.place.clip, image.opacity);
+						caches.images.get(image.place.order, &key, || image_primitive(image, sx, sy))
 					}
 					None => image_primitive(image, sx, sy),
 				};
@@ -372,7 +332,7 @@ pub(super) fn build_ui_primitives<'a>(
 						output.truncated = true;
 						break;
 					}
-					primitive.set_mask(masks.index(None, image.clip_mask, sx, sy));
+					primitive.set_mask(masks.index(None, image.place.clip_mask, sx, sy));
 					output.images.push((output.primitives.len() as u32, source_index));
 					output.primitives.push(primitive);
 				}
@@ -443,23 +403,19 @@ pub(super) fn element_bounds(position: [f32; 2], pixel_size: [f32; 2], sx: f32, 
 	]
 }
 
+/// Trims pixel `bounds` to a layout-unit `clip`, snapped to whole pixels like every rectangle.
+fn clipped_bounds(bounds: [f32; 4], clip: Option<DrawClip>, sx: f32, sy: f32) -> [f32; 4] {
+	clip.map_or(bounds, |clip| {
+		intersect_bounds(bounds, snapped_rect(clip.position, clip.size, sx, sy))
+	})
+}
+
 /// Snaps a rectangle to whole pixels and trims it to its clip. Returns the rectangle and the visible part of it.
 #[inline]
 fn clipped_rect(position: [f32; 2], size: [f32; 2], clip: Option<DrawClip>, sx: f32, sy: f32) -> Option<([f32; 4], [f32; 4])> {
 	let original = snapped_rect(position, size, sx, sy);
-	let visible = match clip {
-		Some(clip) => {
-			let clip = snapped_rect(clip.position, clip.size, sx, sy);
-			[
-				original[0].max(clip[0]),
-				original[1].max(clip[1]),
-				original[2].min(clip[2]),
-				original[3].min(clip[3]),
-			]
-		}
-		None => original,
-	};
-	(visible[2] > visible[0] && visible[3] > visible[1]).then_some((original, visible))
+	let visible = clipped_bounds(original, clip, sx, sy);
+	(!is_empty_bounds(visible)).then_some((original, visible))
 }
 
 /// Corner `radii` in layout units turned into pixels by `scale` and fitted to a `width` by `height` pixel rectangle.
@@ -473,7 +429,7 @@ fn rectangle_primitive(element: &UiDrawElement, sx: f32, sy: f32) -> Option<UiPr
 	if let LayerKind::Shadow(shadow) = element.layer_kind {
 		return shadow_primitive(element, shadow, sx, sy);
 	}
-	let (original, bounds) = clipped_rect(element.position, element.size, element.clip, sx, sy)?;
+	let (original, bounds) = clipped_rect(element.place.position, element.place.size, element.place.clip, sx, sy)?;
 	let rect_width = (original[2] - original[0]).max(0.0);
 	let rect_height = (original[3] - original[1]).max(0.0);
 	let radius_scale = sx.min(sy);
@@ -577,7 +533,7 @@ fn blur_step(
 /// Resolves a sector shadow's caster: the filled sector in white, moved by the offset and unclipped.
 fn sector_caster(blur: &UiBlurDrawElement, shadow: UiShapeShadow, sx: f32, sy: f32) -> Option<UiPrimitive> {
 	let sector = blur.sector?;
-	let rect = snapped_rect(blur.position, blur.size, sx, sy);
+	let rect = snapped_rect(blur.place.position, blur.place.size, sx, sy);
 	let offset = [shadow.offset[0] * sx, shadow.offset[1] * sy];
 	let rect = [
 		rect[0] + offset[0],
@@ -612,7 +568,7 @@ fn shadow_outset(kind: LayerKind, sx: f32, sy: f32) -> f32 {
 /// Resolves one shadow layer's quad. An outer shadow's quad covers the moved and grown shape out
 /// to where its Gaussian tail fades; an inset shadow's quad is the element's own rectangle.
 fn shadow_primitive(element: &UiDrawElement, shadow: Shadow, sx: f32, sy: f32) -> Option<UiPrimitive> {
-	let original = snapped_rect(element.position, element.size, sx, sy);
+	let original = snapped_rect(element.place.position, element.place.size, sx, sy);
 	let (rect_width, rect_height) = ((original[2] - original[0]).max(0.0), (original[3] - original[1]).max(0.0));
 	let radius_scale = sx.min(sy);
 	let offset = [shadow.offset[0] * sx, shadow.offset[1] * sy];
@@ -637,19 +593,8 @@ fn shadow_primitive(element: &UiDrawElement, shadow: Shadow, sx: f32, sy: f32) -
 		}
 		quad
 	};
-	let bounds = match element.clip {
-		Some(clip) => {
-			let clip = snapped_rect(clip.position, clip.size, sx, sy);
-			[
-				quad[0].max(clip[0]),
-				quad[1].max(clip[1]),
-				quad[2].min(clip[2]),
-				quad[3].min(clip[3]),
-			]
-		}
-		None => quad,
-	};
-	if bounds[2] <= bounds[0] || bounds[3] <= bounds[1] {
+	let bounds = clipped_bounds(quad, element.place.clip, sx, sy);
+	if is_empty_bounds(bounds) {
 		return None;
 	}
 	// An inset shadow's shader cuts the moved and shrunk hole out of the element, so it needs both. An outer shadow
@@ -687,19 +632,13 @@ fn shadow_primitive(element: &UiDrawElement, shadow: Shadow, sx: f32, sy: f32) -
 
 /// Resolves one backdrop blur's clipped quad inside the viewport, which its dispatch regions are planned from.
 fn blur_primitive(blur: &UiBlurDrawElement, viewport: Extent, sx: f32, sy: f32, resolution_mix: f32) -> Option<UiPrimitive> {
-	if (blur.size[0] * sx).max(0.0) <= 0.0 || (blur.size[1] * sy).max(0.0) <= 0.0 || blur.radius <= 0.0 {
+	if (blur.place.size[0] * sx).max(0.0) <= 0.0 || (blur.place.size[1] * sy).max(0.0) <= 0.0 || blur.radius <= 0.0 {
 		return None;
 	}
-	let (original, visible) = clipped_rect(blur.position, blur.size, blur.clip, sx, sy)?;
-	let viewport_width = viewport.width().max(1) as f32;
-	let viewport_height = viewport.height().max(1) as f32;
-	let bounds = [
-		visible[0].clamp(0.0, viewport_width),
-		visible[1].clamp(0.0, viewport_height),
-		visible[2].clamp(0.0, viewport_width),
-		visible[3].clamp(0.0, viewport_height),
-	];
-	if bounds[2] <= bounds[0] || bounds[3] <= bounds[1] {
+	let (original, visible) = clipped_rect(blur.place.position, blur.place.size, blur.place.clip, sx, sy)?;
+	let [width, height] = viewport_size(viewport);
+	let bounds = intersect_bounds(visible, [0.0, 0.0, width, height]);
+	if is_empty_bounds(bounds) {
 		return None;
 	}
 	let (rect_width, rect_height) = (original[2] - original[0], original[3] - original[1]);
@@ -749,7 +688,7 @@ fn sector_shape(sector: Sector, stroke_width: f32, scale: f32) -> (u32, [f16; 4]
 /// Resolves one image's clipped quad and the part of the texture it shows. The pass fills in the texture slot.
 #[inline]
 fn image_primitive(image: &UiImageDrawElement, sx: f32, sy: f32) -> Option<UiPrimitive> {
-	let (original, bounds) = clipped_rect(image.position, image.size, image.clip, sx, sy)?;
+	let (original, bounds) = clipped_rect(image.place.position, image.place.size, image.place.clip, sx, sy)?;
 	let (rect_width, rect_height) = (original[2] - original[0], original[3] - original[1]);
 	if rect_width <= 0.0 || rect_height <= 0.0 {
 		return None;

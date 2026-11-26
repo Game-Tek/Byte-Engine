@@ -67,14 +67,60 @@ pub(super) const CURVE_PIECE_BULGE_PIXELS: f32 = 4.0;
 pub(super) const MAX_CURVE_PIECES: u32 = 64;
 pub(super) const CURVE_AA_WIDTH_PIXELS: f32 = 1.0;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(super) struct UiDrawElement {
+/// The `UiDrawPlace` struct is where one draw list entry draws, whatever its kind: its place in painter order, its box
+/// in layout units, and the clip and mask it draws under.
+///
+/// Every entry kind carries one, so the merge, the damage tests, and the clip mask table treat all kinds alike.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(super) struct UiDrawPlace {
 	pub(super) depth: u32,
 	pub(super) order: u32,
 	pub(super) position: [f32; 2],
 	pub(super) size: [f32; 2],
 	pub(super) clip: Option<DrawClip>,
 	pub(super) clip_mask: Option<DrawClipMask>,
+}
+
+impl UiDrawPlace {
+	/// Places an entry where the render entry `placement` draws, under the shared `clip_mask`.
+	fn of(placement: &crate::ui::layout::RenderPlacement, clip_mask: Option<DrawClipMask>) -> Self {
+		Self {
+			depth: placement.position.z(),
+			order: placement.id,
+			position: [placement.position.x(), placement.position.y()],
+			size: [placement.size.x(), placement.size.y()],
+			clip: draw_clip_from_geometry(placement.clip),
+			clip_mask,
+		}
+	}
+
+	/// The entry's place in painter order: by depth, then by element.
+	pub(super) fn order_key(&self) -> (u32, u32) {
+		(self.depth, self.order)
+	}
+
+	/// The pixels the box covers, grown by `margin` and turned like its element, which damage tests against.
+	#[inline]
+	pub(super) fn damage_bounds(&self, sx: f32, sy: f32, margin: f32) -> [f32; 4] {
+		let pixel_size = [self.size[0] * sx, self.size[1] * sy];
+		turned_bounds(
+			element_bounds(self.position, pixel_size, sx, sy, margin),
+			self.clip_mask,
+			sx,
+			sy,
+		)
+	}
+
+	/// Reports whether [`Self::damage_bounds`] touch `damage`.
+	#[inline]
+	pub(super) fn damaged(&self, damage: Option<&[UiPixelRegion]>, sx: f32, sy: f32, margin: f32) -> bool {
+		damage_intersects(damage, self.damage_bounds(sx, sy, margin))
+	}
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(super) struct UiDrawElement {
+	pub(super) place: UiDrawPlace,
 	/// The gradient axis is in layout units from the element's origin.
 	pub(super) paint: UiPaint,
 	/// The corner radii in layout units, top left, top right, bottom right, bottom left, before they're fitted to the box.
@@ -90,12 +136,7 @@ pub(super) struct UiDrawElement {
 
 #[derive(Debug, Clone)]
 pub(super) struct UiBlurDrawElement {
-	pub(super) depth: u32,
-	pub(super) order: u32,
-	pub(super) position: [f32; 2],
-	pub(super) size: [f32; 2],
-	pub(super) clip: Option<DrawClip>,
-	pub(super) clip_mask: Option<DrawClipMask>,
+	pub(super) place: UiDrawPlace,
 	pub(super) color: [f32; 4],
 	/// The corner radii in layout units, as [`UiDrawElement::corner_radii`].
 	pub(super) corner_radii: [f32; 4],
@@ -123,12 +164,7 @@ pub(super) struct UiShapeShadow {
 
 #[derive(Debug, PartialEq)]
 pub(super) struct UiTextDrawElement {
-	pub(super) depth: u32,
-	pub(super) order: u32,
-	pub(super) position: [f32; 2],
-	pub(super) size: [f32; 2],
-	pub(super) clip: Option<DrawClip>,
-	pub(super) clip_mask: Option<DrawClipMask>,
+	pub(super) place: UiDrawPlace,
 	pub(super) color: RGBA,
 	pub(super) font_size: f32,
 	/// The name of the font to draw with, or `None` for the default.
@@ -139,15 +175,9 @@ pub(super) struct UiTextDrawElement {
 }
 
 impl Clone for UiTextDrawElement {
-	/// Copies this surface and its owned local data.
 	fn clone(&self) -> Self {
 		Self {
-			depth: self.depth,
-			order: self.order,
-			position: self.position,
-			size: self.size,
-			clip: self.clip,
-			clip_mask: self.clip_mask,
+			place: self.place,
 			color: self.color,
 			font_size: self.font_size,
 			font: self.font,
@@ -155,14 +185,9 @@ impl Clone for UiTextDrawElement {
 			text: self.text.clone(),
 		}
 	}
-	/// Reuses owned storage when a surface changes.
+	/// Reuses the string's storage when a surface changes.
 	fn clone_from(&mut self, source: &Self) {
-		self.depth = source.depth;
-		self.order = source.order;
-		self.position = source.position;
-		self.size = source.size;
-		self.clip = source.clip;
-		self.clip_mask = source.clip_mask;
+		self.place = source.place;
 		self.color = source.color;
 		self.font_size = source.font_size;
 		self.font = source.font;
@@ -173,28 +198,18 @@ impl Clone for UiTextDrawElement {
 
 #[derive(Debug, Clone)]
 pub(super) struct UiImageDrawElement {
-	pub(super) depth: u32,
-	pub(super) order: u32,
+	pub(super) place: UiDrawPlace,
 	pub(super) image_id: u64,
 	pub(super) version: u64,
 	pub(super) source_width: u32,
 	pub(super) source_height: u32,
 	pub(super) source: ImageSource,
-	pub(super) position: [f32; 2],
-	pub(super) size: [f32; 2],
-	pub(super) clip: Option<DrawClip>,
-	pub(super) clip_mask: Option<DrawClipMask>,
 	pub(super) opacity: f32,
 }
 
 #[derive(Debug, PartialEq)]
 pub(super) struct UiCurveDrawElement {
-	pub(super) depth: u32,
-	pub(super) order: u32,
-	pub(super) position: [f32; 2],
-	pub(super) size: [f32; 2],
-	pub(super) clip: Option<DrawClip>,
-	pub(super) clip_mask: Option<DrawClipMask>,
+	pub(super) place: UiDrawPlace,
 	/// The gradient axis is in layout units from the curve's origin, scaled like its points.
 	pub(super) paint: UiPaint,
 	pub(super) stroke_width: f32,
@@ -202,28 +217,17 @@ pub(super) struct UiCurveDrawElement {
 }
 
 impl Clone for UiCurveDrawElement {
-	/// Copies this surface and its owned local data.
 	fn clone(&self) -> Self {
 		Self {
-			depth: self.depth,
-			order: self.order,
-			position: self.position,
-			size: self.size,
-			clip: self.clip,
-			clip_mask: self.clip_mask,
+			place: self.place,
 			paint: self.paint,
 			stroke_width: self.stroke_width,
 			segments: self.segments.clone(),
 		}
 	}
-	/// Reuses owned storage when a surface changes.
+	/// Reuses the segment storage when a surface changes.
 	fn clone_from(&mut self, source: &Self) {
-		self.depth = source.depth;
-		self.order = source.order;
-		self.position = source.position;
-		self.size = source.size;
-		self.clip = source.clip;
-		self.clip_mask = source.clip_mask;
+		self.place = source.place;
 		self.paint = source.paint;
 		self.stroke_width = source.stroke_width;
 		self.segments.clone_from(&source.segments);
@@ -348,18 +352,13 @@ impl UiPathShape {
 /// One fill layer of a path.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct UiPathDrawElement {
-	pub(super) depth: u32,
-	pub(super) order: u32,
-	pub(super) position: [f32; 2],
-	pub(super) size: [f32; 2],
-	pub(super) clip: Option<DrawClip>,
-	pub(super) clip_mask: Option<DrawClipMask>,
+	pub(super) place: UiDrawPlace,
 	/// The gradient axis is in path units from the path's origin.
 	pub(super) paint: UiPaint,
 	pub(super) shape: UiPathShape,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(super) struct UiDrawList {
 	pub(super) layout_size: [f32; 2],
 	pub(super) elements: Vec<UiDrawElement>,
@@ -414,23 +413,6 @@ impl Clone for UiDrawList {
 		self.materials.clone_from(&source.materials);
 		self.motions.clone_from(&source.motions);
 		self.motion_interval = source.motion_interval;
-	}
-}
-
-impl Default for UiDrawList {
-	fn default() -> Self {
-		Self {
-			layout_size: [1.0, 1.0],
-			elements: Vec::new(),
-			blurs: Vec::new(),
-			curves: Vec::new(),
-			paths: Vec::new(),
-			images: Vec::new(),
-			texts: Vec::new(),
-			materials: Vec::new(),
-			motions: Vec::new(),
-			motion_interval: 0.0,
-		}
 	}
 }
 
@@ -1260,37 +1242,21 @@ impl UiBlurKernel {
 
 	// Combines the reusable kernel with one axis and one regional dispatch.
 	pub(super) fn push(self, direction: [f32; 2], region: UiPixelRegion) -> UiBlurFilterPush {
+		// Four pairs per vector, with the last vector padded by zeros.
+		let lanes = |pairs: &[f32; UI_BLUR_GAUSSIAN_PAIR_COUNT], first: usize| {
+			std::array::from_fn(|lane| pairs.get(first + lane).copied().unwrap_or(0.0))
+		};
 		UiBlurFilterPush {
 			// The pair count rides as a float in the last lane, so the record keeps its 128 bytes.
 			filter_data: [direction[0], direction[1], self.center_weight, self.pair_count() as f32],
 			origin: region.origin,
 			extent: region.push_extent(),
-			pair_weights_0_3: [
-				self.pair_weights[0],
-				self.pair_weights[1],
-				self.pair_weights[2],
-				self.pair_weights[3],
-			],
-			pair_weights_4_7: [
-				self.pair_weights[4],
-				self.pair_weights[5],
-				self.pair_weights[6],
-				self.pair_weights[7],
-			],
-			pair_weights_8_10_pad: [self.pair_weights[8], self.pair_weights[9], self.pair_weights[10], 0.0],
-			pair_offsets_0_3: [
-				self.pair_offsets[0],
-				self.pair_offsets[1],
-				self.pair_offsets[2],
-				self.pair_offsets[3],
-			],
-			pair_offsets_4_7: [
-				self.pair_offsets[4],
-				self.pair_offsets[5],
-				self.pair_offsets[6],
-				self.pair_offsets[7],
-			],
-			pair_offsets_8_10_pad: [self.pair_offsets[8], self.pair_offsets[9], self.pair_offsets[10], 0.0],
+			pair_weights_0_3: lanes(&self.pair_weights, 0),
+			pair_weights_4_7: lanes(&self.pair_weights, 4),
+			pair_weights_8_10_pad: lanes(&self.pair_weights, 8),
+			pair_offsets_0_3: lanes(&self.pair_offsets, 0),
+			pair_offsets_4_7: lanes(&self.pair_offsets, 4),
+			pair_offsets_8_10_pad: lanes(&self.pair_offsets, 8),
 		}
 	}
 }
@@ -1529,13 +1495,34 @@ impl From<UiPixelRegion> for UiRegionPush {
 
 /// A viewport-covering rectangle that writes transparent black; the scissor limits it to one damaged region.
 pub(super) fn clear_primitive(viewport: Extent) -> UiPrimitive {
-	let size = [viewport.width().max(1) as f32, viewport.height().max(1) as f32];
+	let size = viewport_size(viewport);
 	UiPrimitive {
 		bounds: [0.0, 0.0, size[0], size[1]],
 		a: [0.0, 0.0, size[0], size[1]],
 		header: UI_KIND_RECT,
 		..UiPrimitive::default()
 	}
+}
+
+/// The viewport's size in pixels, at least one on each axis.
+pub(super) fn viewport_size(viewport: Extent) -> [f32; 2] {
+	[viewport.width().max(1) as f32, viewport.height().max(1) as f32]
+}
+
+/// Pixels per layout unit on each axis, for a draw list laid out at `layout_size` and drawn into `viewport`.
+pub(super) fn pixel_scale(viewport: Extent, layout_size: [f32; 2]) -> [f32; 2] {
+	let [width, height] = viewport_size(viewport);
+	[width / layout_size[0].max(1.0), height / layout_size[1].max(1.0)]
+}
+
+/// The overlap of two pixel rectangles given as `[x0, y0, x1, y1]`; see [`is_empty_bounds`].
+pub(super) fn intersect_bounds(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+	[a[0].max(b[0]), a[1].max(b[1]), a[2].min(b[2]), a[3].min(b[3])]
+}
+
+/// Reports whether a pixel rectangle given as `[x0, y0, x1, y1]` covers nothing.
+pub(super) fn is_empty_bounds(bounds: [f32; 4]) -> bool {
+	bounds[2] <= bounds[0] || bounds[3] <= bounds[1]
 }
 
 /// Reports whether an element with these pixel bounds must be drawn for the damage; no damage list means everything.
@@ -1546,8 +1533,7 @@ pub(super) fn damage_intersects(damage: Option<&[UiPixelRegion]>, bounds: [f32; 
 
 /// Converts layout-unit damage into margin-padded pixel regions.
 pub(super) fn pixel_damage(rects: &[Geometry], layout_size: [f32; 2], viewport: Extent, out: &mut Vec<UiPixelRegion>) {
-	let sx = viewport.width().max(1) as f32 / layout_size[0].max(1.0);
-	let sy = viewport.height().max(1) as f32 / layout_size[1].max(1.0);
+	let [sx, sy] = pixel_scale(viewport, layout_size);
 	out.extend(rects.iter().filter_map(|rect| {
 		let bounds = [rect.x() * sx, rect.y() * sy, rect.right() * sx, rect.bottom() * sy];
 		UiPixelRegion::from_bounds(bounds, UI_DAMAGE_MARGIN_PIXELS, viewport)
@@ -1559,19 +1545,17 @@ fn blur_footprint(blur: &UiBlurDrawElement, viewport: Extent, sx: f32, sy: f32) 
 	if blur.radius <= 0.0 {
 		return None;
 	}
-	let mut bounds = [
-		blur.position[0] * sx,
-		blur.position[1] * sy,
-		(blur.position[0] + blur.size[0]) * sx,
-		(blur.position[1] + blur.size[1]) * sy,
-	];
-	if let Some(clip) = blur.clip {
-		bounds = [
-			bounds[0].max(clip.position[0] * sx),
-			bounds[1].max(clip.position[1] * sy),
-			bounds[2].min((clip.position[0] + clip.size[0]) * sx),
-			bounds[3].min((clip.position[1] + clip.size[1]) * sy),
-		];
+	let scaled = |position: [f32; 2], size: [f32; 2]| {
+		[
+			position[0] * sx,
+			position[1] * sy,
+			(position[0] + size[0]) * sx,
+			(position[1] + size[1]) * sy,
+		]
+	};
+	let mut bounds = scaled(blur.place.position, blur.place.size);
+	if let Some(clip) = blur.place.clip {
+		bounds = intersect_bounds(bounds, scaled(clip.position, clip.size));
 	}
 	let sigma_pixels = blur_sigma(blur.radius * sx.min(sy));
 	UiPixelRegion::from_bounds(bounds, blur_read_margin(sigma_pixels) as f32, viewport)
@@ -1584,8 +1568,7 @@ fn blur_footprint(blur: &UiBlurDrawElement, viewport: Extent, sx: f32, sy: f32) 
 /// the layer, so its result changes only where damage reaches its footprint; one it reaches is damaged whole, and its
 /// footprint may reach another blur, so this repeats until no footprint is added. Pass the damage the frame has so far.
 pub(super) fn blur_footprints(draw_list: &UiDrawList, viewport: Extent, follows_scene: bool, damage: &mut Vec<UiPixelRegion>) {
-	let sx = viewport.width().max(1) as f32 / draw_list.layout_size[0].max(1.0);
-	let sy = viewport.height().max(1) as f32 / draw_list.layout_size[1].max(1.0);
+	let [sx, sy] = pixel_scale(viewport, draw_list.layout_size);
 	let footprints = || {
 		draw_list
 			.blurs
@@ -1613,13 +1596,10 @@ pub(super) fn blur_footprints(draw_list: &UiDrawList, viewport: Extent, follows_
 /// Adds the pixels every drawn GPU image covers, since the GPU may write a new picture into it every frame. The bounds
 /// are the ones the image's draw tests against damage, so a frame redraws exactly the image.
 pub(super) fn gpu_image_footprints(draw_list: &UiDrawList, viewport: Extent, out: &mut Vec<UiPixelRegion>) {
-	let sx = viewport.width().max(1) as f32 / draw_list.layout_size[0].max(1.0);
-	let sy = viewport.height().max(1) as f32 / draw_list.layout_size[1].max(1.0);
+	let [sx, sy] = pixel_scale(viewport, draw_list.layout_size);
 	let live = |image: &&UiImageDrawElement| matches!(image.source, ImageSource::Gpu(_)) && should_draw_image(image);
 	out.extend(draw_list.images.iter().filter(live).filter_map(|image| {
-		let pixel_size = [image.size[0] * sx, image.size[1] * sy];
-		let bounds = element_bounds(image.position, pixel_size, sx, sy, UI_DAMAGE_MARGIN_PIXELS);
-		UiPixelRegion::from_bounds(turned_bounds(bounds, image.clip_mask, sx, sy), 0.0, viewport)
+		UiPixelRegion::from_bounds(image.place.damage_bounds(sx, sy, UI_DAMAGE_MARGIN_PIXELS), 0.0, viewport)
 	}));
 }
 
@@ -1658,7 +1638,7 @@ pub(super) fn merge_damage(damage: &mut Vec<UiPixelRegion>, viewport: Extent) {
 
 // Whether text rasterization should be ommitted if text is empty, 0 sized in any dimension or if fully transparent
 pub(super) fn should_rasterize_text(text: &UiTextDrawElement) -> bool {
-	!text.text.is_empty() && text.color.a > 0.0 && text.size[0] > 0.0 && text.size[1] > 0.0
+	!text.text.is_empty() && text.color.a > 0.0 && text.place.size[0] > 0.0 && text.place.size[1] > 0.0
 }
 
 pub(super) fn resolved_corner_exponent(exponent: f32) -> f32 {
@@ -2037,8 +2017,10 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 	let mut text_count = 0;
 
 	for element in render.elements() {
-		let element_clip_mask = placement_clip_mask(render, &element.placement, &mut draw_list.motions);
-		let position = element.placement.position;
+		let place = UiDrawPlace::of(
+			&element.placement,
+			placement_clip_mask(render, &element.placement, &mut draw_list.motions),
+		);
 		let size = element.placement.size;
 		// The box already follows the inherited scale; every length the layers draw with follows it here.
 		let scale = element.placement.scale;
@@ -2078,12 +2060,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			if let (LayerKind::Shadow(shadow), Some(sector)) = (kind, sector) {
 				if !shadow.inset && paint.alpha() > 0.0 {
 					draw_list.blurs.push(UiBlurDrawElement {
-						depth: position.z(),
-						order: element.placement.id,
-						position: [position.x(), position.y()],
-						size: [size.x(), size.y()],
-						clip: draw_clip_from_geometry(element.placement.clip),
-						clip_mask: element_clip_mask,
+						place,
 						color: paint.color,
 						corner_radii,
 						corner_exponent: element.corner_exponent,
@@ -2101,12 +2078,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			}
 
 			draw_list.elements.push(UiDrawElement {
-				depth: position.z(),
-				order: element.placement.id,
-				position: [position.x(), position.y()],
-				size: [size.x(), size.y()],
-				clip: draw_clip_from_geometry(element.placement.clip),
-				clip_mask: element_clip_mask,
+				place,
 				paint,
 				corner_radii,
 				corner_exponent: element.corner_exponent,
@@ -2132,12 +2104,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			};
 			color.a *= element.placement.opacity;
 			draw_list.blurs.push(UiBlurDrawElement {
-				depth: position.z(),
-				order: element.placement.id,
-				position: [position.x(), position.y()],
-				size: [size.x(), size.y()],
-				clip: draw_clip_from_geometry(element.placement.clip),
-				clip_mask: element_clip_mask,
+				place,
 				color: color.into(),
 				corner_radii,
 				corner_exponent: element.corner_exponent,
@@ -2151,8 +2118,10 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 	}
 
 	for curve in render.curves() {
-		let curve_clip_mask = placement_clip_mask(render, &curve.placement, &mut draw_list.motions);
-		let position = curve.placement.position;
+		let place = UiDrawPlace::of(
+			&curve.placement,
+			placement_clip_mask(render, &curve.placement, &mut draw_list.motions),
+		);
 		let size = curve.placement.size;
 
 		for layer in curve.style.layers() {
@@ -2173,12 +2142,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			// A zoomed subtree scales its wires like its rectangles: points from the
 			// element's origin, the gradient axis, and the stroke follow the inherited scale.
 			let mut entry = UiCurveDrawElement {
-				depth: position.z(),
-				order: curve.placement.id,
-				position: [position.x(), position.y()],
-				size: [size.x(), size.y()],
-				clip: draw_clip_from_geometry(curve.placement.clip),
-				clip_mask: curve_clip_mask,
+				place,
 				paint: paint.placed([0.0, 0.0], curve.placement.scale),
 				stroke_width: stroke_width * curve.placement.scale[0].min(curve.placement.scale[1]),
 				segments: Vec::new(),
@@ -2193,10 +2157,11 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			let segments = &mut draw_list.curves[curve_count].segments;
 			segments.clear();
 			segments.extend(
-				curve
-					.segments
-					.iter()
-					.map(|segment| scale_segment(segment, curve.placement.scale)),
+				// A zoomed subtree scales its points about the curve element's origin.
+				curve.segments.iter().map(|segment| {
+					let [sx, sy] = curve.placement.scale;
+					segment.map(|point| CurvePoint::new(point.x * sx, point.y * sy))
+				}),
 			);
 			curve_count += 1;
 		}
@@ -2205,8 +2170,10 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 
 	draw_list.paths.clear();
 	for path in render.paths() {
-		let path_clip_mask = placement_clip_mask(render, &path.placement, &mut draw_list.motions);
-		let position = path.placement.position;
+		let place = UiDrawPlace::of(
+			&path.placement,
+			placement_clip_mask(render, &path.placement, &mut draw_list.motions),
+		);
 		let size = path.placement.size;
 		// A relative gradient spans the path's box in path units: its view box, or its own size without one.
 		let path_box = path.view_box.unwrap_or_else(|| unscaled(size, path.placement.scale));
@@ -2225,17 +2192,6 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			},
 			segments: Arc::clone(&path.segments),
 		};
-		let placed = |depth: u32| {
-			(
-				depth,
-				path.placement.id,
-				[position.x(), position.y()],
-				[size.x(), size.y()],
-				draw_clip_from_geometry(path.placement.clip),
-				path_clip_mask,
-			)
-		};
-
 		// Strokes on a path are not drawn yet. The first blurring fill blurs the backdrop under
 		// the outline, like a container's does, and every other fill paints the outline.
 		let mut blurred = false;
@@ -2248,14 +2204,8 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			if let LayerKind::Shadow(shadow) = layer.kind.scaled(path.placement.scale) {
 				let paint = UiPaint::resolve(&layer.color, path.placement.opacity, path_box);
 				if !shadow.inset && paint.alpha() > 0.0 {
-					let (depth, order, position, size, clip, clip_mask) = placed(position.z());
 					draw_list.blurs.push(UiBlurDrawElement {
-						depth,
-						order,
-						position,
-						size,
-						clip,
-						clip_mask,
+						place,
 						color: paint.color,
 						corner_radii: [0.0; 4],
 						corner_exponent: 2.0,
@@ -2275,17 +2225,11 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				continue;
 			}
 			let paint = UiPaint::resolve(&layer.color, path.placement.opacity, path_box);
-			let (depth, order, position, size, clip, clip_mask) = placed(position.z());
 			let radius = backdrop_blur_radius(layer.backdrop_blur_radius * uniform_scale(path.placement.scale));
 			if radius > 0.0 {
 				if !std::mem::replace(&mut blurred, true) {
 					draw_list.blurs.push(UiBlurDrawElement {
-						depth,
-						order,
-						position,
-						size,
-						clip,
-						clip_mask,
+						place,
 						color: paint.color,
 						corner_radii: [0.0; 4],
 						corner_exponent: 2.0,
@@ -2298,12 +2242,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 				}
 			} else if paint.alpha() > 0.0 {
 				draw_list.paths.push(UiPathDrawElement {
-					depth,
-					order,
-					position,
-					size,
-					clip,
-					clip_mask,
+					place,
 					paint,
 					shape: shape.clone(),
 				});
@@ -2311,28 +2250,25 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 		}
 	}
 	// Rectangle and path blurs were listed by element type; the merge reads each list in painter order.
-	draw_list.blurs.sort_by_key(|blur| (blur.depth, blur.order));
+	draw_list.blurs.sort_by_key(|blur| blur.place.order_key());
 
 	for image in render.images() {
-		let image_clip_mask = placement_clip_mask(render, &image.placement, &mut draw_list.motions);
 		draw_list.images.push(UiImageDrawElement {
-			depth: image.placement.position.z(),
-			order: image.placement.id,
+			place: UiDrawPlace::of(
+				&image.placement,
+				placement_clip_mask(render, &image.placement, &mut draw_list.motions),
+			),
 			image_id: image.image_id,
 			version: image.version,
 			source_width: image.source_width,
 			source_height: image.source_height,
 			source: image.source.clone(),
-			position: [image.placement.position.x(), image.placement.position.y()],
-			size: [image.placement.size.x(), image.placement.size.y()],
-			clip: draw_clip_from_geometry(image.placement.clip),
-			clip_mask: image_clip_mask,
 			opacity: image.placement.opacity,
 		});
 	}
 
 	for text in render.texts() {
-		let text_clip_mask = placement_clip_mask(render, &text.placement, &mut draw_list.motions);
+		let clip_mask = placement_clip_mask(render, &text.placement, &mut draw_list.motions);
 		let mut color = text.color;
 		color.a *= text.placement.opacity;
 		// Filter before touching retained strings so hidden text cannot discard reusable storage.
@@ -2340,12 +2276,7 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 			continue;
 		}
 		let mut entry = UiTextDrawElement {
-			depth: text.placement.position.z(),
-			order: text.placement.id,
-			position: [text.placement.position.x(), text.placement.position.y()],
-			size: [text.placement.size.x(), text.placement.size.y()],
-			clip: draw_clip_from_geometry(text.placement.clip),
-			clip_mask: text_clip_mask,
+			place: UiDrawPlace::of(&text.placement, clip_mask),
 			color,
 			font_size: text.font_size * text.placement.scale[0].min(text.placement.scale[1]),
 			font: text.font,
@@ -2364,36 +2295,6 @@ pub(super) fn update_from_render(render: &engine::Render, draw_list: &mut UiDraw
 	draw_list.texts.truncate(text_count);
 }
 
-/// Scales a segment's points about the curve element's origin.
-fn scale_segment(segment: &CurveSegment, scale: [f32; 2]) -> CurveSegment {
-	if scale == [1.0, 1.0] {
-		return segment.clone();
-	}
-	let scaled = |point: CurvePoint| CurvePoint::new(point.x * scale[0], point.y * scale[1]);
-	match *segment {
-		CurveSegment::Line { from, to } => CurveSegment::Line {
-			from: scaled(from),
-			to: scaled(to),
-		},
-		CurveSegment::Quadratic { from, control, to } => CurveSegment::Quadratic {
-			from: scaled(from),
-			control: scaled(control),
-			to: scaled(to),
-		},
-		CurveSegment::Cubic {
-			from,
-			control0,
-			control1,
-			to,
-		} => CurveSegment::Cubic {
-			from: scaled(from),
-			control0: scaled(control0),
-			control1: scaled(control1),
-			to: scaled(to),
-		},
-	}
-}
-
 pub(super) fn should_draw_image(image: &UiImageDrawElement) -> bool {
 	image.source_width > 0
 		&& image.source_height > 0
@@ -2401,7 +2302,7 @@ pub(super) fn should_draw_image(image: &UiImageDrawElement) -> bool {
 			.source
 			.pixels()
 			.is_none_or(|pixels| pixels.len() == image.source_width as usize * image.source_height as usize * 4)
-		&& image.size[0] > 0.0
-		&& image.size[1] > 0.0
+		&& image.place.size[0] > 0.0
+		&& image.place.size[1] > 0.0
 		&& image.opacity > 0.0
 }

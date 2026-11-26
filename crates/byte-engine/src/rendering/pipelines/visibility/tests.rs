@@ -1,9 +1,6 @@
 //! Executes the checked-in visibility BESL assets in the BESL VM against small fixtures, and places meshes in the
 //! geometry streams.
 
-#[cfg(target_os = "windows")]
-mod dx12_payload;
-
 use besl::vm::{
 	Buffer, DescriptorBindings, ExecutableProgram, ExecutionConfig, MeshOutputs, ResourceSlot, TaskOutputs, Texture, Value,
 	WorkgroupState, input_slot, output_slot,
@@ -12,7 +9,10 @@ use besl::vm::{
 use super::geometry::{GeometryCapacity, GeometryCounts, GeometryRanges, RetiredRanges};
 use super::layout::{MESHLET_LOCAL_VERTICES, NO_COARSER_LEVEL, ShaderMeshLevel, ShaderMeshletData, ShaderMeshletVertex};
 use super::mesh_dispatch::MeshDispatchWorkItem;
-use super::render_pass::{MAX_DEPTH_PYRAMID_HEIGHT, MAX_DEPTH_PYRAMID_MIP_COUNT, MAX_DEPTH_PYRAMID_WIDTH, OcclusionPhase};
+use super::render_pass::{
+	DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL, DIRECTIONAL_SHADOW_PYRAMID_LAST_LEVEL, MAX_DEPTH_PYRAMID_HEIGHT,
+	MAX_DEPTH_PYRAMID_MIP_COUNT, MAX_DEPTH_PYRAMID_WIDTH, OcclusionPhase,
+};
 use super::shader_data::{MESH_FLAG_DOUBLE_SIDED, MESH_FLAG_SKINNED};
 use crate::rendering::shader_vm_test::{
 	IDENTITY_MATRIX, array_buffer, assert_rgba_close, buffer, column_major, compile, empty_image, input_buffer, lane_config,
@@ -714,75 +714,67 @@ fn task_main_culls_the_meshlet_each_shared_lane_names() {
 	assert_eq!(task_groups(&outputs), [[[0, 0], [2, 0]]]);
 }
 
-/// Verifies camera culling retains an intersecting meshlet and rejects one outside the frustum.
+/// Verifies camera culling keeps an intersecting meshlet and rejects one outside the frustum, that workgroup barriers
+/// and atomics compact the kept meshlets in lane order, and that culling reads the work item the global dispatch
+/// position selects.
 #[test]
-fn task_main_emits_in_frustum_and_culls_off_frustum_meshlets() {
-	let payload = |center_radius| camera_task_payload(&[center_radius], TaskMeshFixture::default(), 0);
+fn task_main_compacts_the_in_frustum_meshlets_in_lane_order() {
+	let payload =
+		|center_radii: &[[f32; 4]], workgroup| camera_task_payload(center_radii, TaskMeshFixture::default(), workgroup);
 
-	assert_eq!(payload([0.0, 0.0, 0.5, 0.1]), [batched_meshlet_instance(0, 0)]);
-	assert_eq!(payload([4.0, 0.0, 0.5, 0.1]), []);
+	assert_eq!(payload(&[[0.0, 0.0, 0.5, 0.1]], 0), [batched_meshlet_instance(0, 0)]);
+	assert_eq!(payload(&[[4.0, 0.0, 0.5, 0.1]], 0), []);
+	assert_eq!(
+		payload(&[[0.0, 0.0, 0.5, 0.1], [4.0, 0.0, 0.5, 0.1], [0.5, 0.0, 0.5, 0.1]], 0),
+		[batched_meshlet_instance(0, 0), batched_meshlet_instance(2, 0)]
+	);
+	assert_eq!(payload(&[[0.0, 0.0, 0.5, 0.1]], 1), [batched_meshlet_instance(0, 0)]);
 }
 
 /// Verifies the task emits nothing for an instance whose bounds no view reaches, even where its meshlet bounds would
-/// pass on their own.
+/// pass on their own, while posed geometry reaches every view of the batch, whatever its bind-pose bounds.
 #[test]
-fn task_main_culls_instances_outside_every_view() {
-	let outside = TaskMeshFixture {
-		bounding_sphere: [4.0, 0.0, 0.5, 0.1],
-		..Default::default()
+fn task_main_culls_instances_outside_every_view_unless_skinned() {
+	let payload = |flags| {
+		let mesh = TaskMeshFixture {
+			flags,
+			bounding_sphere: [4.0, 0.0, 0.5, 0.1],
+			..Default::default()
+		};
+		let center_radius = [if flags == 0 { 0.0 } else { 4.0 }, 0.0, 0.5, 0.1];
+		task_payload(&run_meshlet_task_workgroup(
+			&[IDENTITY_MATRIX; 2],
+			[0, 2],
+			0.0,
+			&[center_radius],
+			mesh,
+			0,
+			None,
+		))
 	};
-	let output = run_meshlet_task_workgroup(&[IDENTITY_MATRIX; 2], [0, 2], 0.0, &[[0.0, 0.0, 0.5, 0.1]], outside, 0, None);
-	assert_eq!(task_payload(&output), []);
-}
 
-/// Verifies workgroup barriers and atomics compact visible meshlets in lane order before publishing the final count.
-#[test]
-fn task_workgroup_compacts_mixed_meshlets_in_lane_order() {
-	let payload = camera_task_payload(
-		&[[0.0, 0.0, 0.5, 0.1], [4.0, 0.0, 0.5, 0.1], [0.5, 0.0, 0.5, 0.1]],
-		TaskMeshFixture::default(),
-		0,
-	);
-
-	assert_eq!(payload, [batched_meshlet_instance(0, 0), batched_meshlet_instance(2, 0)]);
-}
-
-/// Verifies culling reads the work item selected by the global dispatch position.
-#[test]
-fn task_main_selects_later_batched_workgroup() {
-	let payload = camera_task_payload(&[[0.0, 0.0, 0.5, 0.1]], TaskMeshFixture::default(), 1);
-	assert_eq!(payload, [batched_meshlet_instance(0, 0)]);
-}
-
-/// Verifies posed geometry reaches every view of the batch, whatever its bind-pose bounds.
-#[test]
-fn task_main_keeps_skinned_meshlets_in_every_view() {
-	let skinned = TaskMeshFixture {
-		flags: MESH_FLAG_SKINNED,
-		bounding_sphere: [4.0, 0.0, 0.5, 0.1],
-		..Default::default()
-	};
-	let output = run_meshlet_task_workgroup(&[IDENTITY_MATRIX; 2], [0, 2], 0.0, &[[4.0, 0.0, 0.5, 0.1]], skinned, 0, None);
-
+	assert_eq!(payload(0), []);
 	assert_eq!(
-		task_payload(&output),
+		payload(MESH_FLAG_SKINNED),
 		[batched_meshlet_instance(0, 0), batched_meshlet_instance(0, 1)]
 	);
 }
 
 /// Verifies an orthographic view skips an instance narrower than the minimum caster extent and keeps one at least that
-/// wide, while a skinned instance reaches the view whatever its size.
+/// wide, while a skinned instance reaches the view whatever its size. A cluster mesh's level is measured by its caster
+/// radius: a level whose sphere is wide, because it spans many copies, is skipped when its largest copy is narrower.
 #[test]
 fn task_main_skips_casters_narrower_than_the_minimum_extent() {
 	// The identity view-projection is orthographic at one normalized device unit per meter, so a sphere of radius r is
 	// 2r across.
-	let payload = |radius: f32, flags| {
+	let payload = |radius: f32, flags, caster_radius| {
 		let mesh = TaskMeshFixture {
 			flags,
 			bounding_sphere: [0.0, 0.0, 0.5, radius],
+			caster_radius,
 			..Default::default()
 		};
-		let center_radius = [0.0, 0.0, 0.5, radius];
+		let center_radius = [0.0, 0.0, 0.5, if caster_radius.is_some() { 0.1 } else { radius }];
 		task_payload(&run_meshlet_task_workgroup(
 			&[IDENTITY_MATRIX],
 			[0, 1],
@@ -794,35 +786,12 @@ fn task_main_skips_casters_narrower_than_the_minimum_extent() {
 		))
 	};
 
-	assert_eq!(payload(0.2, 0), []);
-	assert_eq!(payload(0.25, 0), [batched_meshlet_instance(0, 0)]);
-	assert_eq!(payload(0.2, MESH_FLAG_SKINNED), [batched_meshlet_instance(0, 0)]);
-}
-
-/// Verifies an orthographic view measures a cluster mesh's level by its caster radius: a level whose sphere is wide,
-/// because it spans many copies, is skipped when its largest copy is narrower than the minimum caster extent.
-#[test]
-fn task_main_skips_a_wide_level_whose_copies_are_narrower_than_the_minimum_extent() {
-	let payload = |caster_radius: f32| {
-		let mesh = TaskMeshFixture {
-			// Two units across, well past the half unit the view asks for.
-			bounding_sphere: [0.0, 0.0, 0.5, 1.0],
-			caster_radius: Some(caster_radius),
-			..Default::default()
-		};
-		task_payload(&run_meshlet_task_workgroup(
-			&[IDENTITY_MATRIX],
-			[0, 1],
-			0.5,
-			&[[0.0, 0.0, 0.5, 0.1]],
-			mesh,
-			0,
-			None,
-		))
-	};
-
-	assert_eq!(payload(0.2), []);
-	assert_eq!(payload(0.25), [batched_meshlet_instance(0, 0)]);
+	assert_eq!(payload(0.2, 0, None), []);
+	assert_eq!(payload(0.25, 0, None), [batched_meshlet_instance(0, 0)]);
+	assert_eq!(payload(0.2, MESH_FLAG_SKINNED, None), [batched_meshlet_instance(0, 0)]);
+	// Two units across, well past the half unit the view asks for.
+	assert_eq!(payload(1.0, 0, Some(0.2)), []);
+	assert_eq!(payload(1.0, 0, Some(0.25)), [batched_meshlet_instance(0, 0)]);
 }
 
 /// Verifies the task rejects a meshlet facing away from the view unless its material is double-sided.
@@ -842,34 +811,11 @@ fn task_main_keeps_back_facing_meshlets_only_for_double_sided_meshes() {
 }
 
 /// Verifies a task culls each meshlet against every view of its batch and tags each emitted copy with the view that
-/// kept it.
+/// kept it, and that a frame that counts meshlets adds each kept meshlet to its view's count, while a frame that
+/// doesn't leaves the counts alone.
 #[test]
-fn task_main_emits_one_meshlet_copy_per_view_that_sees_it() {
-	let mut view_projections = [horizontally_translated_matrix(4.0); 8];
-	view_projections[3] = IDENTITY_MATRIX;
-	view_projections[5] = IDENTITY_MATRIX;
-	// Views 2 through 5: only the second and fourth see the meshlet.
-	let output = run_meshlet_task_workgroup(
-		&view_projections,
-		[2, 4],
-		0.0,
-		&[[0.0, 0.0, 0.5, 0.1]],
-		TaskMeshFixture::default(),
-		0,
-		None,
-	);
-
-	assert_eq!(
-		task_payload(&output),
-		[batched_meshlet_instance(0, 1), batched_meshlet_instance(0, 3)]
-	);
-}
-
-/// Verifies a frame that counts meshlets adds each kept meshlet to its view's count, and a frame that doesn't leaves
-/// the counts alone.
-#[test]
-fn task_main_counts_the_meshlets_each_view_keeps_only_when_the_frame_asks() {
-	let kept = |counts_meshlets| {
+fn task_main_emits_and_counts_one_meshlet_copy_per_view_that_sees_it() {
+	let run = |counts_meshlets, center_radii: &[[f32; 4]]| {
 		let mut view_projections = [horizontally_translated_matrix(4.0); 8];
 		view_projections[3] = IDENTITY_MATRIX;
 		view_projections[5] = IDENTITY_MATRIX;
@@ -877,15 +823,20 @@ fn task_main_counts_the_meshlets_each_view_keeps_only_when_the_frame_asks() {
 			counts_meshlets,
 			..Default::default()
 		};
-		// Views 2 through 5: only views 3 and 5 see the meshlets, and the last meshlet lies outside both.
-		let center_radii = [[0.0, 0.0, 0.5, 0.1], [0.5, 0.0, 0.5, 0.1], [4.0, 0.0, 0.5, 0.1]];
-		run_meshlet_task_workgroup(&view_projections, [2, 4], 0.0, &center_radii, mesh, 0, None).kept_meshlets
+		// Views 2 through 5: only views 3 and 5, the batch's second and fourth, see the meshlets.
+		run_meshlet_task_workgroup(&view_projections, [2, 4], 0.0, center_radii, mesh, 0, None)
 	};
 
-	let counted = kept(true);
+	assert_eq!(
+		task_payload(&run(false, &[[0.0, 0.0, 0.5, 0.1]])),
+		[batched_meshlet_instance(0, 1), batched_meshlet_instance(0, 3)]
+	);
+	// The last meshlet lies outside both views.
+	let center_radii = [[0.0, 0.0, 0.5, 0.1], [0.5, 0.0, 0.5, 0.1], [4.0, 0.0, 0.5, 0.1]];
+	let counted = run(true, &center_radii).kept_meshlets;
 	assert_eq!((counted[3], counted[5]), (2, 2));
 	assert_eq!(counted.iter().sum::<u32>(), 4);
-	assert!(kept(false).iter().all(|&count| count == 0));
+	assert!(run(false, &center_radii).kept_meshlets.iter().all(|&count| count == 0));
 }
 
 /* Per-view detail levels */
@@ -922,59 +873,57 @@ fn shadow_view_level(mesh: TaskMeshFixture) -> [u32; 2] {
 	view_levels(&run, 1)[0]
 }
 
-/// Verifies a shadow view draws the coarsest level whose error its texels hide: with four texels across its two
-/// normalized device units, a texel spans half a unit, which hides errors of 0.1 and 0.4 but not of 0.6.
+/// Verifies a shadow view draws the coarsest level whose error its texels hide, and the level the instance record
+/// names otherwise. With four texels across its two normalized device units, a texel spans half a unit, which hides
+/// errors of 0.1 and 0.4 but not of 0.6; twice the allowed error, as `render.lod.bias` at two gives, hides the coarsest
+/// level's error too. A view whose texels show every coarser level's error, a posed skinned instance, a frame that
+/// forces a level, and the camera's own views, which name no texels, draw the instance's own level.
 #[test]
-fn a_shadow_view_with_coarse_texels_draws_a_coarser_levels_meshlets() {
+fn shadow_views_draw_the_coarsest_level_their_texels_hide() {
 	let coarse = TaskMeshFixture {
 		view_texels: 4.0,
 		..Default::default()
 	};
-	assert_eq!(shadow_view_level(coarse), [2, 2]);
-	// Twice the allowed error, as `render.lod.bias` at two gives, hides the coarsest level's error too.
-	let biased = TaskMeshFixture {
-		shadow_level_error: 2.0,
-		..coarse
-	};
-	assert_eq!(shadow_view_level(biased), [1, 3]);
-}
-
-/// Verifies a shadow view whose texels show every coarser level's error draws the level the camera draws, the one the
-/// instance record names: it has no finer level to step to.
-#[test]
-fn a_shadow_view_with_fine_texels_draws_the_cameras_level() {
-	let fine = TaskMeshFixture {
-		view_texels: 1024.0,
-		..Default::default()
-	};
-	assert_eq!(shadow_view_level(fine), [5, 0]);
-}
-
-/// Verifies a posed skinned instance, a frame that forces a level, and the camera's own views draw the level the
-/// instance record names, however coarse the view's texels are.
-#[test]
-fn skinned_instances_forced_levels_and_camera_views_draw_the_instances_own_level() {
-	let coarse = TaskMeshFixture {
-		view_texels: 4.0,
-		..Default::default()
-	};
-	let skinned = TaskMeshFixture {
-		flags: MESH_FLAG_SKINNED,
-		..coarse
-	};
-	assert_eq!(shadow_view_level(skinned), [5, 0]);
-	// A frame that forces a level allows its shadow views no error.
-	let forced = TaskMeshFixture {
-		shadow_level_error: 0.0,
-		..coarse
-	};
-	assert_eq!(shadow_view_level(forced), [5, 0]);
-	// The camera's passes name no texels.
-	let camera = TaskMeshFixture {
-		view_texels: 0.0,
-		..coarse
-	};
-	assert_eq!(shadow_view_level(camera), [5, 0]);
+	for (mesh, expected) in [
+		(coarse, [2, 2]),
+		(
+			TaskMeshFixture {
+				shadow_level_error: 2.0,
+				..coarse
+			},
+			[1, 3],
+		),
+		(
+			TaskMeshFixture {
+				view_texels: 1024.0,
+				..coarse
+			},
+			[5, 0],
+		),
+		(
+			TaskMeshFixture {
+				flags: MESH_FLAG_SKINNED,
+				..coarse
+			},
+			[5, 0],
+		),
+		(
+			TaskMeshFixture {
+				shadow_level_error: 0.0,
+				..coarse
+			},
+			[5, 0],
+		),
+		(
+			TaskMeshFixture {
+				view_texels: 0.0,
+				..coarse
+			},
+			[5, 0],
+		),
+	] {
+		assert_eq!(shadow_view_level(mesh), expected);
+	}
 }
 
 /// Verifies each view of a batch picks its own level: a view that shows a quarter of the detail of its neighbor, at
@@ -1663,68 +1612,67 @@ fn assert_triangle_mesh_program(
 	}
 }
 
-/// Verifies visibility mesh output geometry and metadata through the BESL VM.
+/// Verifies each mesh stage's output contract over one triangle meshlet. The camera's stages draw view zero, and the
+/// shadow stages the view their payload names and its layer, offset from the batch's first view and layer. Every stage
+/// reads a meshlet's own vertices when it keeps them, and an instance's vertices from the base its record names, as a
+/// posed instance's own range is. The shadow stages draw the level the task stage chose for the view, with that level's
+/// vertices and sphere. A mirrored instance's triangles keep facing front, so back-face culling hides the same faces it
+/// hides when the instance isn't mirrored.
 #[test]
-fn visibility_mesh_main_emits_identity_triangle_and_metadata() {
-	assert_triangle_mesh_program(
-		asset!("visibility-mesh.besl"),
-		MeshView::CAMERA,
-		IDENTITY_AFFINE_MATRIX,
-		0,
-		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
-		None,
+fn mesh_stages_emit_the_triangle_and_metadata_of_their_view() {
+	// A model that mirrors x, as a scale of -1 along it does.
+	const MIRRORING: [f32; 12] = [-1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
+	let program = |stage| match stage {
+		0 => asset!("visibility-mesh.besl"),
+		1 => asset!("masked-visibility-mesh.besl"),
+		2 => asset!("shadow-mesh.besl"),
+		_ => asset!("masked-shadow-mesh.besl"),
+	};
+	let attributes = [
 		MeshAttributes::InstanceAndPrimitive,
-		false,
-	);
-}
-
-/// Verifies the mesh stages draw a meshlet from the meshlet vertex buffer when it keeps its vertices there.
-#[test]
-fn mesh_stages_read_a_meshlets_own_vertices() {
-	for (program, attributes, layer) in [
-		(asset!("visibility-mesh.besl"), MeshAttributes::InstanceAndPrimitive, None),
-		(
-			asset!("masked-visibility-mesh.besl"),
-			MeshAttributes::InstanceMaterialPrimitiveAndUv,
-			None,
-		),
-		(asset!("shadow-mesh.besl"), MeshAttributes::None, Some(0)),
-		(asset!("masked-shadow-mesh.besl"), MeshAttributes::MaterialAndUv, Some(0)),
-	] {
-		assert_triangle_mesh_program(
-			program,
-			MeshView::CAMERA,
-			IDENTITY_AFFINE_MATRIX,
-			0,
-			[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
-			layer,
-			attributes,
-			true,
-		);
-	}
-}
-
-/// Verifies the masked visibility mesh stage also passes its fragment stage the material word and the UV, at locations
-/// of their own.
-#[test]
-fn masked_visibility_mesh_main_emits_identity_triangle_and_metadata() {
-	assert_triangle_mesh_program(
-		asset!("masked-visibility-mesh.besl"),
-		MeshView::CAMERA,
-		IDENTITY_AFFINE_MATRIX,
-		0,
-		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
-		None,
 		MeshAttributes::InstanceMaterialPrimitiveAndUv,
-		false,
-	);
+		MeshAttributes::None,
+		MeshAttributes::MaterialAndUv,
+	];
+	for stage in 0..4 {
+		let shadow = stage >= 2;
+		// The shadow view is shifted right by two.
+		let (view, layer, shift) = if shadow {
+			(MeshView::SHADOW, Some(3), 2.0)
+		} else {
+			(MeshView::CAMERA, None, 0.0)
+		};
+		let triangle = |mirror: f32| [[-1.0, -1.0], [1.0, -1.0], [0.0, 1.0]].map(|[x, y]| [mirror * x + shift, y, 0.0, 1.0]);
+		let draws = |view, model, base_vertex, mirror, local_vertices| {
+			assert_triangle_mesh_program(
+				program(stage),
+				view,
+				model,
+				base_vertex,
+				triangle(mirror),
+				layer,
+				attributes[stage],
+				local_vertices,
+			);
+		};
+		for local_vertices in [false, true] {
+			draws(view, IDENTITY_AFFINE_MATRIX, 0, 1.0, local_vertices);
+			if shadow {
+				let coarser = MeshView { level_steps: 2, ..view };
+				draws(coarser, IDENTITY_AFFINE_MATRIX, 0, 1.0, local_vertices);
+			}
+		}
+		draws(view, IDENTITY_AFFINE_MATRIX, 7, 1.0, false);
+		draws(view, MIRRORING, 0, -1.0, false);
+	}
 }
 
-/// Verifies one mesh grid draws every meshlet of its group: each one's vertices after the earlier ones', its triangles
-/// naming them there, and each triangle marked with its own meshlet and its place in it.
-#[test]
-fn visibility_mesh_main_draws_every_meshlet_of_its_group() {
+/// Runs the masked visibility mesh stage over one group of two meshlets, the second beside the first, each over three
+/// vertices of its own, which hold `triangles[0]` and `triangles[1]` triangles naming those vertices. Runs the lanes
+/// `0..threads` and returns the mesh outputs and the attribute buffers.
+fn run_meshlet_group(triangles: [usize; 2], threads: u32) -> (MeshOutputs, Vec<besl::vm::Buffer>) {
 	let program = asset!("masked-visibility-mesh.besl");
+	let total = triangles[0] + triangles[1];
 	let mut views = buffer(&program, slot(&program, VIEWS));
 	views
 		.write_array_member(0, "view_projection", Value::Mat4F(IDENTITY_MATRIX))
@@ -1733,139 +1681,11 @@ fn visibility_mesh_main_draws_every_meshlet_of_its_group() {
 	write_fixture_mesh(&mut meshes, 0, [0; 2]);
 	let mut mesh_levels = array_buffer(&program, slot(&program, MESH_LEVELS), FIXTURE_TABLE_LENGTH);
 	write_fixture_level(&mut mesh_levels, [0.0, 0.0, 0.0, 2.0], 2, 0);
-	// Two triangle meshlets, the second beside the first, each over three vertices of its own.
 	let mut positions = array_buffer(&program, slot(&program, VERTEX_POSITIONS), 6);
 	let mut vertex_uvs = array_buffer(&program, slot(&program, VERTEX_UVS), 6);
 	let mut vertex_indices = array_buffer(&program, slot(&program, VERTEX_INDICES), 6);
-	let mut primitive_indices = array_buffer(&program, slot(&program, PRIMITIVE_INDICES), 6);
-	let corners = [[-1.0, -1.0], [1.0, -1.0], [0.0, 1.0]];
-	for index in 0..6 {
-		let [x, y] = corners[index % 3];
-		positions
-			.write_array_element(index, Value::Vec3F([x + 4.0 * (index / 3) as f32, y, 0.0]))
-			.expect("mesh vertex");
-		vertex_uvs
-			.write_array_element(index, Value::Vec2F16([besl::vm::f16::ZERO; 2]))
-			.expect("mesh UV");
-		vertex_indices
-			.write_array_element(index, Value::U16(index as u16))
-			.expect("vertex index");
-		// Each triangle names the three vertices of its own meshlet.
-		primitive_indices
-			.write_array_element(index, Value::U8((index % 3) as u8))
-			.expect("triangle index");
-	}
-	let mut meshlets = array_buffer(&program, slot(&program, MESHLETS), FIXTURE_MESHLET_INDEX + 2);
-	for meshlet in 0..2 {
-		let record = ShaderMeshletData::new(
-			meshlet * 3,
-			meshlet,
-			[3, 1],
-			[0.0; 4],
-			[0.0, 0.0, 0.0, 2.0],
-			[0.0, 0.0, 1.0],
-			2.0,
-		);
-		write_meshlet(&mut meshlets, FIXTURE_MESHLET_INDEX + meshlet as usize, record);
-	}
-	let mut mesh_dispatch_work = array_buffer(&program, slot(&program, MESH_DISPATCH_WORK), FIXTURE_TABLE_LENGTH);
-	mesh_dispatch_work
-		.write_array_element(
-			0,
-			Value::U32(MeshDispatchWorkItem::new(FIXTURE_INSTANCE_INDEX as u32, 0).packed),
-		)
-		.expect("mesh dispatch work");
-	let mut push_constant = push_constant_buffer(&program);
-	for member in ["work_range", "view_base", "layer_base"] {
-		push_constant.write(member, Value::U32(0)).expect("mesh push constant");
-	}
-	push_constant.write("view_count", Value::U32(1)).expect("mesh view count");
-	// The lanes that kept the two meshlets, as one group.
-	let payload = [group_entry(0, 0, [3, 1], false), group_entry(1, 0, [6, 2], true)];
-
-	let mut out_attributes = (0..MeshAttributes::InstanceMaterialPrimitiveAndUv.locations())
-		.map(|location| buffer(&program, output_slot(location)))
-		.collect::<Vec<_>>();
-	let mut mesh_outputs = MeshOutputs::new();
-	{
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_task_payload("meshlet_instances", mesh_task_payload(&payload, 0));
-		descriptors.bind_buffer(slot(&program, MESH_DISPATCH_WORK), &mut mesh_dispatch_work);
-		descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
-		descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
-		descriptors.bind_buffer(slot(&program, MESH_LEVELS), &mut mesh_levels);
-		descriptors.bind_buffer(slot(&program, VERTEX_POSITIONS), &mut positions);
-		descriptors.bind_buffer(slot(&program, VERTEX_UVS), &mut vertex_uvs);
-		descriptors.bind_buffer(slot(&program, VERTEX_INDICES), &mut vertex_indices);
-		descriptors.bind_buffer(slot(&program, PRIMITIVE_INDICES), &mut primitive_indices);
-		descriptors.bind_buffer(slot(&program, MESHLETS), &mut meshlets);
-		for (location, attribute) in out_attributes.iter_mut().enumerate() {
-			descriptors.bind_buffer(output_slot(location as u8), attribute);
-		}
-		descriptors.bind_push_constant(&mut push_constant);
-		descriptors.bind_mesh_outputs(&mut mesh_outputs);
-		for thread_idx in 0..6 {
-			program
-				.run_main_with_config(&mut descriptors, &lane_config(thread_idx).with_threadgroup_position(0))
-				.expect("production mesh shader execution");
-		}
-	}
-
-	assert_eq!((mesh_outputs.vertex_count(), mesh_outputs.primitive_count()), (6, 2));
-	for index in 0..6 {
-		let [x, y] = corners[index % 3];
-		assert_rgba_close(
-			mesh_outputs.vertex_position(index).expect("mesh vertex output"),
-			[x + 4.0 * (index / 3) as f32, y, 0.0, 1.0],
-			0.00001,
-		);
-	}
-	assert_eq!(
-		[0, 1].map(|triangle| mesh_outputs.triangle(triangle).expect("mesh triangle output")),
-		[[0, 1, 2], [3, 4, 5]]
-	);
-	for triangle in 0..2 {
-		assert_eq!(
-			out_attributes[0]
-				.read_indexed("out_instance_index", triangle)
-				.expect("mesh output"),
-			Value::U32(FIXTURE_INSTANCE_INDEX as u32)
-		);
-		// Each triangle is the first of its own meshlet.
-		assert_eq!(
-			out_attributes[2]
-				.read_indexed("out_primitive_index", triangle)
-				.expect("mesh output"),
-			Value::U32((FIXTURE_MESHLET_INDEX as u32 + triangle as u32) << 8)
-		);
-	}
-}
-
-/// Verifies a mesh grid draws the triangles past its thread count, which each thread draws after the triangle of its
-/// own index.
-#[test]
-fn visibility_mesh_main_draws_triangles_past_its_thread_count() {
-	// A full meshlet, and the whole group.
-	const FULL: usize = 126;
-	const TRIANGLES: usize = 131;
-	let program = asset!("masked-visibility-mesh.besl");
-	let mut views = buffer(&program, slot(&program, VIEWS));
-	views
-		.write_array_member(0, "view_projection", Value::Mat4F(IDENTITY_MATRIX))
-		.expect("mesh view");
-	let mut meshes = array_buffer(&program, slot(&program, MESH_DATA), FIXTURE_TABLE_LENGTH);
-	write_fixture_mesh(&mut meshes, 0, [0; 2]);
-	let mut mesh_levels = array_buffer(&program, slot(&program, MESH_LEVELS), FIXTURE_TABLE_LENGTH);
-	write_fixture_level(&mut mesh_levels, [0.0, 0.0, 0.0, 2.0], 2, 0);
-	// Two meshlets, the second beside the first, each over three vertices of its own: a full meshlet of 126 triangles,
-	// then one of 5, whose triangles are the group's 127th to 131st.
-	let mut positions = array_buffer(&program, slot(&program, VERTEX_POSITIONS), 6);
-	let mut vertex_uvs = array_buffer(&program, slot(&program, VERTEX_UVS), 6);
-	let mut vertex_indices = array_buffer(&program, slot(&program, VERTEX_INDICES), 6);
-	let mut primitive_indices = array_buffer(&program, slot(&program, PRIMITIVE_INDICES), TRIANGLES * 3);
-	let corners = [[-1.0, -1.0], [1.0, -1.0], [0.0, 1.0]];
-	for index in 0..6 {
-		let [x, y] = corners[index % 3];
+	let mut primitive_indices = array_buffer(&program, slot(&program, PRIMITIVE_INDICES), total * 3);
+	for (index, [x, y]) in GROUP_CORNERS.into_iter().cycle().take(6).enumerate() {
 		positions
 			.write_array_element(index, Value::Vec3F([x + 4.0 * (index / 3) as f32, y, 0.0]))
 			.expect("mesh vertex");
@@ -1876,18 +1696,17 @@ fn visibility_mesh_main_draws_triangles_past_its_thread_count() {
 			.write_array_element(index, Value::U16(index as u16))
 			.expect("vertex index");
 	}
-	// Each triangle names the three vertices of its own meshlet.
-	for index in 0..TRIANGLES * 3 {
+	for index in 0..total * 3 {
 		primitive_indices
 			.write_array_element(index, Value::U8((index % 3) as u8))
 			.expect("triangle index");
 	}
 	let mut meshlets = array_buffer(&program, slot(&program, MESHLETS), FIXTURE_MESHLET_INDEX + 2);
-	for (meshlet, (first_triangle, triangles)) in [(0, FULL), (FULL, TRIANGLES - FULL)].into_iter().enumerate() {
+	for (meshlet, (first_triangle, count)) in [(0, triangles[0]), (triangles[0], triangles[1])].into_iter().enumerate() {
 		let record = ShaderMeshletData::new(
 			meshlet as u32 * 3,
 			first_triangle as u32,
-			[3, triangles as u8],
+			[3, count as u8],
 			[0.0; 4],
 			[0.0, 0.0, 0.0, 2.0],
 			[0.0, 0.0, 1.0],
@@ -1909,38 +1728,80 @@ fn visibility_mesh_main_draws_triangles_past_its_thread_count() {
 	push_constant.write("view_count", Value::U32(1)).expect("mesh view count");
 	// The lanes that kept the two meshlets, as one group.
 	let payload = [
-		group_entry(0, 0, [3, FULL as u32], false),
-		group_entry(1, 0, [6, TRIANGLES as u32], true),
+		group_entry(0, 0, [3, triangles[0] as u32], false),
+		group_entry(1, 0, [6, total as u32], true),
 	];
 
 	let mut out_attributes = (0..MeshAttributes::InstanceMaterialPrimitiveAndUv.locations())
 		.map(|location| buffer(&program, output_slot(location)))
 		.collect::<Vec<_>>();
 	let mut mesh_outputs = MeshOutputs::new();
-	{
-		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_task_payload("meshlet_instances", mesh_task_payload(&payload, 0));
-		descriptors.bind_buffer(slot(&program, MESH_DISPATCH_WORK), &mut mesh_dispatch_work);
-		descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
-		descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
-		descriptors.bind_buffer(slot(&program, MESH_LEVELS), &mut mesh_levels);
-		descriptors.bind_buffer(slot(&program, VERTEX_POSITIONS), &mut positions);
-		descriptors.bind_buffer(slot(&program, VERTEX_UVS), &mut vertex_uvs);
-		descriptors.bind_buffer(slot(&program, VERTEX_INDICES), &mut vertex_indices);
-		descriptors.bind_buffer(slot(&program, PRIMITIVE_INDICES), &mut primitive_indices);
-		descriptors.bind_buffer(slot(&program, MESHLETS), &mut meshlets);
-		for (location, attribute) in out_attributes.iter_mut().enumerate() {
-			descriptors.bind_buffer(output_slot(location as u8), attribute);
-		}
-		descriptors.bind_push_constant(&mut push_constant);
-		descriptors.bind_mesh_outputs(&mut mesh_outputs);
-		for thread_idx in 0..TRIANGLES as u32 - MESH_THREADS {
-			program
-				.run_main_with_config(&mut descriptors, &lane_config(thread_idx).with_threadgroup_position(0))
-				.expect("production mesh shader execution");
-		}
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_task_payload("meshlet_instances", mesh_task_payload(&payload, 0));
+	descriptors.bind_buffer(slot(&program, MESH_DISPATCH_WORK), &mut mesh_dispatch_work);
+	descriptors.bind_buffer(slot(&program, VIEWS), &mut views);
+	descriptors.bind_buffer(slot(&program, MESH_DATA), &mut meshes);
+	descriptors.bind_buffer(slot(&program, MESH_LEVELS), &mut mesh_levels);
+	descriptors.bind_buffer(slot(&program, VERTEX_POSITIONS), &mut positions);
+	descriptors.bind_buffer(slot(&program, VERTEX_UVS), &mut vertex_uvs);
+	descriptors.bind_buffer(slot(&program, VERTEX_INDICES), &mut vertex_indices);
+	descriptors.bind_buffer(slot(&program, PRIMITIVE_INDICES), &mut primitive_indices);
+	descriptors.bind_buffer(slot(&program, MESHLETS), &mut meshlets);
+	for (location, attribute) in out_attributes.iter_mut().enumerate() {
+		descriptors.bind_buffer(output_slot(location as u8), attribute);
+	}
+	descriptors.bind_push_constant(&mut push_constant);
+	descriptors.bind_mesh_outputs(&mut mesh_outputs);
+	for thread_idx in 0..threads {
+		program
+			.run_main_with_config(&mut descriptors, &lane_config(thread_idx).with_threadgroup_position(0))
+			.expect("production mesh shader execution");
+	}
+	drop(descriptors);
+	(mesh_outputs, out_attributes)
+}
+
+/// The corners of each triangle of [`run_meshlet_group`]'s first meshlet; the second's lie four units to the right.
+const GROUP_CORNERS: [[f32; 2]; 3] = [[-1.0, -1.0], [1.0, -1.0], [0.0, 1.0]];
+
+/// Verifies one mesh grid draws every meshlet of its group: each one's vertices after the earlier ones', its triangles
+/// naming them there, and each triangle marked with its own meshlet and its place in it. A grid also draws the
+/// triangles past its thread count, which each thread draws after the triangle of its own index.
+#[test]
+fn visibility_mesh_main_draws_every_triangle_of_its_group() {
+	let (mesh_outputs, attributes) = run_meshlet_group([1, 1], 6);
+	assert_eq!((mesh_outputs.vertex_count(), mesh_outputs.primitive_count()), (6, 2));
+	for (index, [x, y]) in GROUP_CORNERS.into_iter().cycle().take(6).enumerate() {
+		assert_rgba_close(
+			mesh_outputs.vertex_position(index).expect("mesh vertex output"),
+			[x + 4.0 * (index / 3) as f32, y, 0.0, 1.0],
+			0.00001,
+		);
+	}
+	assert_eq!(
+		[0, 1].map(|triangle| mesh_outputs.triangle(triangle).expect("mesh triangle output")),
+		[[0, 1, 2], [3, 4, 5]]
+	);
+	for triangle in 0..2 {
+		assert_eq!(
+			attributes[0]
+				.read_indexed("out_instance_index", triangle)
+				.expect("mesh output"),
+			Value::U32(FIXTURE_INSTANCE_INDEX as u32)
+		);
+		// Each triangle is the first of its own meshlet.
+		assert_eq!(
+			attributes[2]
+				.read_indexed("out_primitive_index", triangle)
+				.expect("mesh output"),
+			Value::U32((FIXTURE_MESHLET_INDEX as u32 + triangle as u32) << 8)
+		);
 	}
 
+	// A full meshlet of 126 triangles, then one of 5, whose triangles are the group's 127th to 131st.
+	const FULL: usize = 126;
+	const TRIANGLES: usize = 131;
+	let (mesh_outputs, attributes) = run_meshlet_group([FULL, TRIANGLES - FULL], TRIANGLES as u32 - MESH_THREADS);
 	assert_eq!(
 		(mesh_outputs.vertex_count(), mesh_outputs.primitive_count()),
 		(6, TRIANGLES as u32)
@@ -1949,123 +1810,12 @@ fn visibility_mesh_main_draws_triangles_past_its_thread_count() {
 	for triangle in FULL + 2..TRIANGLES {
 		assert_eq!(mesh_outputs.triangle(triangle).expect("mesh triangle output"), [3, 4, 5]);
 		assert_eq!(
-			out_attributes[2]
+			attributes[2]
 				.read_indexed("out_primitive_index", triangle)
 				.expect("mesh output"),
 			Value::U32(((FIXTURE_MESHLET_INDEX as u32 + 1) << 8) | (triangle - FULL) as u32)
 		);
 	}
-}
-
-/// Verifies that an instance reads its vertices from the range its record names, as a posed instance's own range is.
-#[test]
-fn visibility_mesh_main_reads_vertices_from_its_base_vertex() {
-	assert_triangle_mesh_program(
-		asset!("visibility-mesh.besl"),
-		MeshView::CAMERA,
-		IDENTITY_AFFINE_MATRIX,
-		7,
-		[[-1.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
-		None,
-		MeshAttributes::InstanceAndPrimitive,
-		false,
-	);
-}
-
-/// Verifies shadow mesh output draws the view its payload names and its layer, offset from the batch's first view
-/// and layer.
-#[test]
-fn shadow_mesh_main_emits_selected_view_triangle_and_metadata() {
-	assert_triangle_mesh_program(
-		asset!("shadow-mesh.besl"),
-		MeshView::SHADOW,
-		IDENTITY_AFFINE_MATRIX,
-		0,
-		[[1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
-		Some(3),
-		MeshAttributes::None,
-		false,
-	);
-}
-
-/// Verifies masked shadow mesh output draws the same triangle and passes the material word its alpha test reads.
-#[test]
-fn masked_shadow_mesh_main_emits_selected_view_triangle_and_instance() {
-	assert_triangle_mesh_program(
-		asset!("masked-shadow-mesh.besl"),
-		MeshView::SHADOW,
-		IDENTITY_AFFINE_MATRIX,
-		0,
-		[[1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
-		Some(3),
-		MeshAttributes::MaterialAndUv,
-		false,
-	);
-}
-
-/// Verifies the shadow mesh stages draw each entry at the level the task stage chose for its view: the one its lane's
-/// level steps lead to from the level the instance names, with that level's vertices and sphere.
-#[test]
-fn shadow_mesh_stages_draw_the_level_the_task_stage_chose_for_the_view() {
-	let view = MeshView {
-		level_steps: 2,
-		..MeshView::SHADOW
-	};
-	let draws = |program, attributes, local_vertices| {
-		assert_triangle_mesh_program(
-			program,
-			view,
-			IDENTITY_AFFINE_MATRIX,
-			0,
-			[[1.0, -1.0, 0.0, 1.0], [3.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
-			Some(3),
-			attributes,
-			local_vertices,
-		);
-	};
-	// With and without the meshlet's own vertices, which decode within the level's sphere.
-	for local_vertices in [false, true] {
-		draws(asset!("shadow-mesh.besl"), MeshAttributes::None, local_vertices);
-		draws(
-			asset!("masked-shadow-mesh.besl"),
-			MeshAttributes::MaterialAndUv,
-			local_vertices,
-		);
-	}
-}
-
-/// A model that mirrors x, as a scale of -1 along it does.
-const MIRRORING_AFFINE_MATRIX: [f32; 12] = [-1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
-
-/// Verifies that a mirrored instance's triangles keep facing front in the visibility pass, so back-face culling hides
-/// the same faces it hides when the instance isn't mirrored.
-#[test]
-fn visibility_mesh_main_keeps_a_mirrored_instance_facing_front() {
-	assert_triangle_mesh_program(
-		asset!("visibility-mesh.besl"),
-		MeshView::CAMERA,
-		MIRRORING_AFFINE_MATRIX,
-		0,
-		[[1.0, -1.0, 0.0, 1.0], [-1.0, -1.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0]],
-		None,
-		MeshAttributes::InstanceAndPrimitive,
-		false,
-	);
-}
-
-/// Verifies that a mirrored instance's triangles keep facing front in the shadow passes.
-#[test]
-fn shadow_mesh_main_keeps_a_mirrored_instance_facing_front() {
-	assert_triangle_mesh_program(
-		asset!("shadow-mesh.besl"),
-		MeshView::SHADOW,
-		MIRRORING_AFFINE_MATRIX,
-		0,
-		[[3.0, -1.0, 0.0, 1.0], [1.0, -1.0, 0.0, 1.0], [2.0, 1.0, 0.0, 1.0]],
-		Some(3),
-		MeshAttributes::None,
-		false,
-	);
 }
 
 /* Material prepasses */
@@ -2784,7 +2534,8 @@ fn run_gtao_depth_pyramid(program: &ExecutableProgram, source: &mut Texture, wid
 	reduced
 }
 
-/// Verifies each production depth-pyramid texel keeps the nearest nonzero linear depth in its source footprint.
+/// Verifies each production depth-pyramid texel keeps the nearest nonzero linear depth in its source footprint, which
+/// at odd extents includes the last row and column.
 #[test]
 fn gtao_depth_pyramid_reduces_odd_extents_to_nearest_linear_depth() {
 	let program = asset!("depth-pyramid.besl");
@@ -2796,6 +2547,13 @@ fn gtao_depth_pyramid_reduces_odd_extents_to_nearest_linear_depth() {
 	let nearest = [gtao_fixture_linear_depth(0.9), 0.0, 0.0, 1.0];
 	for level in &reduced {
 		assert_rgba_close(rgba(level, [0, 0]), nearest, 0.00001);
+	}
+	for edge in [0, 1] {
+		let texels: Vec<_> = (0..81)
+			.map(|index| [if [index % 9, index / 9][edge] == 8 { 0.9 } else { 0.1 }, 0.0, 0.0, 1.0])
+			.collect();
+		let reduced = run_gtao_depth_pyramid(&program, &mut texture_2d(9, 9, &texels), 9, 9);
+		assert_rgba_close(rgba(&reduced[0], [3, 3]), nearest, 0.00001);
 	}
 }
 
@@ -2879,13 +2637,13 @@ fn directional_shadow_depth_pyramid_combines_each_cells_four_blocks_in_every_cas
 		}
 	}
 	let mut reduced = empty_image(cells_wide, cells_tall * layer_count);
-	let mut reduced_minimum = empty_image(cells_wide, cells_tall * layer_count);
+	let mut reduced_min_depth = empty_image(cells_wide, cells_tall * layer_count);
 	for layer in 0..layer_count {
 		for workgroup_x in [0, PYRAMID_WORKGROUP_WIDTH] {
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_texture(slot(&program, "source_depth"), &mut source);
 			descriptors.bind_image(slot(&program, "reduced_max_depth"), &mut reduced);
-			descriptors.bind_image(slot(&program, "reduced_min_depth"), &mut reduced_minimum);
+			descriptors.bind_image(slot(&program, "reduced_min_depth"), &mut reduced_min_depth);
 			run_workgroup_containing::<PYRAMID_WORKGROUP_SIZE>(
 				&program,
 				descriptors,
@@ -2900,8 +2658,43 @@ fn directional_shadow_depth_pyramid_combines_each_cells_four_blocks_in_every_cas
 				let packed_cell = [cell_x, layer * cells_tall + cell_y];
 				let maximum = cell_maximum(layer, cell_x, cell_y);
 				assert_rgba_close(rgba(&reduced, packed_cell), [maximum, 0.0, 0.0, 1.0], 0.00001);
-				assert_rgba_close(rgba(&reduced_minimum, packed_cell), [maximum * 0.25, 0.0, 0.0, 1.0], 0.00001);
+				assert_rgba_close(
+					rgba(&reduced_min_depth, packed_cell),
+					[maximum * 0.25, 0.0, 0.0, 1.0],
+					0.00001,
+				);
 			}
+		}
+	}
+}
+
+/// Verifies a level of the directional shadow depth pyramids keeps the nearest and farthest depth of the 2x2 cells under
+/// each of its cells, and that threads past the level's edge write nothing.
+#[test]
+fn directional_shadow_depth_pyramid_level_reduces_each_2x2_block_of_both_pyramids() {
+	let program = asset!("directional-shadow-depth-pyramid-level.besl");
+	// Six by four source cells, so the 8x8 workgroup reaches past the 3x2 level on both axes.
+	let (width, height) = (6u32, 4u32);
+	let depth = |x: u32, y: u32| 0.05 + (y * width + x) as f32 * 0.03;
+	let cells = (0..width * height)
+		.map(|index| [depth(index % width, index / width), 0.0, 0.0, 1.0])
+		.collect::<Vec<_>>();
+	let mut source_max_depth = texture_2d(width, height, &cells);
+	let mut source_min_depth = texture_2d(width, height, &cells);
+	let mut reduced_max_depth = empty_image(width / 2, height / 2);
+	let mut reduced_min_depth = empty_image(width / 2, height / 2);
+	let mut descriptors = DescriptorBindings::new();
+	descriptors.bind_image(slot(&program, "source_max_depth"), &mut source_max_depth);
+	descriptors.bind_image(slot(&program, "source_min_depth"), &mut source_min_depth);
+	descriptors.bind_image(slot(&program, "level_max_depth"), &mut reduced_max_depth);
+	descriptors.bind_image(slot(&program, "level_min_depth"), &mut reduced_min_depth);
+	run_workgroup_containing::<64>(&program, descriptors, 8, [0, 0]);
+	for y in 0..height / 2 {
+		for x in 0..width / 2 {
+			// Depth grows right and down, so a block's farthest cell is its top left and its nearest its bottom right.
+			let (nearest, farthest) = (depth(x * 2 + 1, y * 2 + 1), depth(x * 2, y * 2));
+			assert_rgba_close(rgba(&reduced_max_depth, [x, y]), [nearest, 0.0, 0.0, 1.0], 0.00001);
+			assert_rgba_close(rgba(&reduced_min_depth, [x, y]), [farthest, 0.0, 0.0, 1.0], 0.00001);
 		}
 	}
 }
@@ -3450,27 +3243,17 @@ fn ssgi_trace_preserves_daylight_radiance_across_an_exposure_change() {
 
 /// Verifies a flat floor never occludes itself, so every ray misses and the environment lights the pixel.
 #[test]
-fn ssgi_trace_reports_misses_on_an_unoccluded_floor() {
+fn ssgi_trace_reports_misses_on_an_unoccluded_floor_or_without_history() {
 	let program = asset!("ssgi-trace.besl");
-	for frame_index in 0..16 {
-		assert_rgba_close(
-			run_ssgi_trace(&program, None, true, frame_index, [SSGI_EXTENT / 2, 23]),
-			[0.0; 4],
-			0.0,
-		);
-	}
-}
-
-/// Verifies that without history the trace gathers nothing, because no radiance of this sink exists yet.
-#[test]
-fn ssgi_trace_reports_misses_without_history() {
-	let program = asset!("ssgi-trace.besl");
-	for frame_index in 0..16 {
-		assert_rgba_close(
-			run_ssgi_trace(&program, Some(4.0), false, frame_index, [SSGI_EXTENT / 2, 23]),
-			[0.0; 4],
-			0.0,
-		);
+	// Without history no radiance of this sink exists yet, so the trace gathers nothing either.
+	for (wall_z, history) in [(None, true), (Some(4.0), false)] {
+		for frame_index in 0..16 {
+			assert_rgba_close(
+				run_ssgi_trace(&program, wall_z, history, frame_index, [SSGI_EXTENT / 2, 23]),
+				[0.0; 4],
+				0.0,
+			);
+		}
 	}
 }
 
@@ -3575,54 +3358,33 @@ impl SsgiTemporalFixture {
 	}
 }
 
-/// Verifies the temporal stage uses only this frame's rays when there is no history.
+/// Verifies how the temporal stage uses history: it blends reprojected history of the same surface in with a 90%
+/// weight, rescales its light, not its hit fraction, by an exposure change, and uses only this frame's rays when there
+/// is no history or the previous frame saw another surface there, at another depth or facing another way, as where a
+/// foot meets the floor.
 #[test]
-fn ssgi_temporal_ignores_history_when_it_is_invalid() {
+fn ssgi_temporal_accumulates_history_only_of_the_same_surface() {
 	let raw = [0.4, 0.2, 0.1, 0.5];
-	assert_rgba_close(
-		SsgiTemporalFixture::uniform(raw, [f32::NAN; 4], false).run([4, 4]),
-		raw,
-		0.00001,
-	);
-}
+	let unusable = |history| SsgiTemporalFixture::uniform(raw, [f32::NAN; 4], history);
+	let mut rescaled = SsgiTemporalFixture::uniform([2.0, 1.0, 0.5, 0.25], [0.5, 0.25, 0.125, 0.75], true);
+	rescaled.history_exposure_ratio = 4.0;
+	let mut disoccluded = unusable(true);
+	disoccluded.previous_depth = vec![[8.0, 0.0, 0.0, 1.0]; disoccluded.previous_depth.len()];
+	let mut turned = unusable(true);
+	turned.previous_normals = vec![SSGI_FLOOR_NORMAL; turned.previous_normals.len()];
 
-/// Verifies reprojected history of the same surface is blended in with a 90% weight.
-#[test]
-fn ssgi_temporal_accumulates_history_of_the_same_surface() {
-	let raw = [1.0, 1.0, 1.0, 1.0];
-	let history = [0.0, 0.5, 0.0, 0.0];
-	assert_rgba_close(
-		SsgiTemporalFixture::uniform(raw, history, true).run([4, 4]),
-		[0.1, 0.55, 0.1, 0.1],
-		0.00001,
-	);
-}
-
-/// Verifies an exposure change rescales accumulated light while preserving the fraction of rays that hit.
-#[test]
-fn ssgi_temporal_rescales_history_rgb_without_changing_hit_fraction() {
-	let mut fixture = SsgiTemporalFixture::uniform([2.0, 1.0, 0.5, 0.25], [0.5, 0.25, 0.125, 0.75], true);
-	fixture.history_exposure_ratio = 4.0;
-	assert_rgba_close(fixture.run([4, 4]), [2.0, 1.0, 0.5, 0.7], 0.00001);
-}
-
-/// Verifies history is rejected where the previous frame saw a different surface.
-#[test]
-fn ssgi_temporal_rejects_history_of_a_disoccluded_surface() {
-	let raw = [0.4, 0.2, 0.1, 0.5];
-	let mut fixture = SsgiTemporalFixture::uniform(raw, [f32::NAN; 4], true);
-	fixture.previous_depth = vec![[8.0, 0.0, 0.0, 1.0]; fixture.previous_depth.len()];
-	assert_rgba_close(fixture.run([4, 4]), raw, 0.00001);
-}
-
-/// Verifies history is rejected where the previous frame saw a surface facing another way at the same depth, as
-/// where a foot meets the floor.
-#[test]
-fn ssgi_temporal_rejects_history_of_a_surface_facing_another_way() {
-	let raw = [0.4, 0.2, 0.1, 0.5];
-	let mut fixture = SsgiTemporalFixture::uniform(raw, [f32::NAN; 4], true);
-	fixture.previous_normals = vec![SSGI_FLOOR_NORMAL; fixture.previous_normals.len()];
-	assert_rgba_close(fixture.run([4, 4]), raw, 0.00001);
+	for (fixture, expected) in [
+		(
+			SsgiTemporalFixture::uniform([1.0; 4], [0.0, 0.5, 0.0, 0.0], true),
+			[0.1, 0.55, 0.1, 0.1],
+		),
+		(rescaled, [2.0, 1.0, 0.5, 0.7]),
+		(unusable(false), raw),
+		(disoccluded, raw),
+		(turned, raw),
+	] {
+		assert_rgba_close(fixture.run([4, 4]), expected, 0.00001);
+	}
 }
 
 /// Verifies the spatial filter does not average rays from a surface at a different depth.
@@ -3923,7 +3685,34 @@ fn sun_cascade_view() -> crate::rendering::View {
 /// zero where the ray meets nothing. Returns the map with four cascade layers for each of `suns` sun slots, the last
 /// slot's cascades drawn, and the layers' max-depth and min-depth cell pyramids as the directional shadow pyramid pass
 /// builds them.
-fn sun_shadow_map(suns: u32) -> (Texture, Texture, Texture) {
+/// Returns the directional shadow depth pyramid of `cells` per first-level cell, `width` cells wide, with a mip per level
+/// through the last, each cell reduced by `reduce` from the 2x2 cells under it, as the level pass builds them.
+fn shadow_depth_pyramid(width: u32, cells: &[[f32; 4]], reduce: fn(f32, f32) -> f32) -> Texture {
+	let mut pyramid = texture_2d(width, cells.len() as u32 / width, cells);
+	let (mut level, mut level_width) = (cells.to_vec(), width);
+	for _ in DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL..DIRECTIONAL_SHADOW_PYRAMID_LAST_LEVEL {
+		let (next_width, next_height) = (level_width / 2, level.len() as u32 / level_width / 2);
+		let at = |x: u32, y: u32| level[(y * level_width + x) as usize][0];
+		let next = (0..next_width * next_height)
+			.map(|index| {
+				let (x, y) = (index % next_width * 2, index / next_width * 2);
+				[
+					reduce(reduce(at(x, y), at(x + 1, y)), reduce(at(x, y + 1), at(x + 1, y + 1))),
+					0.0,
+					0.0,
+					1.0,
+				]
+			})
+			.collect::<Vec<_>>();
+		pyramid.add_mip(texture_2d(next_width, next_height, &next));
+		(level, level_width) = (next, next_width);
+	}
+	pyramid
+}
+
+/// Returns the cascades' shadow map, then the first level of its max-depth pyramid for the blocker search's gathers,
+/// and the max-depth and min-depth pyramids with every level.
+fn sun_shadow_map(suns: u32) -> (Texture, Texture, Texture, Texture) {
 	let extent = SUN_SHADOW_MAP_EXTENT;
 	let cascades = super::layout::SHADOW_CASCADE_COUNT as u32 * suns;
 	let first_drawn_layer = cascades - super::layout::SHADOW_CASCADE_COUNT as u32;
@@ -3954,7 +3743,8 @@ fn sun_shadow_map(suns: u32) -> (Texture, Texture, Texture) {
 		clip.z / clip.w
 	};
 	let mut shadow_map = Texture::new_3d(extent, extent, cascades).expect("shadow map fixture");
-	let cells = extent / 8;
+	let cell_size = 1 << DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL;
+	let cells = extent / cell_size;
 	let mut pyramid = vec![[0.0f32, 0.0, 0.0, 1.0]; (cells * cells * cascades) as usize];
 	let mut minimum_pyramid = pyramid.clone();
 	// Every cascade shares the one view, so each is drawn with the same depths.
@@ -3965,9 +3755,9 @@ fn sun_shadow_map(suns: u32) -> (Texture, Texture, Texture) {
 				shadow_map
 					.write_3d([x, y, drawn_layer], [depth, 0.0, 0.0, 1.0])
 					.expect("shadow map fixture");
-				let cell = ((drawn_layer * cells + y / 8) * cells + x / 8) as usize;
+				let cell = ((drawn_layer * cells + y / cell_size) * cells + x / cell_size) as usize;
 				pyramid[cell][0] = pyramid[cell][0].max(depth);
-				minimum_pyramid[cell][0] = if x % 8 == 0 && y % 8 == 0 {
+				minimum_pyramid[cell][0] = if x % cell_size == 0 && y % cell_size == 0 {
 					depth
 				} else {
 					minimum_pyramid[cell][0].min(depth)
@@ -3978,7 +3768,8 @@ fn sun_shadow_map(suns: u32) -> (Texture, Texture, Texture) {
 	(
 		shadow_map,
 		texture_2d(cells, cells * cascades, &pyramid),
-		texture_2d(cells, cells * cascades, &minimum_pyramid),
+		shadow_depth_pyramid(cells, &pyramid, f32::max),
+		shadow_depth_pyramid(cells, &minimum_pyramid, f32::min),
 	)
 }
 
@@ -4181,12 +3972,13 @@ fn run_sun_visibility_program(
 		.iter()
 		.map(|texel| [gtao_fixture_device_depth(texel[0]), 0.0, 0.0, 1.0])
 		.collect::<Vec<_>>();
-	let cells = SUN_SHADOW_MAP_EXTENT / 8;
-	let (mut shadow_map, mut shadow_cells, mut shadow_minimum_pyramid) = if shadow_map {
+	let cells = SUN_SHADOW_MAP_EXTENT >> DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL;
+	let (mut shadow_map, mut shadow_cells, mut shadow_maximum_pyramid, mut shadow_minimum_pyramid) = if shadow_map {
 		sun_shadow_map(suns as u32)
 	} else {
 		(
 			Texture::new_3d(SUN_SHADOW_MAP_EXTENT, SUN_SHADOW_MAP_EXTENT, cascades as u32).expect("shadow map fixture"),
+			empty_image(cells, cells * cascades as u32),
 			empty_image(cells, cells * cascades as u32),
 			empty_image(cells, cells * cascades as u32),
 		)
@@ -4242,6 +4034,10 @@ fn run_sun_visibility_program(
 		&mut shadow_minimum_pyramid,
 	);
 	descriptors.bind_texture(slot(&program, "directional_shadow_max_depth_pyramid"), &mut shadow_cells);
+	descriptors.bind_texture(
+		slot(&program, "directional_shadow_max_depth_pyramid_reduced"),
+		&mut shadow_maximum_pyramid,
+	);
 	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, pixel);
 	rgba(&output, pixel)
 }
@@ -4367,25 +4163,11 @@ fn sun_visibility_shadows_the_floor_the_wall_hides_from_the_sun() {
 		"Expected the floor away from the wall to be lit, got {lit}."
 	);
 	assert_eq!(run_sun_visibility(|_, _, _| 0.0, false, [column, lit_row]), 0.0);
-}
 
-/// Verifies a sun in a later slot resolves its own cascades, the shadow-map layers and views after the earlier suns',
-/// into its own channel, while an earlier sun over an empty map stays lit.
-#[test]
-fn sun_visibility_resolves_each_sun_from_its_own_cascades() {
-	let column = CONTACT_SHADOW_EXTENT / 2;
-	let row_at = |near: f32, far: f32| {
-		(0..CONTACT_SHADOW_EXTENT)
-			.find(|&row| (near..far).contains(&contact_shadow_floor_z(row)))
-			.expect("a floor row in the band")
-	};
-	let shadowed_row = row_at(CONTACT_SHADOW_WALL_Z - 0.2, CONTACT_SHADOW_WALL_Z - 0.05);
-	let lit_row = row_at(CONTACT_SHADOW_WALL_Z - 0.65, CONTACT_SHADOW_WALL_Z - 0.35);
-	let clear = |_, _, _| 1.0;
-
+	// A sun in a later slot resolves its own cascades, the shadow-map layers and views after the earlier suns', into its
+	// own channel, while an earlier sun over an empty map stays lit.
 	let shadowed = run_sun_visibility_in_slot(clear, true, [column, shadowed_row], 1);
 	assert_eq!([shadowed[0], shadowed[1]], [1.0, 0.0]);
-	// As in `sun_visibility_shadows_the_floor_the_wall_hides_from_the_sun`, a filtered lit receiver is one up to rounding.
 	let lit = run_sun_visibility_in_slot(clear, true, [column, lit_row], 1)[1];
 	assert!(
 		(lit - 1.0).abs() <= 0.000001,
@@ -4696,25 +4478,7 @@ fn run_light_clusters(lights: &[super::shader_data::LightData], exposure: f32, c
 	] {
 		cluster_parameters.write(field, value).expect("light cluster parameter");
 	}
-	let mut lighting = buffer(&program, slot(&program, "lighting_data"));
-	lighting
-		.write("light_count", Value::U32(lights.len() as u32))
-		.expect("light count");
-	lighting.write("exposure", Value::F32(exposure)).expect("exposure");
-	for (index, light) in lights.iter().enumerate() {
-		for (field, value) in [
-			("position", Value::Vec3F(light.position.into())),
-			("color", Value::Vec3F(light.color.into())),
-			("direction", Value::Vec3F(light.direction.into())),
-			("cone_cosines", Value::Vec2F(light.cone_cosines)),
-			("type", Value::U32(light.light_type)),
-			("reach", Value::F32(light.reach)),
-		] {
-			lighting
-				.write_indexed_field("lights", index, field, value)
-				.expect("light field");
-		}
-	}
+	let mut lighting = light_table(&program, lights, exposure);
 	let mut masks = buffer(&program, slot(&program, "light_cluster_masks"));
 	let configs: [ExecutionConfig; 32] =
 		std::array::from_fn(|lane| lane_config(lane as u32).with_threadgroup_position(cluster));
@@ -5259,27 +5023,6 @@ fn ssgi_temporal_retains_static_surface_history_after_camera_rotation() {
 	assert_rgba_close(fixture.run([4, 6]), [1.81, 1.81, 1.81, 0.5], 0.00001);
 }
 
-/// A nearest surface at the last row or column of an odd source must reach the reduced image.
-#[test]
-fn gtao_depth_pyramid_includes_last_row_and_column_at_odd_extents() {
-	let program = asset!("depth-pyramid.besl");
-	for edge in [0, 1] {
-		let texels: Vec<_> = (0..81)
-			.map(|index| {
-				let coordinate = [index % 9, index / 9];
-				[if coordinate[edge] == 8 { 0.9 } else { 0.1 }, 0.0, 0.0, 1.0]
-			})
-			.collect();
-		let mut source = texture_2d(9, 9, &texels);
-		let reduced = run_gtao_depth_pyramid(&program, &mut source, 9, 9);
-		assert_rgba_close(
-			rgba(&reduced[0], [3, 3]),
-			[gtao_fixture_linear_depth(0.9), 0.0, 0.0, 1.0],
-			0.00001,
-		);
-	}
-}
-
 /// A pixel's hemisphere samples over one cycle of the trace's blue noise slices must cover every quadrant of the sample
 /// square, so its rays take distinct azimuth and elevation combinations.
 #[test]
@@ -5460,8 +5203,8 @@ fn fog_light_parameters(
 	buffer
 }
 
-/// Uploads `lights` into the fog light passes' light table at `exposure`.
-fn fog_light_table(program: &ExecutableProgram, lights: &[super::shader_data::LightData], exposure: f32) -> besl::vm::Buffer {
+/// Uploads `lights` into the light table at `exposure`, as the light cluster and fog light passes bind it.
+fn light_table(program: &ExecutableProgram, lights: &[super::shader_data::LightData], exposure: f32) -> besl::vm::Buffer {
 	let mut lighting = buffer(program, slot(program, FOG_LIGHT_LIGHTING));
 	lighting
 		.write("light_count", Value::U32(lights.len() as u32))
@@ -5499,7 +5242,7 @@ fn run_fog_light_tiles(
 ) -> u32 {
 	let program = asset!("fog-light-tiles.besl");
 	let mut parameters = fog_light_parameters(&program, &super::render_pass::fog_light_shader_parameters(fog, sink, 0));
-	let mut lighting = fog_light_table(&program, lights, exposure);
+	let mut lighting = light_table(&program, lights, exposure);
 	let mut masks = buffer(&program, slot(&program, FOG_LIGHT_TILE_MASKS));
 	let tile = row * FOG_LIGHT_TILE_COLUMNS + column;
 	let configs: [ExecutionConfig; 32] = std::array::from_fn(|lane| lane_config(lane as u32).with_threadgroup_position(tile));
@@ -5551,7 +5294,7 @@ fn run_fog_light(
 	let program = asset!("fog-light.besl");
 	let sink = fog_light_sink();
 	let mut parameters = fog_light_parameters(&program, &super::render_pass::fog_light_shader_parameters(fog, &sink, 0));
-	let mut lighting = fog_light_table(&program, lights, 1.0);
+	let mut lighting = light_table(&program, lights, 1.0);
 	// The sink's one march pixel lies in the first tile, which holds every light. The tile pass's own tests cover which
 	// lights a tile holds.
 	let mut masks = buffer(&program, slot(&program, FOG_LIGHT_TILE_MASKS));

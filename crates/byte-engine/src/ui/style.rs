@@ -154,13 +154,6 @@ impl From<RGBA> for Color {
 	}
 }
 
-#[derive(Clone, Copy)]
-pub enum MixModes {
-	Add,
-	Multiply,
-	Overlay,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LayerKind {
 	Fill,
@@ -341,14 +334,6 @@ fn sanitize_backdrop_blur_radius(radius: f32) -> f32 {
 	if radius.is_finite() { radius.clamp(0.0, 64.0) } else { 0.0 }
 }
 
-pub trait Layer {
-	fn fill(&self) -> &Color;
-	fn mix_mode(&self) -> MixModes;
-	fn kind(&self) -> LayerKind;
-	fn feather(&self) -> EdgeFeather;
-	fn backdrop_blur_radius(&self) -> f32;
-}
-
 #[derive(Clone)]
 pub struct ConcreteStyle {
 	// A default fill needs no allocation; layered styles can still grow normally.
@@ -408,11 +393,6 @@ impl ConcreteLayer {
 
 	pub fn color(mut self, color: Color) -> Self {
 		self.color = color;
-		self
-	}
-
-	pub fn fill(mut self) -> Self {
-		self.kind = LayerKind::Fill;
 		self
 	}
 
@@ -482,42 +462,11 @@ impl ConcreteLayer {
 		};
 		self.backdrop_blur(radius)
 	}
-
-	/// Blurs the pixels rendered behind this layer using the legacy method name.
-	///
-	/// This method is an alias for [`ConcreteLayer::backdrop_blur`], including its
-	/// Gaussian-variance radius scale and input sanitization. Use
-	/// [`ConcreteLayer::backdrop_blur`] in new code to make the effect explicit.
-	pub fn blur(self, radius: f32) -> Self {
-		self.backdrop_blur(radius)
-	}
 }
 
 impl Default for ConcreteLayer {
 	fn default() -> Self {
 		Self::new()
-	}
-}
-
-impl Layer for ConcreteLayer {
-	fn fill(&self) -> &Color {
-		&self.color
-	}
-
-	fn mix_mode(&self) -> MixModes {
-		MixModes::Overlay
-	}
-
-	fn kind(&self) -> LayerKind {
-		self.kind
-	}
-
-	fn feather(&self) -> EdgeFeather {
-		self.feather
-	}
-
-	fn backdrop_blur_radius(&self) -> f32 {
-		self.backdrop_blur_radius
 	}
 }
 
@@ -577,17 +526,17 @@ mod tests {
 		assert_eq!(Shadow::new([2.0, -4.0], 3.0).spread(1.0).outset(), 4.0 + 1.0 + 9.0);
 		assert_eq!(Shadow::new([2.0, -4.0], 3.0).inset().outset(), 0.0);
 		let layer = ConcreteLayer::default().drop_shadow([0.0, 2.0], 4.0);
-		assert_eq!(layer.kind(), LayerKind::Shadow(Shadow::new([0.0, 2.0], 4.0)));
+		assert_eq!(layer.kind, LayerKind::Shadow(Shadow::new([0.0, 2.0], 4.0)));
 	}
 
 	#[test]
 	fn backdrop_blur_radius_sanitizes_invalid_values() {
-		assert_eq!(ConcreteLayer::default().backdrop_blur(-1.0).backdrop_blur_radius(), 0.0);
-		assert_eq!(ConcreteLayer::default().backdrop_blur(f32::NAN).backdrop_blur_radius(), 0.0);
+		assert_eq!(ConcreteLayer::default().backdrop_blur(-1.0).backdrop_blur_radius, 0.0);
+		assert_eq!(ConcreteLayer::default().backdrop_blur(f32::NAN).backdrop_blur_radius, 0.0);
 		assert_eq!(
-			ConcreteLayer::default().backdrop_blur(f32::INFINITY).backdrop_blur_radius(),
+			ConcreteLayer::default().backdrop_blur(f32::INFINITY).backdrop_blur_radius,
 			0.0
 		);
-		assert_eq!(ConcreteLayer::default().backdrop_blur(128.0).backdrop_blur_radius(), 64.0);
+		assert_eq!(ConcreteLayer::default().backdrop_blur(128.0).backdrop_blur_radius, 64.0);
 	}
 }

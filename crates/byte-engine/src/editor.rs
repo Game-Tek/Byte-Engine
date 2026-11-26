@@ -1709,7 +1709,7 @@ impl Editor {
 		let (message_type, payload) = match change {
 			fields::Change::Transform(transform) => {
 				let delta = history::Delta::between(&entity.transform, &transform);
-				self.edit(app, history::Operation::Transform { entity: handle, delta });
+				self.edit(app, history::Operation { entity: handle, delta });
 				return;
 			}
 			fields::Change::Camera(camera) => {
@@ -1882,7 +1882,7 @@ impl Editor {
 			return;
 		};
 		state.stretch = drag.stretch(pixel, snap);
-		let operation = history::Operation::Transform {
+		let operation = history::Operation {
 			entity: *handle,
 			delta: history::Delta::between(&entity.transform, &transform),
 		};
@@ -1956,7 +1956,7 @@ impl Editor {
 	/// redo all change the game through. The copy changes at once, so the gizmo and the properties panel follow without
 	/// waiting for the next scene poll.
 	fn apply(&mut self, app: &GraphicsApplication, operation: history::Operation) {
-		let history::Operation::Transform { entity: handle, delta } = operation;
+		let history::Operation { entity: handle, delta } = operation;
 		let shell = self.engine.ctx_mut();
 		let Some(entity) = shell.scene.iter_mut().find(|entity| entity.handle == handle) else {
 			log::warn!(

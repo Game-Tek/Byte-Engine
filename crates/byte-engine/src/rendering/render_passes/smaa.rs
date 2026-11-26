@@ -95,19 +95,15 @@ impl SmaaPass {
 
 		let edge_pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_tile::Descriptor::new(
-				"SMAA Edge Detection",
-				"byte_engine/rendering/smaa/edge-detection.pipeline",
-				&[ghi::Formats::RG8UNORM],
-			),
+			"SMAA Edge Detection",
+			"byte_engine/rendering/smaa/edge-detection.pipeline",
+			&[ghi::Formats::RG8UNORM],
 		);
 		let resolve_pipeline = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_tile::Descriptor::new(
-				"SMAA Blend and Neighborhood",
-				"byte_engine/rendering/smaa/blend-weights.pipeline",
-				&[output.format()],
-			),
+			"SMAA Blend and Neighborhood",
+			"byte_engine/rendering/smaa/blend-weights.pipeline",
+			&[output.format()],
 		);
 
 		let edge_pass = edge_pipeline.bind(
@@ -194,8 +190,9 @@ mod tests {
 	use besl::vm::{DescriptorBindings, Texture, WorkgroupState, output_slot};
 
 	use super::*;
-	use crate::rendering::render_pass::simple_compute;
-	use crate::rendering::shader_vm_test::{PIXEL_TILE, assert_rgba_close, empty_image, rgba, slot, texture_2d, tile_lanes};
+	use crate::rendering::shader_vm_test::{
+		PIXEL_TILE, assert_rgba_close, compile_source, empty_image, rgba, slot, texture_2d, tile_lanes,
+	};
 
 	const EDGE_SHADER: &str = include_str!("../../../assets/rendering/smaa/edge-detection.besl");
 	const RESOLVE_SHADER: &str = include_str!("../../../assets/rendering/smaa/blend-weights.besl");
@@ -209,40 +206,35 @@ mod tests {
 		)
 	}
 
-	/// Executes edge detection without depth for one complete tile over outputs of `extent`.
-	fn run_edge_tile(source: &mut Texture, result: &mut Texture, origin: [u32; 2], extent: [u32; 2]) {
-		run_edge_tile_with_depth(source, None, result, origin, extent);
-	}
-
-	/// Executes SMAA edge detection for one tile, predicated on `depth` when there is one, as a sink with a `depth`
-	/// target runs it.
-	fn run_edge_tile_with_depth(
-		source: &mut Texture,
-		depth: Option<&mut Texture>,
-		result: &mut Texture,
-		origin: [u32; 2],
-		extent: [u32; 2],
-	) {
-		let builtins = besl::Builtins::new();
-		let program = crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(&builtins, EDGE_SHADER));
-		let configs = tile_configs(origin, extent);
+	/// Runs SMAA edge detection over the `width` by `height` image `texels`, which fits one tile, predicated on `depth`
+	/// when there is one, as a sink with a `depth` target runs it, and returns the edges.
+	fn edges(texels: &[[f32; 4]], width: u32, depth: Option<&[[f32; 4]]>) -> Texture {
+		let height = texels.len() as u32 / width;
+		let mut source = texture_2d(width, height, texels);
+		let mut result = empty_image(width, height);
+		let program = compile_source(EDGE_SHADER);
+		let configs = tile_configs([0, 0], [width, height]);
 		let mut workgroup = WorkgroupState::new();
 		let mut push_constant = crate::rendering::shader_vm_test::push_constant_buffer(&program);
 		push_constant
 			.write("predicated", besl::vm::Value::U32(u32::from(depth.is_some())))
 			.expect("SMAA edge push constant");
 		// A sink without depth binds another image in depth's place, which the shader never reads.
-		let mut fallback_depth = texture_2d(1, 1, &[[0.0; 4]]);
-		let depth = depth.unwrap_or(&mut fallback_depth);
+		let mut depth = match depth {
+			Some(depth) => texture_2d(width, height, depth),
+			None => texture_2d(1, 1, &[[0.0; 4]]),
+		};
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_texture(slot(&program, "source"), source);
-		descriptors.bind_texture(slot(&program, "depth"), depth);
+		descriptors.bind_texture(slot(&program, "source"), &mut source);
+		descriptors.bind_texture(slot(&program, "depth"), &mut depth);
 		descriptors.bind_push_constant(&mut push_constant);
-		descriptors.bind_image(output_slot(0), result);
+		descriptors.bind_image(output_slot(0), &mut result);
 		descriptors.bind_workgroup_state(&mut workgroup);
 		program
 			.run_workgroup(&mut descriptors, &configs)
 			.expect("Failed to execute the SMAA edge tile. The most likely cause is invalid shared-cache synchronization.");
+		drop(descriptors);
+		result
 	}
 
 	/// Executes the fused reference-weight and neighborhood resolve for one tile over outputs of `extent`.
@@ -255,9 +247,7 @@ mod tests {
 		origin: [u32; 2],
 		extent: [u32; 2],
 	) {
-		let builtins = besl::Builtins::new();
-		let program =
-			crate::rendering::shader_vm_test::compile(&simple_compute::compile_test_program(&builtins, RESOLVE_SHADER));
+		let program = compile_source(RESOLVE_SHADER);
 		let configs = tile_configs(origin, extent);
 		let mut workgroup = WorkgroupState::new();
 		let mut descriptors = DescriptorBindings::new();
@@ -326,77 +316,29 @@ mod tests {
 		})
 	}
 
+	/// Edge detection rejects constant regions, keeps dominant edges on each axis, judges steps as a tone mapper shows
+	/// them, and finds hue edges that luma alone can't.
 	#[test]
 	fn smaa_edge_besl_vm_rejects_constant_regions_and_keeps_dominant_edges() {
-		let constant = [[0.4, 0.4, 0.4, 1.0]; 5];
-		let mut source = texture_2d(5, 1, &constant);
-		let mut edges = empty_image(5, 1);
-		run_edge_tile(&mut source, &mut edges, [0, 0], [5, 1]);
-		assert_rgba_close(rgba(&edges, [2, 0]), [0.0, 0.0, 0.0, 0.0], 0.0);
-
-		let colors = [
-			[0.0, 0.0, 0.0, 1.0],
-			[0.0, 0.0, 0.0, 1.0],
-			[1.0, 1.0, 1.0, 1.0],
-			[0.8, 0.8, 0.8, 1.0],
-			[0.8, 0.8, 0.8, 1.0],
-		];
-		let mut source = texture_2d(5, 1, &colors);
-		let mut edges = empty_image(5, 1);
-		run_edge_tile(&mut source, &mut edges, [0, 0], [5, 1]);
-		assert_rgba_close(rgba(&edges, [2, 0]), [1.0, 0.0, 0.0, 0.0], 0.0);
-
-		// Steps are judged as a tone mapper shows them: a dim shadow step is an edge, a wide highlight step is not.
-		for (dark, bright, expected) in [(0.01, 0.04, 1.0), (8.0, 10.0, 0.0)] {
-			let step = [dark, dark, bright, bright, bright].map(|value| [value, value, value, 1.0]);
-			let mut source = texture_2d(5, 1, &step);
-			let mut edges = empty_image(5, 1);
-			run_edge_tile(&mut source, &mut edges, [0, 0], [5, 1]);
-			assert_rgba_close(rgba(&edges, [2, 0]), [expected, 0.0, 0.0, 0.0], 0.0);
+		let gray = |values: [f32; 5]| values.map(|value| [value, value, value, 1.0]);
+		// A grey and a warm color with the same luma 0.3, which luma edge detection can't tell apart.
+		let (grey, warm) = ([0.3, 0.3, 0.3, 1.0], [0.6, 0.2108, 0.3, 1.0]);
+		for (row, expected) in [
+			(gray([0.4; 5]), 0.0),
+			(gray([0.0, 0.0, 1.0, 0.8, 0.8]), 1.0),
+			// Steps are judged as a tone mapper shows them: a dim shadow step is an edge, a wide highlight step is not.
+			(gray([0.01, 0.01, 0.04, 0.04, 0.04]), 1.0),
+			(gray([8.0, 8.0, 10.0, 10.0, 10.0]), 0.0),
+			([grey, grey, warm, warm, warm], 1.0),
+		] {
+			assert_rgba_close(rgba(&edges(&row, 5, None), [2, 0]), [expected, 0.0, 0.0, 0.0], 0.0);
 		}
 
-		let north_only = [
-			[0.0, 0.0, 0.0, 1.0],
-			[0.0, 0.0, 0.0, 1.0],
-			[0.0, 0.0, 0.0, 1.0],
-			[1.0, 1.0, 1.0, 1.0],
-			[1.0, 1.0, 1.0, 1.0],
-			[1.0, 1.0, 1.0, 1.0],
-			[1.0, 1.0, 1.0, 1.0],
-			[1.0, 1.0, 1.0, 1.0],
-			[1.0, 1.0, 1.0, 1.0],
-		];
-		let mut source = texture_2d(3, 3, &north_only);
-		let mut edges = empty_image(3, 3);
-		run_edge_tile(&mut source, &mut edges, [0, 0], [3, 3]);
-		assert_rgba_close(rgba(&edges, [1, 1]), [0.0, 1.0, 0.0, 0.0], 0.0);
-
-		let both = [
-			[0.0, 0.0, 0.0, 1.0],
-			[0.0, 0.0, 0.0, 1.0],
-			[0.0, 0.0, 0.0, 1.0],
-			[0.0, 0.0, 0.0, 1.0],
-			[1.0, 1.0, 1.0, 1.0],
-			[1.0, 1.0, 1.0, 1.0],
-			[1.0, 1.0, 1.0, 1.0],
-			[1.0, 1.0, 1.0, 1.0],
-			[1.0, 1.0, 1.0, 1.0],
-		];
-		let mut source = texture_2d(3, 3, &both);
-		let mut edges = empty_image(3, 3);
-		run_edge_tile(&mut source, &mut edges, [0, 0], [3, 3]);
-		assert_rgba_close(rgba(&edges, [1, 1]), [1.0, 1.0, 0.0, 0.0], 0.0);
-	}
-
-	#[test]
-	fn smaa_edge_besl_vm_finds_hue_edges_of_equal_luma() {
-		// A grey and a warm color with the same luma 0.3, which luma edge detection can't tell apart.
-		let grey = [0.3, 0.3, 0.3, 1.0];
-		let warm = [0.6, 0.2108, 0.3, 1.0];
-		let mut source = texture_2d(5, 1, &[grey, grey, warm, warm, warm]);
-		let mut edges = empty_image(5, 1);
-		run_edge_tile(&mut source, &mut edges, [0, 0], [5, 1]);
-		assert_rgba_close(rgba(&edges, [2, 0]), [1.0, 0.0, 0.0, 0.0], 0.0);
+		let (black, white) = ([0.0, 0.0, 0.0, 1.0], [1.0; 4]);
+		let north_only = [[black; 3], [white; 3], [white; 3]].concat();
+		assert_rgba_close(rgba(&edges(&north_only, 3, None), [1, 1]), [0.0, 1.0, 0.0, 0.0], 0.0);
+		let both = [[black; 3], [black, white, white], [black, white, white]].concat();
+		assert_rgba_close(rgba(&edges(&both, 3, None), [1, 1]), [1.0, 1.0, 0.0, 0.0], 0.0);
 	}
 
 	#[test]
@@ -411,10 +353,7 @@ mod tests {
 			// Background pixels at reverse-Z depth 0 don't form a depth edge with each other.
 			(Some(depths([0.0; 5])), 0.0),
 		] {
-			let mut source = texture_2d(5, 1, &faint);
-			let mut depth = depth.map(|texels| texture_2d(5, 1, &texels));
-			let mut edges = empty_image(5, 1);
-			run_edge_tile_with_depth(&mut source, depth.as_mut(), &mut edges, [0, 0], [5, 1]);
+			let edges = edges(&faint, 5, depth.as_ref().map(|depth| depth.as_slice()));
 			assert_rgba_close(rgba(&edges, [2, 0]), [expected, 0.0, 0.0, 0.0], 0.0);
 		}
 	}
@@ -428,42 +367,29 @@ mod tests {
 		assert_eq!(fnv1a(&search), 0x21c1fcf0aa631065);
 	}
 
+	/// The fused resolve blends a black center toward its white neighbors along a diagonal staircase, through the
+	/// diagonal lookup, and along an orthogonal line, through the area lookup.
 	#[test]
-	fn smaa_fused_resolve_besl_vm_blends_a_diagonal_staircase() {
-		let mut edge_texels = [[0.0, 0.0, 0.0, 0.0]; 81];
+	fn smaa_fused_resolve_besl_vm_blends_diagonal_and_orthogonal_edges() {
+		let mut diagonal = [[0.0; 4]; 81];
 		for offset in -3_i32..=3 {
-			let x = (4 + offset) as usize;
-			let y = (4 - offset) as usize;
-			edge_texels[y * 9 + x] = edge_texel(true, true);
+			diagonal[((4 - offset) * 9 + 4 + offset) as usize] = edge_texel(true, true);
 		}
-		let mut source_texels = [[1.0, 1.0, 1.0, 1.0]; 81];
-		source_texels[4 * 9 + 4] = [0.0, 0.0, 0.0, 1.0];
-		let resolved = rgba(&resolve_with_reference_lookups(9, &source_texels, &edge_texels), [4, 4]);
-
-		assert!(
-			resolved[0] > 0.0 && resolved[1] > 0.0 && resolved[2] > 0.0,
-			"The fused reference diagonal lookup must blend the black center toward its white neighbors."
-		);
-		assert_eq!(resolved[3], 1.0);
-	}
-
-	#[test]
-	fn smaa_fused_resolve_besl_vm_uses_reference_areas_for_an_orthogonal_line() {
-		let mut edge_texels = [[0.0, 0.0, 0.0, 0.0]; 81];
+		let mut orthogonal = [[0.0; 4]; 81];
 		for x in 1..=7 {
-			edge_texels[4 * 9 + x] = edge_texel(false, true);
+			orthogonal[4 * 9 + x] = edge_texel(false, true);
 		}
-		edge_texels[4 * 9 + 1] = edge_texel(true, true);
-		edge_texels[4 * 9 + 8] = edge_texel(true, false);
+		orthogonal[4 * 9 + 1] = edge_texel(true, true);
+		orthogonal[4 * 9 + 8] = edge_texel(true, false);
 		let mut source_texels = [[1.0, 1.0, 1.0, 1.0]; 81];
 		source_texels[4 * 9 + 4] = [0.0, 0.0, 0.0, 1.0];
-		let resolved = rgba(&resolve_with_reference_lookups(9, &source_texels, &edge_texels), [4, 4]);
-
-		assert!(
-			resolved[0] > 0.0 && resolved[1] > 0.0 && resolved[2] > 0.0,
-			"The fused reference area lookup must blend the black center toward its white neighbors."
-		);
-		assert_eq!(resolved[3], 1.0);
+		for (name, edge_texels) in [("diagonal", diagonal), ("orthogonal", orthogonal)] {
+			let resolved = rgba(&resolve_with_reference_lookups(9, &source_texels, &edge_texels), [4, 4]);
+			assert!(
+				resolved[..3].iter().all(|channel| *channel > 0.0) && resolved[3] == 1.0,
+				"The fused {name} resolve must blend the black center toward its white neighbors: {resolved:?}"
+			);
+		}
 	}
 
 	#[test]

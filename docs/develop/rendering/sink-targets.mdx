@@ -141,15 +141,6 @@ the handles it doesn't draw.
 
 ## Tests
 
-`crates/byte-engine/tests/render_image.rs` creates a render image through the
-application, ends its graph with a pass that fills the final target with one
-color, and reads the image back after a frame and after a resize. It needs a
-GPU, so run it with
-`cargo nextest run -p byte-engine --test render_image --ignore-default-filter`.
-The same binary checks that each scene pipeline builds state for and prepares
-only its own scene's render images, and that a scene's sun reaches only its
-own sinks.
-
 | Test | Guards |
 | --- | --- |
 | `overlays_after_the_last_replacement_draw_over_the_final_target` | Which node is terminal and which overlays draw over the final target. |

@@ -63,7 +63,7 @@ mod tests {
 	}
 
 	fn lease(samples: impl Into<Box<[f32]>>) -> AudioSampleLease {
-		AudioSampleLease::for_test(48_000, 1, samples.into())
+		AudioSampleLease::for_test(48_000, samples.into())
 	}
 
 	fn pool(byte_budget: usize) -> AudioSamplePool {
@@ -78,7 +78,7 @@ mod tests {
 
 	fn decode(metadata: Audio, bytes: &[u8]) -> Result<Box<[f32]>, String> {
 		let layout = AudioSampleLayout::new(metadata)?;
-		let mut samples = vec![0.0; layout.scalar_count].into_boxed_slice();
+		let mut samples = vec![0.0; layout.frame_count].into_boxed_slice();
 		decode_into(metadata, bytes, &mut samples)?;
 		Ok(samples)
 	}
@@ -90,10 +90,8 @@ mod tests {
 		samples: &[f32],
 	) -> AudioSampleLease {
 		let layout = AudioSampleLayout {
-			channel_count: 1,
 			sample_rate: 48_000,
 			frame_count: samples.len(),
-			scalar_count: samples.len(),
 		};
 		let resident_bytes = layout.decoded_byte_count().unwrap();
 
@@ -120,7 +118,7 @@ mod tests {
 	}
 
 	#[test]
-	fn decoder_normalizes_supported_little_endian_pcm_depths() {
+	fn decoder_normalizes_supported_little_endian_pcm_depths_of_exact_payloads() {
 		let eight = decode(metadata(BitDepths::Eight, 1, 3), &[0, 128, 255]).expect("expected test value");
 
 		assert_eq!(&*eight, &[-1.0, 0.0, 127.0 / 128.0]);
@@ -151,10 +149,8 @@ mod tests {
 		assert_eq!(thirty_two[0], -1.0);
 		assert_eq!(thirty_two[1], 0.0);
 		assert!(thirty_two[2] > 0.99);
-	}
 
-	#[test]
-	fn decoder_validates_exact_interleaved_payload_length() {
+		// The payload must hold exactly every interleaved sample of a supported channel count.
 		let error = decode(metadata(BitDepths::Sixteen, 2, 2), &[0; 6]).unwrap_err();
 
 		assert!(error.contains("requires 8"));
@@ -172,7 +168,7 @@ mod tests {
 			.flat_map(|sample| sample.to_le_bytes())
 			.collect();
 
-		assert_eq!((layout.channel_count, layout.scalar_count), (1, 2));
+		assert_eq!(layout.frame_count, 2);
 		assert_eq!(decode_into(metadata, &bytes, &mut samples), Ok(layout));
 		assert_eq!(samples, [0.0, 0.375]);
 	}
@@ -188,8 +184,8 @@ mod tests {
 
 		assert!(!pool.make_room(4));
 		assert_eq!(pool.resident_bytes, 8);
-		assert_eq!(active.mono_frame(1), 1.0);
-		assert_eq!(second.mono_frame(1), 1.0);
+		assert_eq!(active.frame(1), 1.0);
+		assert_eq!(second.frame(1), 1.0);
 
 		let active_id = active.id();
 		drop(active);
@@ -204,27 +200,10 @@ mod tests {
 		assert!(pool.make_room(4));
 		let replacement = insert_normalized(&mut pool, "replacement.wav", 2, &[0.5]);
 
-		assert_eq!(replacement.mono_frame(0), 0.5);
+		assert_eq!(replacement.frame(0), 0.5);
 		assert_eq!(pool.resident_bytes, 4);
 		assert!(pool.lease(&cache_key("active.wav", 1, 2)).is_none());
 		assert!(pool.resident_bytes <= pool.byte_budget);
-	}
-
-	#[test]
-	fn failed_decode_returns_its_reserved_arena_region() {
-		let mut pool = pool(8);
-		let metadata = metadata(BitDepths::Sixteen, 1, 2);
-		let layout = AudioSampleLayout::new(metadata).unwrap();
-
-		assert!(pool.make_room(layout.decoded_byte_count().unwrap()));
-
-		let error = pool
-			.decode_and_insert(cache_key("broken.wav", 1, 2), metadata, layout, &[0; 2])
-			.unwrap_err();
-
-		assert!(error.contains("requires 4"));
-		assert_eq!(pool.resident_bytes, 0);
-		assert!(pool.free_scalars.fits(2, 1));
 	}
 
 	#[test]

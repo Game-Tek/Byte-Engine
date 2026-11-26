@@ -22,13 +22,11 @@ pub(super) enum Instruction {
 		register: usize,
 		predicate: usize,
 	},
-	/// Copies `value` from the subgroup lane selected by `source_lane`. `value_type` is the scalar type the
-	/// broadcast accepts, `u32` or `f32`.
+	/// Copies the `u32` or `f32` in `value` from the subgroup lane selected by `source_lane`.
 	SubgroupBroadcast {
 		register: usize,
 		value: usize,
 		source_lane: usize,
-		value_type: ValueType,
 	},
 	/// Copies the `f32` in `value` from the subgroup lane whose index is the reading lane's index XOR `mask`.
 	SubgroupShuffleXor {
@@ -83,35 +81,29 @@ pub(super) enum ValueInstruction {
 		value_type: ValueType,
 		components: Vec<usize>,
 	},
+	/// Copies the member or element of `source` that `selector` picks.
 	Extract {
 		register: usize,
 		source: usize,
-		index: usize,
+		selector: Selector,
 		value_type: ValueType,
 	},
-	/// Copies `source` with the member at `index` replaced by `value`, the inverse of `Extract`.
+	/// Copies `source` with the member or element that `selector` picks replaced by `value`, the inverse of `Extract`.
 	Insert {
 		register: usize,
 		source: usize,
-		index: usize,
+		selector: Selector,
 		value: usize,
 	},
-	ExtractDynamic {
-		register: usize,
-		source: usize,
-		index: usize,
-		count: usize,
-		value_type: ValueType,
-	},
-	/// Copies `source` with the element selected by the `index` register replaced by `value`, the inverse of
-	/// `ExtractDynamic`.
-	InsertDynamic {
-		register: usize,
-		source: usize,
-		index: usize,
-		count: usize,
-		value: usize,
-	},
+}
+
+/// The `Selector` enum picks the member or element of an aggregate value that an extract or insert reads or replaces.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) enum Selector {
+	/// The member or component at a fixed position.
+	Member(usize),
+	/// The element whose index the `index` register holds, among `count` elements.
+	Element { index: usize, count: usize },
 }
 
 /// The `NumericInstruction` enum groups the pure arithmetic, comparison, and math-library instructions. Each reads its
@@ -226,7 +218,6 @@ pub(super) enum WorkgroupInstruction {
 		name: String,
 		index: usize,
 		count: usize,
-		value_type: ValueType,
 		value: usize,
 	},
 	LoadWorkgroup {
@@ -234,13 +225,11 @@ pub(super) enum WorkgroupInstruction {
 		name: String,
 		index: Option<usize>,
 		count: usize,
-		value_type: ValueType,
 	},
 	StoreWorkgroup {
 		name: String,
 		index: Option<usize>,
 		count: usize,
-		value_type: ValueType,
 		value: usize,
 	},
 	AtomicWorkgroup {
@@ -249,7 +238,6 @@ pub(super) enum WorkgroupInstruction {
 		name: String,
 		index: Option<usize>,
 		count: usize,
-		value_type: ValueType,
 		value: usize,
 	},
 	AtomicCompareExchangeWorkgroup {
@@ -257,7 +245,6 @@ pub(super) enum WorkgroupInstruction {
 		name: String,
 		index: Option<usize>,
 		count: usize,
-		value_type: ValueType,
 		expected: usize,
 		desired: usize,
 	},
@@ -276,58 +263,39 @@ pub(super) enum MeshOutputInstruction {
 	PrimitiveRenderTargetArrayIndex { index: usize, array_index: usize },
 }
 
+/// The `BufferAccess` struct locates the value a buffer instruction reads or writes: `offset` bytes into the buffer
+/// bound at `slot`, plus `stride` bytes for each element of the index in the `index` register, when it has one.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct BufferAccess {
+	pub(super) slot: ResourceSlot,
+	pub(super) offset: usize,
+	pub(super) stride: usize,
+	/// The number of elements an index selects from, or `None` for the length of the buffer bound at execution.
+	pub(super) count: Option<usize>,
+	pub(super) index: Option<usize>,
+	pub(super) value_type: ValueType,
+}
+
 /// The `BufferInstruction` enum groups the reads, writes, and atomics against bound buffers and push constants.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum BufferInstruction {
-	LoadBuffer {
+	Load {
 		register: usize,
-		slot: ResourceSlot,
-		offset: usize,
-		value_type: ValueType,
+		access: BufferAccess,
 	},
-	LoadBufferIndexed {
-		register: usize,
-		slot: ResourceSlot,
-		offset: usize,
-		stride: usize,
-		count: Option<usize>,
-		index: usize,
-		value_type: ValueType,
-	},
-	StoreBuffer {
-		slot: ResourceSlot,
-		offset: usize,
-		value_type: ValueType,
+	Store {
+		access: BufferAccess,
 		register: usize,
 	},
-	StoreBufferIndexed {
-		slot: ResourceSlot,
-		offset: usize,
-		stride: usize,
-		count: Option<usize>,
-		index: usize,
-		value_type: ValueType,
-		register: usize,
-	},
-	AtomicBuffer {
+	Atomic {
 		register: usize,
 		operation: AtomicOperation,
-		slot: ResourceSlot,
-		offset: usize,
-		stride: usize,
-		count: Option<usize>,
-		index: Option<usize>,
-		value_type: ValueType,
+		access: BufferAccess,
 		value: usize,
 	},
-	AtomicCompareExchangeBuffer {
+	AtomicCompareExchange {
 		register: usize,
-		slot: ResourceSlot,
-		offset: usize,
-		stride: usize,
-		count: Option<usize>,
-		index: Option<usize>,
-		value_type: ValueType,
+		access: BufferAccess,
 		expected: usize,
 		desired: usize,
 	},
@@ -336,16 +304,12 @@ pub(super) enum BufferInstruction {
 /// The `TextureInstruction` enum groups the fetch, sample, and size queries against bound textures.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum TextureInstruction {
+	/// Fetches one texel of mip zero, from layer zero or from the layer in `layer`.
 	FetchTexture {
 		register: usize,
 		slot: ResourceSlot,
 		coord: usize,
-	},
-	FetchTextureArray {
-		register: usize,
-		slot: ResourceSlot,
-		coord: usize,
-		layer: usize,
+		layer: Option<usize>,
 	},
 	FetchTextureU32 {
 		register: usize,

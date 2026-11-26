@@ -301,8 +301,8 @@ impl VisibilityShaderGenerator {
 		modules: &'a ProgramModules,
 	) -> Result<Node<'a>, String> {
 		let mut main = match pass {
-			CoveragePass::Visibility => parse_besl_function(COVERAGE_VISIBILITY_SOURCE, "coverage_visibility"),
-			CoveragePass::Depth => parse_besl_function(COVERAGE_DEPTH_SOURCE, "coverage_depth"),
+			CoveragePass::Visibility => parse_besl_function(COVERAGE_VISIBILITY_SOURCE),
+			CoveragePass::Depth => parse_besl_function(COVERAGE_DEPTH_SOURCE),
 		};
 
 		let mut material_arms = Vec::with_capacity(arms.len() + 1);
@@ -539,16 +539,7 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 		// are specialization constants, dynamic ones are read from `material_parameters`, and texture parameters reach
 		// the program as slots of `material.textures`.
 		let mut declarations = vec![Node::specialization("transparent", "bool", TRANSPARENT_SPECIALIZATION_ID)];
-		for (index, parameter) in (0u32..).zip(parameters) {
-			if let ParameterKind::Value(r#type) = parameter.kind {
-				declarations.push(Node::specialization(
-					&parameter.name,
-					bemx::besl::type_name(r#type),
-					material_variable_specialization_id(index),
-				));
-			}
-		}
-
+		declarations.extend(static_parameter_specializations(parameters));
 		root.add(declarations);
 		root.add(self.common.iter().chain(&self.scope).cloned().collect());
 
@@ -656,22 +647,26 @@ impl ProgramGenerator for VisibilityShaderGenerator {
 			&MATERIAL_HIT_MODULES,
 			modules.get(&MATERIAL_HIT_MODULES),
 		)?;
-		let declarations = (0u32..)
-			.zip(parameters)
-			.filter_map(|(index, parameter)| match parameter.kind {
-				ParameterKind::Value(r#type) => Some(Node::specialization(
-					&parameter.name,
-					bemx::besl::type_name(r#type),
-					material_variable_specialization_id(index),
-				)),
-				_ => None,
-			})
-			.collect();
-		root.add(declarations);
+		root.add(static_parameter_specializations(parameters).collect());
 		root.add(self.hit_scope.to_vec());
 
 		Ok(Some(root))
 	}
+}
+
+/// Returns the specialization constant of each static value parameter, at the ID of its variable, which material
+/// evaluation and closest-hit shaders both declare so a variant specializes them with the same values.
+fn static_parameter_specializations(parameters: &[MaterialParameter]) -> impl Iterator<Item = Node<'_>> {
+	(0u32..)
+		.zip(parameters)
+		.filter_map(|(index, parameter)| match parameter.kind {
+			ParameterKind::Value(r#type) => Some(Node::specialization(
+				&parameter.name,
+				bemx::besl::type_name(r#type),
+				material_variable_specialization_id(index),
+			)),
+			_ => None,
+		})
 }
 
 /// Returns the intrinsic that samples a material texture with explicit derivatives, which both material evaluation and
@@ -695,14 +690,7 @@ fn sample_texture_intrinsic<'a>() -> Node<'a> {
 /// sets, followed by the `use` that lets the shader call them by name.
 fn material_hit_module<'a>() -> [Node<'a>; 2] {
 	let mut children = vec![sample_texture_intrinsic()];
-	children.extend(
-		[
-			(U16_TO_U32_SOURCE, "u16_to_u32"),
-			(DECODE_F16_VEC2_SOURCE, "decode_f16_vec2"),
-			(DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal"),
-		]
-		.map(|(source, name)| parse_besl_function(source, name)),
-	);
+	children.extend([U16_TO_U32_SOURCE, DECODE_F16_VEC2_SOURCE, DECODE_OCTAHEDRAL_NORMAL_SOURCE].map(parse_besl_function));
 	[Node::scope("VisibilityHit", children), Node::r#use("VisibilityHit", true)]
 }
 
@@ -748,56 +736,53 @@ pub(super) fn visibility_shader_module<'a>(tile: bool) -> [Node<'a>; 2] {
 	let sample_texture = sample_texture_intrinsic();
 	// Helpers are listed in dependency order: each one only calls helpers declared above it.
 	let helpers = [
-		(U16_TO_U32_SOURCE, "u16_to_u32"),
-		(DECODE_F16_VEC2_SOURCE, "decode_f16_vec2"),
-		(DECODE_OCTAHEDRAL_NORMAL_SOURCE, "decode_octahedral_normal"),
-		(CONE_ATTENUATION_SOURCE, "cone_attenuation"),
-		(COMPUTE_VERTEX_INDICES_SOURCE, "compute_vertex_indices"),
-		(COMPUTE_TRIANGLE_INTERPOLATION_SOURCE, "compute_triangle_interpolation"),
-		(FACING_NORMAL_SOURCE, "facing_normal"),
-		(ENVIRONMENT_BRDF_SOURCE, "environment_brdf"),
-		(DIFFUSE_TRANSMISSION_SOURCE, "diffuse_transmission"),
-		(AVERAGE_SPECULAR_ALBEDO_SOURCE, "average_specular_albedo"),
-		(HORIZON_OCCLUSION_SOURCE, "horizon_occlusion"),
-		(FAST_ACOS_SOURCE, "fast_acos"),
-		(CONE_SPECULAR_OCCLUSION_SOURCE, "cone_specular_occlusion"),
-		(TRACED_LIGHT_OCCLUSION_SOURCE, "traced_light_occlusion"),
-		(BURLEY_DISTANCE_SOURCE, "burley_distance"),
-		(BURLEY_TRANSMITTANCE_SOURCE, "burley_transmittance"),
-		(TROWBRIDGE_REITZ_SOURCE, "trowbridge_reitz"),
-		(IES_PROFILE_UV_SOURCE, "ies_profile_uv"),
-		(IES_PROFILE_SAMPLE_SOURCE, "sample_ies_profile"),
-		(SHADOW_RECEIVER_PLANE_SOURCE, "shadow_receiver_plane_depth_gradient"),
-		(SHADOW_POISSON_ROTATION_SOURCE, "rotate_shadow_poisson_offset"),
-		(SHADOW_ROTATION_SOURCE, "compute_shadow_rotation"),
-		(CONE_SHADOW_TENT_TEXEL_SOURCE, "cone_shadow_tent_texel"),
-		(CONE_SHADOW_ROW_DEPTHS_SOURCE, "cone_shadow_row_depths"),
-		(CONE_SHADOW_TENT_SOURCE, "sample_cone_shadow_tent"),
-		(CONE_SHADOW_SOURCE, "sample_cone_shadow"),
-		(BLENDED_SUN_SHADOW_SOURCE, "resolve_blended_sun_shadow"),
-		(POINT_SHADOW_RECEIVER_DEPTH_SOURCE, "point_shadow_receiver_depth"),
-		(POINT_SHADOW_OCCLUSION_SOURCE, "point_shadow_occlusion"),
-		(POINT_SHADOW_RECEIVER_VECTOR_SOURCE, "point_shadow_receiver_vector"),
-		(
-			POINT_SHADOW_RECEIVER_PLANE_NORMAL_SOURCE,
-			"point_shadow_receiver_plane_normal",
-		),
-		(POINT_SHADOW_TEXEL_DIRECTION_SOURCE, "point_shadow_texel_direction"),
-		(POINT_SHADOW_TAP_SOURCE, "sample_point_shadow_tap"),
-		(POINT_SHADOW_FACE_NORMAL_SOURCE, "point_shadow_face_normal"),
-		(POINT_SHADOW_FACE_TAP_SOURCE, "sample_point_shadow_face_tap"),
-		(POINT_SHADOW_POISSON_OFFSET_SOURCE, "point_shadow_poisson_offset"),
-		(POINT_SHADOW_SOURCE, "sample_point_shadow"),
-		(ENVIRONMENT_IRRADIANCE_SOURCE, "sample_environment_irradiance"),
-		(ENVIRONMENT_SPECULAR_SOURCE, "sample_environment_specular"),
-		(BACKDROP_POSITION_SOURCE, "backdrop_position"),
+		U16_TO_U32_SOURCE,
+		DECODE_F16_VEC2_SOURCE,
+		DECODE_OCTAHEDRAL_NORMAL_SOURCE,
+		CONE_ATTENUATION_SOURCE,
+		COMPUTE_VERTEX_INDICES_SOURCE,
+		COMPUTE_TRIANGLE_INTERPOLATION_SOURCE,
+		FACING_NORMAL_SOURCE,
+		ENVIRONMENT_BRDF_SOURCE,
+		DIFFUSE_TRANSMISSION_SOURCE,
+		AVERAGE_SPECULAR_ALBEDO_SOURCE,
+		HORIZON_OCCLUSION_SOURCE,
+		FAST_ACOS_SOURCE,
+		CONE_SPECULAR_OCCLUSION_SOURCE,
+		TRACED_LIGHT_OCCLUSION_SOURCE,
+		BURLEY_DISTANCE_SOURCE,
+		BURLEY_TRANSMITTANCE_SOURCE,
+		TROWBRIDGE_REITZ_SOURCE,
+		IES_PROFILE_UV_SOURCE,
+		IES_PROFILE_SAMPLE_SOURCE,
+		SHADOW_RECEIVER_PLANE_SOURCE,
+		SHADOW_POISSON_ROTATION_SOURCE,
+		SHADOW_ROTATION_SOURCE,
+		CONE_SHADOW_TENT_TEXEL_SOURCE,
+		CONE_SHADOW_ROW_DEPTHS_SOURCE,
+		CONE_SHADOW_TENT_SOURCE,
+		CONE_SHADOW_SOURCE,
+		BLENDED_SUN_SHADOW_SOURCE,
+		POINT_SHADOW_RECEIVER_DEPTH_SOURCE,
+		POINT_SHADOW_OCCLUSION_SOURCE,
+		POINT_SHADOW_RECEIVER_VECTOR_SOURCE,
+		POINT_SHADOW_RECEIVER_PLANE_NORMAL_SOURCE,
+		POINT_SHADOW_TEXEL_DIRECTION_SOURCE,
+		POINT_SHADOW_TAP_SOURCE,
+		POINT_SHADOW_FACE_NORMAL_SOURCE,
+		POINT_SHADOW_FACE_TAP_SOURCE,
+		POINT_SHADOW_POISSON_OFFSET_SOURCE,
+		POINT_SHADOW_SOURCE,
+		ENVIRONMENT_IRRADIANCE_SOURCE,
+		ENVIRONMENT_SPECULAR_SOURCE,
+		BACKDROP_POSITION_SOURCE,
 	];
 
 	let mut children = structs;
 	children.extend(screen_space_reflection_scope());
 	children.extend(screen_space_indirect_diffuse_scope(tile));
 	children.push(sample_texture);
-	children.extend(helpers.into_iter().map(|(source, name)| parse_besl_function(source, name)));
+	children.extend(helpers.into_iter().map(parse_besl_function));
 	[Node::scope("Visibility", children), Node::r#use("Visibility", true)]
 }
 
@@ -821,29 +806,20 @@ fn screen_space_indirect_diffuse_scope(tile: bool) -> Vec<Node<'static>> {
 	});
 	// Helpers follow the bindings they read, in dependency order.
 	let mut helpers = vec![
-		(SSGI_STORED_NORMAL_SOURCE, "ssgi_stored_normal"),
-		(SSGI_SURFACE_WEIGHT_SOURCE, "ssgi_surface_weight"),
-		(INDIRECT_DIFFUSE_SOURCE_POSITION_SOURCE, "indirect_diffuse_source_position"),
-		(
-			WEIGH_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE,
-			"weigh_screen_space_indirect_diffuse",
-		),
+		SSGI_STORED_NORMAL_SOURCE,
+		SSGI_SURFACE_WEIGHT_SOURCE,
+		INDIRECT_DIFFUSE_SOURCE_POSITION_SOURCE,
+		WEIGH_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE,
 	];
 	if tile {
-		helpers.extend([
-			(INDIRECT_DIFFUSE_WINDOW_ORIGIN_SOURCE, "indirect_diffuse_window_origin"),
-			(SAMPLE_TILE_INDIRECT_DIFFUSE_SOURCE, "sample_screen_space_indirect_diffuse"),
-		]);
+		helpers.extend([INDIRECT_DIFFUSE_WINDOW_ORIGIN_SOURCE, SAMPLE_TILE_INDIRECT_DIFFUSE_SOURCE]);
 	} else {
-		helpers.push((
-			SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE,
-			"sample_screen_space_indirect_diffuse",
-		));
+		helpers.push(SAMPLE_SCREEN_SPACE_INDIRECT_DIFFUSE_SOURCE);
 	}
 	window
 		.into_iter()
 		.flatten()
-		.chain(helpers.into_iter().map(|(source, name)| parse_besl_function(source, name)))
+		.chain(helpers.into_iter().map(parse_besl_function))
 		.collect()
 }
 
@@ -869,13 +845,13 @@ fn screen_space_reflection_scope() -> Vec<Node<'static>> {
 	// Helpers follow the bindings they read, in dependency order.
 	nodes.extend(
 		[
-			(REFLECTION_RAY_IS_BEHIND_SOURCE, "reflection_ray_is_behind"),
-			(REFLECTION_WORLD_FRACTION_SOURCE, "reflection_world_fraction"),
-			(REFLECTION_HISTORY_DEPTH_ERROR_SOURCE, "reflection_history_depth_error"),
-			(REFLECTION_HISTORY_RADIANCE_SOURCE, "reflection_history_radiance"),
-			(TRACE_SCREEN_SPACE_REFLECTION_SOURCE, "trace_screen_space_reflection"),
+			REFLECTION_RAY_IS_BEHIND_SOURCE,
+			REFLECTION_WORLD_FRACTION_SOURCE,
+			REFLECTION_HISTORY_DEPTH_ERROR_SOURCE,
+			REFLECTION_HISTORY_RADIANCE_SOURCE,
+			TRACE_SCREEN_SPACE_REFLECTION_SOURCE,
 		]
-		.map(|(source, name)| parse_besl_function(source, name)),
+		.map(parse_besl_function),
 	);
 	nodes
 }

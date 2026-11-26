@@ -319,8 +319,10 @@ impl Device {
 			return Ok(true);
 		};
 		// SAFETY: `pointer` addresses `data.len()` bytes that stay borrowed for the call, and IOKit only reads them.
-		let result =
-			unsafe { self.device.set_report(IOHIDReportType::Output, *report_id as CFIndex, pointer, data.len() as CFIndex) };
+		let result = unsafe {
+			self.device
+				.set_report(IOHIDReportType::Output, *report_id as CFIndex, pointer, data.len() as CFIndex)
+		};
 		if result != kIOReturnSuccess {
 			return Err(format!(
 				"Failed to write a HID report: IOReturn {result:#x}. The most likely cause is that the device was unplugged."

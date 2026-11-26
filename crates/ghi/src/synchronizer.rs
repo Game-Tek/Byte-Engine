@@ -1,16 +1,10 @@
+use crate::PrivateHandle;
 #[cfg(not(target_os = "macos"))]
 use crate::{HandleLike, Next, Synchronizer};
-use crate::{PrivateHandle, PrivateHandles};
 
 crate::handle::index_handle! {
 	#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 	pub(crate) struct SynchronizerHandle;
-}
-
-impl From<SynchronizerHandle> for PrivateHandles {
-	fn from(val: SynchronizerHandle) -> Self {
-		PrivateHandles::Synchronizer(val)
-	}
 }
 
 impl PrivateHandle for SynchronizerHandle {

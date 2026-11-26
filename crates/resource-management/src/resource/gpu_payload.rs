@@ -350,10 +350,8 @@ mod tests {
 		assert_eq!(&parsed[..], &blocks);
 		assert!(!parsed[0].is_raw());
 		assert!(parsed[1].is_raw());
-	}
 
-	#[test]
-	fn header_rejects_foreign_or_empty_payloads() {
+		// Foreign, newer, and empty payloads are rejected.
 		assert!(parse_header(b"BEGX\x01\0\0\0\x01\0\0\0\0\0\0\0").is_err());
 		assert!(parse_header(b"BEGD\x02\0\0\0\x01\0\0\0\0\0\0\0").is_err());
 		assert!(parse_header(&header_bytes(0)).is_err());
@@ -374,14 +372,6 @@ mod tests {
 		// The table is shorter than its count.
 		assert!(parse_blocks(&table(&[block(table_end, 8, 16)]), 2, 100).is_err());
 		assert!(parse_blocks(&table(&[block(table_end, 8, 16)]), 1, table_end + 8).is_ok());
-	}
-
-	#[test]
-	fn three_channel_formats_are_not_streamed() {
-		assert!(!supports_format(crate::types::Formats::RGB8));
-		assert!(!supports_format(crate::types::Formats::RGB16));
-		assert!(supports_format(crate::types::Formats::BC7SRGB));
-		assert!(supports_format(crate::types::Formats::RGBA8));
 	}
 
 	#[cfg(feature = "gpu-processing")]

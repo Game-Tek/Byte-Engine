@@ -53,6 +53,740 @@ mod tests {
 		generate(settings, &mut program)
 	}
 
+	/// Verifies each compute fixture lowers to MSL that holds every expected fragment and none of the rejected ones,
+	/// and compiles with the Metal toolchain.
+	#[compio::test]
+	async fn compute_fixtures_lower_to_msl() {
+		use super::super::*;
+		// Each case is a name, a source, the fragments its MSL holds, and the fragments it must not hold.
+		let cases: &[(&str, &str, &[&str], &[&str])] = &[
+			(
+				// Packed 48-byte matrices match the CPU stride; a native float4x3 would read with a 64-byte stride.
+				"affine-matrix-array",
+				r#"
+				Palette: struct { matrices: mat4x3f[4] }
+				palette: descriptor<{ type: Palette, binding: 0, access: read_write }>;
+				main: fn (input: StageInput) -> void {
+					let item: u32 = input.thread_id.x;
+					let affine: mat4x3f = palette.matrices[item];
+					palette.matrices[item + 1] = affine;
+				}
+				"#,
+				&[
+					"device _besl_packed_float4x3* palette",
+					"_besl_load_mat4x3(set0.palette[item])",
+					"_besl_store_mat4x3(set0.palette[item+1],affine)",
+				],
+				&[],
+			),
+			(
+				// Metal multiplies matrices only by native vectors, so packed member reads in a matrix product are unpacked.
+				"packed-vector-matrix-products",
+				r#"
+				Body: struct { velocity: vec3f, color: vec4f }
+				Frame: struct { basis: mat4x3f, projection: mat4f }
+				bodies: descriptor<{ type: Body[], binding: 0, access: read_write }>;
+				frame: descriptor<{ type: Frame, binding: 1, access: read }>;
+				push_constant: push_constant { offset: vec3f, scale: f32, }
+				main: fn (input: StageInput) -> void {
+					let item: u32 = input.thread_id.x;
+					let row: vec4f = bodies[item].velocity * frame.basis;
+					let offset: vec4f = push_constant.offset * frame.basis;
+					let projected: vec4f = frame.projection * bodies[item].color;
+					bodies[item].color = projected + row + offset * push_constant.scale;
+				}
+				"#,
+				&[
+					"float3(set0.bodies[item].velocity)*_besl_load_mat4x3(",
+					"float3(push_constant.offset)*_besl_load_mat4x3(",
+					"set0.frame->projection*float4(set0.bodies[item].color)",
+				],
+				&[],
+			),
+			(
+				"prefix-operators-and-if-values",
+				r#"
+				Body: struct { velocity: vec3f, color: vec4f, bits: u32, weight: f16 }
+				Frame: struct { projection: mat4f }
+				bodies: descriptor<{ type: Body[], binding: 0, access: read_write }>;
+				frame: descriptor<{ type: Frame, binding: 1, access: read }>;
+				main: fn (input: StageInput) -> void {
+					let item: u32 = input.thread_id.x;
+					let flag: bool = bodies[item].bits > 3;
+					bodies[item].bits = ~bodies[item].bits ^ (if (flag) { 1 } else { 2 });
+					bodies[item].velocity = - -bodies[item].velocity - -bodies[item].velocity;
+					bodies[item].weight = if (!flag) { bodies[item].weight } else { 1.0 };
+					bodies[item].color = frame.projection * -bodies[item].color + frame.projection * (if (flag) { bodies[item].color } else { bodies[item].color });
+				}
+				"#,
+				&[
+					"((~set0.bodies[item].bits)^(flag?1:2))",
+					// A nested negation keeps its parentheses, so `- -x` never prints as the decrement `--x`.
+					"((-(-set0.bodies[item].velocity))-(-set0.bodies[item].velocity))",
+					// A literal branch beside an f16 branch is narrowed so both branches share one type.
+					"((!flag)?set0.bodies[item].weight:half(1.0))",
+					// Negating or selecting packed reads keeps them packed, so a matrix product unpacks the whole operand.
+					"set0.frame->projection*float4(-set0.bodies[item].color)",
+					"set0.frame->projection*float4(flag?set0.bodies[item].color:set0.bodies[item].color)",
+				],
+				&[],
+			),
+			(
+				// Packed members keep scalar alignment, so `uv` follows `depth` at offset 4, `normal` takes 12 bytes from
+				// offset 28, and `tint` follows at offset 40, as in HLSL, GLSL scalar layout, and the CPU `ghi::pod` vectors.
+				"packed-vector-members",
+				r#"
+				Sprite: struct { depth: f32, uv: vec2f, texel: vec2u, extent: vec2u16, scale: vec2f16, normal: vec3f, tint: vec4f, mask: vec4u }
+				sprites: descriptor<{ type: Sprite[], binding: 0, access: read_write }>;
+				atlas: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+				push_constant: push_constant { offset: f32, jitter: vec2f, }
+				main: fn (input: StageInput) -> void {
+					let item: u32 = input.thread_id.x;
+					let color: vec4f = sample(atlas, sprites[item].uv + push_constant.jitter);
+					let texel: vec4f = fetch(atlas, sprites[item].texel);
+					sprites[item].uv = sprites[item].uv * push_constant.offset + vec2f(color.x, texel.y);
+					sprites[item].texel.x = sprites[item].texel.x + u32(sprites[item].extent.x);
+					sprites[item].depth = f32(sprites[item].scale.y) + length(sprites[item].uv) + dot(sprites[item].tint, color);
+					sprites[item].tint = sprites[item].tint * f32(sprites[item].mask.w);
+					sprites[item].normal = normalize(cross(sprites[item].normal, vec3f(0.0, 1.0, 0.0)));
+				}
+				"#,
+				&[
+					"struct Sprite{float depth;packed_float2 uv;packed_uint2 texel;packed_ushort2 extent;packed_half2 scale;packed_float3 normal;packed_float4 tint;packed_uint4 mask;};",
+					"struct PushConstant{float offset;packed_float2 jitter;};",
+				],
+				&[],
+			),
+			(
+				// `packed_float3` keeps the 12-byte CPU stride; a plain `float3` would read with a 16-byte stride.
+				"scalar-runtime-array",
+				SCALAR_RUNTIME_ARRAY_COMPUTE,
+				&[
+					"const device packed_float3* positions",
+					"const device ushort* indices",
+					"const device uchar* corners",
+					"device uint* results",
+				],
+				&[],
+			),
+			(
+				// A `StorageImageArray` is one `texture2d_array` whose `read` and `write` take the selected layer.
+				"layered-storage-image",
+				LAYERED_STORAGE_IMAGE_COMPUTE,
+				&[
+					"texture2d_array<float, access::write>",
+					"texture2d_array<float, access::read>",
+					"set0.source.read(gid.xy,face)",
+					"set0.faces.write(texel*float(extent.x),gid.xy,face)",
+					"uint2(set0.faces.get_width(),set0.faces.get_height())",
+				],
+				&[],
+			),
+			(
+				// The level helper is qualified, so a parameter named `level` doesn't shadow it.
+				"texture-lod-level-shadowing",
+				r#"
+				depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+				sample_depth: fn (uv: vec2f, level: u32) -> f32 {
+					return texture_lod(depth_texture, uv, f32(level)).x;
+				}
+				main: fn () -> void {
+					sample_depth(vec2f(0.5, 0.5), 1);
+				}
+				"#,
+				&["metal::level(float(level))"],
+				&[],
+			),
+			(
+				"gather",
+				r#"
+				depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+				array_depth_texture: descriptor<{ type: Texture2DArray, binding: 1, access: read }>;
+				main: fn () -> void {
+					let quad: vec4f = gather(depth_texture, vec2f(0.5, 0.5));
+					let layer_quad: vec4f = gather(array_depth_texture, vec2f(0.5, 0.5), 1);
+					quad;
+					layer_quad;
+				}
+				"#,
+				&[
+					"set0.depth_texture.gather(set0.depth_texture_sampler, ",
+					"set0.array_depth_texture.gather(set0.array_depth_texture_sampler, ",
+					", int2(0), component::x)",
+				],
+				&[],
+			),
+			(
+				// A texture parameter arrives with its sampler, through a binding and through another parameter.
+				"texture-parameter-sampler",
+				r#"
+				array_depth_texture: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
+				quad_maximum: fn (depth_map: ArrayTexture2D, uv: vec2f, layer: u32) -> f32 {
+					let quad: vec4f = gather(depth_map, uv, layer);
+					return max(max(quad.x, quad.y), max(quad.z, quad.w));
+				}
+				first_layer_maximum: fn (depth_map: ArrayTexture2D, uv: vec2f) -> f32 {
+					return quad_maximum(depth_map, uv, 0);
+				}
+				main: fn () -> void {
+					first_layer_maximum(array_depth_texture, vec2f(0.5, 0.5));
+				}
+				"#,
+				&[
+					"float quad_maximum(texture2d_array<float> depth_map,sampler depth_map_sampler,float2 uv,uint layer)",
+					"quad_maximum(depth_map,depth_map_sampler,uv,0)",
+					"depth_map.gather(depth_map_sampler, uv, layer, int2(0), component::x)",
+					"first_layer_maximum(set0.array_depth_texture,set0.array_depth_texture_sampler,",
+				],
+				&[],
+			),
+			(
+				"downsample-gather",
+				r#"
+				depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+				array_depth_texture: descriptor<{ type: Texture2DArray, binding: 1, access: read }>;
+				main: fn () -> void {
+					let minimum: f32 = downsample_min(depth_texture, vec2f(0.5, 0.5), 0.0);
+					let maximum: f32 = downsample_max(depth_texture, vec2f(0.5, 0.5), 0.0);
+					let array_maximum: f32 = downsample_max(array_depth_texture, vec2f(0.5, 0.5), 1, 0.0);
+					minimum;
+					maximum;
+					array_maximum;
+				}
+				"#,
+				&[
+					"_besl_downsample_min(set0.depth_texture, set0.depth_texture_sampler",
+					"_besl_downsample_max(set0.depth_texture, set0.depth_texture_sampler",
+					".gather(texture_sampler, uv, int2(0), component::x)",
+					".gather(texture_sampler, uv, layer, int2(0), component::x)",
+					"texture.read(a, level).x",
+				],
+				&[],
+			),
+			(
+				// A fixed sampler is a constexpr sampler that takes no argument ID, so the next binding takes the ID after
+				// the texture.
+				"fixed-samplers",
+				r#"
+				nearest_texel: sampler<{ filter: nearest, mip_filter: nearest, address: repeat }>;
+				tiles: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: nearest_texel }>;
+				albedo: descriptor<{ type: Texture2D, binding: 1, access: read }>;
+				result: descriptor<{ type: f32[], binding: 2, access: write }>;
+				main: fn () -> void {
+					result[0] = texture_lod(tiles, vec2f(0.5, 0.5), 1.0).x + texture_lod(albedo, vec2f(0.5, 0.5), 0.0).x;
+				}
+				"#,
+				&[
+					"constexpr sampler _besl_tiles_sampler(coord::normalized, filter::nearest, mip_filter::nearest, address::repeat);",
+					"texture2d<float> tiles [[id(0)]];texture2d<float> albedo [[id(1)]];sampler albedo_sampler [[id(2)]];",
+					"set0.tiles.sample(_besl_tiles_sampler,",
+					"set0.albedo.sample(set0.albedo_sampler,",
+				],
+				&[],
+			),
+			(
+				// No GPU older than Apple10 reduces in a sampler, so the constexpr sampler declares none, and a nearest
+				// mip filter reads the level nearest the LOD, clamped to the image.
+				"reducing-samplers",
+				r#"
+				farthest_depth: sampler<{ mip_filter: nearest, reduction: min }>;
+				nearest_occluder: sampler<{ mip_filter: nearest, reduction: max }>;
+				pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;
+				occluders: descriptor<{ type: Texture2D, binding: 1, access: read, sampler: nearest_occluder }>;
+				result: descriptor<{ type: f32[], binding: 2, access: write }>;
+				main: fn () -> void {
+					result[0] = texture_lod(pyramid, vec2f(0.5, 0.5), 2.0).x;
+					result[1] = downsample_max(occluders, vec2f(0.5, 0.5), 0.0);
+				}
+				"#,
+				&[
+					"constexpr sampler _besl_pyramid_sampler(coord::normalized, filter::linear, mip_filter::nearest, address::clamp_to_edge);",
+					"float4(_besl_downsample_min(set0.pyramid, _besl_pyramid_sampler, float2(0.5,0.5), 2.0), 0.0, 0.0, 1.0)",
+					"_besl_downsample_max(set0.occluders, _besl_occluders_sampler,",
+					"uint(lod + 0.5), texture.get_num_mip_levels() - 1",
+				],
+				&["reduction::"],
+			),
+			(
+				"buffer-memory-classes",
+				r#"
+				DispatchValues: struct { value: u32, }
+				Vertices: struct { values: u32[1024], }
+				Counters: struct { values: u32[1024], }
+				dispatch_values: descriptor<{ type: DispatchValues, binding: 0, access: read, memory: constant }>;
+				vertices: descriptor<{ type: Vertices, binding: 1, access: read, memory: device }>;
+				counters: descriptor<{ type: Counters, binding: 2, access: read_write, memory: device }>;
+				main: fn () -> void {
+					let index: u32 = thread_id().x;
+					counters.values[index] = vertices.values[index] + dispatch_values.value;
+				}
+				"#,
+				&[
+					"constant _dispatch_values* dispatch_values [[id(0)]];",
+					"const device uint* vertices [[id(1)]];",
+					"device uint* counters [[id(2)]];",
+				],
+				&[],
+			),
+			(
+				// Metal has neither GLSL's `float4[3]` type spelling nor its array constructor, and C arrays can't be
+				// copied or passed by value, so value arrays become `metal::array`. Unsigned overloads cast their
+				// arguments, because C++ spells BESL's unsigned literals as `int`.
+				"local-array",
+				r#"
+				first: fn (values: vec4f[3], count: u32) -> vec4f {
+					let copy: vec4f[3] = values;
+					copy[0] = copy[min(count, 2)];
+					return copy[0];
+				}
+				main: fn () -> void {
+					let positions: vec4f[3] = vec4f[3](vec4f(0.0, 0.0, 0.0, 1.0), vec4f(1.0, 0.0, 0.0, 1.0), vec4f(0.0, 1.0, 0.0, 1.0));
+					positions[0] = positions[1];
+					let index: u32 = clamp(max(thread_idx(), 1), 0, 2);
+					first(positions, index);
+				}
+				"#,
+				&[
+					"metal::array<float4, 3> positions=metal::array<float4, 3>{",
+					"float4 first(metal::array<float4, 3> values,",
+					"metal::array<float4, 3> copy=values;",
+					"min(uint(count),uint(2))",
+				],
+				&["float4[3]"],
+			),
+			(
+				// The helper reports no bit for zero, like the BESL contract.
+				"find-lsb",
+				r#"
+				result: descriptor<{ type: u32, binding: 0, access: read_write }>;
+				main: fn () -> void {
+					let bits: u32 = 40;
+					result = find_lsb(bits);
+				}
+				"#,
+				&["value == 0u ? 0xffffffffu : ctz(value)", "_besl_find_lsb(bits)"],
+				&[],
+			),
+			(
+				// The lane id is forwarded only to helpers that use it.
+				"subgroup-lane-id",
+				r#"
+				lane: fn () -> u32 {
+					return subgroup_lane_index();
+				}
+				ordinary: fn () -> u32 {
+					return 1;
+				}
+				main: fn () -> void {
+					let lane_index: u32 = lane();
+					if (lane_index == ordinary()) {
+						lane_index;
+					}
+				}
+				"#,
+				&[
+					"uint lane(uint3 gid,uint thread_index,uint3 threadgroup_position,uint simd_lane_id)",
+					"lane(gid,thread_index,threadgroup_position,simd_lane_id)",
+					"uint ordinary()",
+					"uint simd_lane_id [[thread_index_in_simdgroup]]",
+				],
+				&[],
+			),
+			("else-chain", ELSE_CHAIN, &["if(n<1){n=2;}else if(n<4){n=3;}else{n=4;}"], &[]),
+			(
+				"grouped-accessor-bases",
+				GROUPED_ACCESSOR_BASES,
+				&["float sum_y=(v+w).y;", "uint picked=(values)[i];"],
+				&[],
+			),
+			(
+				// `scale` ran before the `match`, so it is captured before the switch that sets the match's value.
+				"branch-values",
+				BRANCH_VALUES,
+				&[
+					"_besl_value_1=scale;float _besl_value_0;switch(n){",
+					"float weight=(_besl_value_1*_besl_value_0);",
+					"float _besl_value_2;if(n>1){float lit=(weight*weight);_besl_value_2=lit;}else{_besl_value_2=0.0;}",
+				],
+				&[],
+			),
+			(
+				"match",
+				MATCH_IN_LOOP,
+				&[
+					"{bool besl_match_break_0=false;switch(i){case 0u:{n=1;break;}case 1u:case 2u:{besl_match_break_0=true;break;break;}default:{break;}}if(besl_match_break_0){break;}}",
+					"switch(uint(small)){case 65535u:{n=2;break;}default:{n=3;break;}}",
+				],
+				&[],
+			),
+			(
+				"short-scalar-arrays",
+				SHORT_SCALAR_ARRAYS,
+				&[
+					"float3 scalar_f32()",
+					"ushort3 scalar_u16()",
+					"uint3 scalar_u32()",
+					"uint3 mirror_indices(uint3 indices)",
+					"float3 floats=scalar_f32();",
+					"ushort3 shorts=scalar_u16();",
+					"uint3 indices=mirror_indices(scalar_u32());",
+				],
+				&[],
+			),
+			(
+				"atomic-images-and-push-constants",
+				r#"
+				Counters: struct { values: atomicu32[8], }
+				counters: descriptor<{ type: Counters, binding: 0, access: read_write }>;
+				index_image: descriptor<{ type: StorageImage<r32ui>, binding: 1, access: read }>;
+				shared_keys: workgroup<atomicu32, 8>;
+				push_constant: push_constant { base: u32, }
+				main: fn () -> void {
+					let coord: vec2u = thread_id();
+					let index: u32 = image_load_u32(index_image, coord) + push_constant.base;
+					let old: u32 = atomic_add(counters.values[index], 1);
+					let claimed: u32 = atomic_compare_exchange(counters.values[index], old, 7);
+					let shared_claimed: u32 = atomic_compare_exchange(shared_keys[index % 8], 4294967295, index);
+					atomic_store(counters.values[index], atomic_load(counters.values[old]));
+				}
+				"#,
+				&[
+					"device atomic_uint* counters",
+					"texture2d<uint, access::read> index_image",
+					"constant PushConstant& push_constant [[buffer(15)]]",
+					".read(coord).x",
+					"atomic_fetch_add_explicit(&",
+					"_besl_atomic_compare_exchange(set0.counters[index],old,7)",
+					"_besl_atomic_compare_exchange(shared_keys[index%8],4294967295,index)",
+					"while (!atomic_compare_exchange_weak_explicit(&value, &expected, desired",
+					"atomic_load_explicit(&",
+					"atomic_store_explicit(&",
+				],
+				&[],
+			),
+			(
+				// Both image atomics lower to Metal texture atomics on read-write textures.
+				"image-atomics",
+				IMAGE_ATOMICS,
+				&[
+					"texture2d<uint, access::read_write> flags",
+					".atomic_fetch_or(coord,4).x",
+					".atomic_fetch_max(coord,previous_flags+1).x",
+					".write(uint4(previous_depth),coord)",
+				],
+				&[],
+			),
+			(
+				// Integer atomics use Metal's explicit relaxed operations on the right atomic types; signed atomics stay
+				// signed so `atomic_min` compares as signed integers. Half-precision math keeps half types.
+				"modern-half-atomics",
+				r#"
+				unsigned_value: workgroup<atomicu32>;
+				signed_value: workgroup<atomici32>;
+				main: fn () -> void {
+					let signed_one: i32 = 1;
+					atomic_store(unsigned_value, 1);
+					atomic_load(unsigned_value);
+					atomic_exchange(unsigned_value, 2);
+					atomic_add(unsigned_value, 1);
+					atomic_sub(unsigned_value, 1);
+					atomic_min(unsigned_value, 1);
+					atomic_max(unsigned_value, 2);
+					atomic_and(unsigned_value, 3);
+					atomic_or(unsigned_value, 4);
+					atomic_xor(unsigned_value, 5);
+					atomic_compare_exchange(unsigned_value, 1, 2);
+					atomic_store(signed_value, signed_one);
+					atomic_min(signed_value, signed_one);
+					let zero: f16 = f16(0.0);
+					let one: f16 = f16(1.0);
+					let fused: f16 = fma(one, one, one);
+					let fused_vector: vec3f16 = fma(vec3f16(one, one, one), vec3f16(one, one, one), vec3f16(one, one, one));
+					if (is_nan(zero / zero) || is_infinite(one / zero) || is_finite(fused) || is_normal(fused_vector.x)) {
+						atomic_store(unsigned_value, 0);
+					}
+				}
+				"#,
+				&[
+					"threadgroup atomic_uint unsigned_value;",
+					"threadgroup atomic_int signed_value;",
+					"atomic_store_explicit(&",
+					"atomic_load_explicit(&",
+					"atomic_exchange_explicit(&",
+					"atomic_fetch_add_explicit(&",
+					"atomic_fetch_sub_explicit(&",
+					"atomic_fetch_min_explicit(&",
+					"atomic_fetch_max_explicit(&",
+					"atomic_fetch_and_explicit(&",
+					"atomic_fetch_or_explicit(&",
+					"atomic_fetch_xor_explicit(&",
+					"_besl_atomic_compare_exchange(",
+					"memory_order_relaxed",
+					"half fused=fma(",
+					"half3 fused_vector=fma(",
+					"isnan(",
+					"isinf(",
+					"isfinite(",
+					"isnormal(",
+				],
+				&[],
+			),
+			(
+				// Intrinsics without a same-named Metal function lower to their Metal equivalents, `round_to_i32` rounds
+				// half away from zero like BESL before it converts, and `pow(2, x)` is rewritten to `exp2(x)` for full and
+				// half precision.
+				"intrinsics",
+				r#"
+				main: fn () -> void {
+					let toward: vec3f = vec3f(1.0, -2.0, 0.0);
+					let signs: vec3f = sign(toward);
+					let gap: f32 = distance(toward, vec3f(0.0, 0.0, 0.0));
+					let doubled: vec2f = exp2(vec2f(1.0, 2.0));
+					let angle: f32 = radians(180.0);
+					let inverse: f32 = inversesqrt(4.0);
+					let trigonometry: vec2f = sincos(angle);
+					let fused: vec2f = fma(vec2f(2.0, 3.0), vec2f(4.0, 5.0), vec2f(1.0, 2.0));
+					let rounded: vec2i = round_to_i32(vec2f(0.0 - 1.6, 2.4));
+					let full: f32 = pow(2.0, 3.0);
+					let half: f16 = pow(f16(2.0), f16(3.0));
+					signs; gap; doubled; inverse; trigonometry; fused; rounded; full; half;
+				}
+				"#,
+				&[
+					"float3 signs=sign(toward);",
+					"float gap=distance(toward,float3(0.0,0.0,0.0));",
+					"float2 doubled=exp2(float2(1.0,2.0));",
+					"float angle=(180.0*(PI/180.0));",
+					"rsqrt(4.0)",
+					"float2 trigonometry=_besl_sincos(angle);",
+					"float2 fused=fma(float2(2.0,3.0),float2(4.0,5.0),float2(1.0,2.0));",
+					"int2 rounded=int2(round(float2(0.0-1.6,2.4)));",
+				],
+				&["pow("],
+			),
+			(
+				// Workgroup storage is a threadgroup array, which helpers receive as a pointer after the kernel values.
+				"compute-workgroup",
+				r#"
+				scratch: workgroup<f32, 64>;
+				store_scratch: fn (value: f32) -> void {
+					scratch[thread_idx()] = value;
+					workgroup_barrier();
+				}
+				main: fn () -> void {
+					store_scratch(f32(thread_idx()));
+					let value: f32 = scratch[thread_idx()];
+					value;
+				}
+				"#,
+				&[
+					"uint thread_index [[thread_index_in_threadgroup]]",
+					"threadgroup float scratch[64];",
+					"threadgroup float* scratch",
+					"threadgroup_barrier(mem_flags::mem_threadgroup)",
+					"store_scratch(float(thread_index),gid,thread_index,threadgroup_position,scratch)",
+				],
+				&[],
+			),
+			(
+				// Subgroup intrinsics map onto Metal SIMD-group operations with the lane type Metal expects.
+				"compute-subgroup",
+				r#"
+				scratch: workgroup<u32, 1>;
+				main: fn () -> void {
+					let mask: vec4u = subgroup_ballot(thread_idx() < 4);
+					let leader: u32 = subgroup_ballot_find_lsb(mask);
+					let value: u32 = subgroup_broadcast_u32(thread_idx(), leader);
+					let neighbor: f32 = subgroup_shuffle_xor_f32(f32(value), 1);
+					if (subgroup_ballot_any(mask)) {
+						scratch[0] = subgroup_ballot_count(subgroup_ballot_and_not(mask, subgroup_ballot(value == 0))) + u32(neighbor);
+					}
+				}
+				"#,
+				&[
+					"simd_ballot(predicate)",
+					"simd_broadcast(value, ushort(source_lane))",
+					"simd_shuffle_xor(value, ushort(mask))",
+					"_besl_subgroup_shuffle_xor_f32(float(value),1)",
+					"_besl_subgroup_ballot_find_lsb(mask)",
+					"_besl_subgroup_ballot_count(",
+					"threadgroup uint scratch[1]",
+				],
+				&[],
+			),
+			(
+				// Stored `mat4x3f` values are packed behind native matrix expressions, which multiply with Metal's operator.
+				"packed-mat4x3",
+				r#"
+				Transform: struct { model: mat4x3f, tag: u32, }
+				Transforms: struct { values: Transform[2], direct: mat4x3f[2], }
+				transforms: descriptor<{ type: Transforms, binding: 0, access: read_write, memory: device }>;
+				main: fn() -> void {
+					let model: mat4x3f = transforms.values[0].model;
+					let position: vec3f = model * vec4f(1.0, 2.0, 3.0, 1.0);
+					let local: Transform = Transform(model, 7);
+					local.model = transforms.direct[0];
+					let local_position: vec3f = local.model * vec4f(4.0, 5.0, 6.0, 1.0);
+					transforms.values[1].model = local.model;
+					transforms.direct[1] = transforms.direct[0];
+					position;
+					local_position;
+				}
+				"#,
+				&[
+					"struct _besl_packed_float4x3 { packed_float3 columns[4]; };",
+					"struct Transform{_besl_packed_float4x3 model;uint tag;};",
+					"_besl_packed_float4x3 direct[2]",
+					"float4x3 model=_besl_load_mat4x3(",
+					"float3 position=(model*float4(1.0,2.0,3.0,1.0));",
+					"float3 local_position=(_besl_load_mat4x3(local.model)*float4(4.0,5.0,6.0,1.0));",
+					"Transform local=Transform{_besl_pack_mat4x3(model),7};",
+					"_besl_store_mat4x3(",
+				],
+				&["mul("],
+			),
+			(
+				"const-array",
+				CONST_ARRAY,
+				&["constant float3 WEIGHTS = float3(0.5,0.25,0.125);", "float value=WEIGHTS[1];"],
+				&[],
+			),
+		];
+
+		for (name, source, present, absent) in cases {
+			let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
+			for needle in *present {
+				assert!(
+					shader.contains(needle),
+					"Expected {name} MSL to contain '{needle}'. MSL: '{shader}'"
+				);
+			}
+			for needle in *absent {
+				assert!(
+					!shader.contains(needle),
+					"Expected {name} MSL not to contain '{needle}'. MSL: '{shader}'"
+				);
+			}
+			compile_natively(&shader, name).await;
+		}
+	}
+
+	/// Verifies each vertex or fragment fixture lowers to MSL that holds every expected fragment and none of the
+	/// rejected ones, and compiles with the Metal toolchain.
+	#[compio::test]
+	async fn raster_fixtures_lower_to_msl() {
+		use super::super::*;
+		// Each case is a name, whether it is a vertex shader, a source, the fragments its MSL holds, and the fragments
+		// it must not hold.
+		let cases: &[(&str, bool, &str, &[&str], &[&str])] = &[
+			(
+				"runtime-array-texture-layer",
+				false,
+				RUNTIME_ARRAY_FRAGMENT,
+				&[
+					"const device Instance* instances [[id(2)]];",
+					"texture2d_array<float> sprites [[id(0)]];",
+					"Instance instance=set0.instances[",
+					"set0.sprites.sample(set0.sprites_sampler, ",
+					", instance.sprite_id)",
+				],
+				&[],
+			),
+			(
+				"descriptor-array-intrinsics",
+				false,
+				DESCRIPTOR_ARRAY_FRAGMENT,
+				&[
+					"uint2(set0.textures[set0.items[index].slot].get_width(),set0.textures[set0.items[index].slot].get_height())",
+					"set0.textures[index+1].sample(set0.textures_sampler[index+1], uv, metal::level(0.0))",
+					"set0.textures[set0.items[index].slot].sample(set0.textures_sampler[set0.items[index].slot], uv)",
+				],
+				&[],
+			),
+			(
+				// The primitive index arrives as a `[[primitive_id]]` entry-point parameter that code reads by its
+				// stage-input symbol, instead of a `FragmentInput` attribute.
+				"primitive-index",
+				false,
+				PRIMITIVE_INDEX_FRAGMENT,
+				&[
+					"uint _besl_stage_primitive_index [[primitive_id]]",
+					"float(_besl_stage_primitive_index)",
+				],
+				&[
+					"primitive_index [[user(",
+					"_besl_stage_primitive_index=_besl_stage_primitive_index;",
+				],
+			),
+			// A fragment reads `input.thread_id` as the pixel it covers.
+			(
+				"fragment-pixel",
+				false,
+				FRAGMENT_PIXEL_FRAGMENT,
+				&["uint2(_besl_fragment_position.xy)"],
+				&[],
+			),
+			(
+				"structural-position",
+				true,
+				STRUCTURAL_POSITION_VERTEX,
+				&[
+					"struct VertexOutput{float4 position [[position]];float2 _besl_interface_uv",
+					"float4 position=float4(float(_besl_stage_vertex_index),0.0,0.0,1.0);",
+					"out.position=_besl_interface_position;",
+				],
+				&["_besl_interface_position [[user("],
+			),
+			(
+				// The layer is the `[[render_target_array_index]]` member of `VertexOutput` instead of a user attribute.
+				"render-target-array-index",
+				true,
+				LAYERED_VERTEX,
+				&[
+					"uint render_target_array_index [[render_target_array_index]];",
+					"out.render_target_array_index=_besl_interface_render_target_array_index;",
+				],
+				&["_besl_interface_render_target_array_index [[user("],
+			),
+			(
+				// The invocation indices arrive as `[[vertex_id]]` and `[[instance_id]]` parameters named by their
+				// stage-input symbols, so locals and helper parameters with their names compile beside them.
+				"vertex-invocation-indices",
+				true,
+				STAGE_INPUT_NAMESAKES_VERTEX,
+				&[
+					"struct VertexInput{};",
+					"uint _besl_stage_vertex_index [[vertex_id]],uint _besl_stage_instance_index [[instance_id]]",
+					"uint vertex_index=_besl_stage_vertex_index;",
+					"uint instance_index=_besl_stage_instance_index;",
+				],
+				&[],
+			),
+		];
+
+		for (name, vertex, source, present, absent) in cases {
+			let settings = if *vertex {
+				ShaderGenerationSettings::vertex()
+			} else {
+				ShaderGenerationSettings::fragment()
+			};
+			let shader = lower_fixture(source, &settings);
+			for needle in *present {
+				assert!(
+					shader.contains(needle),
+					"Expected {name} MSL to contain '{needle}'. MSL: '{shader}'"
+				);
+			}
+			for needle in *absent {
+				assert!(
+					!shader.contains(needle),
+					"Expected {name} MSL not to contain '{needle}'. MSL: '{shader}'"
+				);
+			}
+			compile_natively(&shader, name).await;
+		}
+	}
+
 	/// Verifies a compute shader that branches on `bool` and `u32` specializations compiles with the Metal toolchain.
 	#[compio::test]
 	async fn specialization_branch_compiles_natively() {
@@ -88,266 +822,15 @@ mod tests {
 
 	#[compio::test]
 	async fn sampled_binding_array_argument_is_emitted_in_resources() {
-		let builtins = besl::Builtins::new();
-		let mut root = besl::Program::new(&builtins);
-		let textures_name = root.intern("textures");
-		root.add_to_root(besl::Node::binding_array(
-			textures_name,
-			besl::BindingTypes::CombinedImageSampler {
-				format: String::new(),
-				sampler: None,
-			},
-			0,
-			true,
-			false,
-			4,
-		));
-		let mut program = besl::compile_to_besl("main: fn () -> void { sample(textures[0], vec2f(0.0, 0.0)); }", root)
-			.expect("Expected sampled binding array source to link");
-		let main = program.get_main().expect("Expected main");
-		crate::shader::besl::evaluation::ProgramEvaluation::from_main(&mut program, &main)
-			.expect("Expected sampled binding array reflection");
-		let shader = generate(&ShaderGenerationSettings::compute(utils::Extent::line(1)), &mut program);
+		let shader = lower_fixture(
+			"textures: descriptor<{ type: Texture2D, binding: 0, access: read, count: 4 }>; main: fn () -> void { sample(textures[0], vec2f(0.0, 0.0)); }",
+			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
+		);
 		assert_string_contains!(shader, "texture2d<float> textures [[id(0)]][4];");
 		assert_string_contains!(shader, "sampler textures_sampler [[id(4)]][4];");
 		assert_string_contains!(shader, "set0.textures[0].sample(set0.textures_sampler[0]");
 
 		compile_natively(&shader, "besl-fixed-slot-array").await;
-	}
-
-	#[compio::test]
-	async fn runtime_buffer_and_texture_array_layer_use_native_msl_resources() {
-		let shader = lower_fixture(super::super::RUNTIME_ARRAY_FRAGMENT, &ShaderGenerationSettings::fragment());
-
-		assert_string_contains!(shader, "const device Instance* instances [[id(2)]];");
-		assert_string_contains!(shader, "texture2d_array<float> sprites [[id(0)]];");
-		assert_string_contains!(shader, "Instance instance=set0.instances[");
-		assert_string_contains!(shader, "set0.sprites.sample(set0.sprites_sampler, ");
-		assert_string_contains!(shader, ", instance.sprite_id)");
-
-		compile_natively(&shader, "besl-runtime-array-texture-layer").await;
-	}
-
-	#[compio::test]
-	async fn affine_matrix_arrays_use_packed_msl_storage() {
-		let shader = lower_fixture(
-			r#"
-			Palette: struct { matrices: mat4x3f[4] }
-			palette: descriptor<{ type: Palette, binding: 0, access: read_write }>;
-			main: fn (input: StageInput) -> void {
-				let item: u32 = input.thread_id.x;
-				let affine: mat4x3f = palette.matrices[item];
-				palette.matrices[item + 1] = affine;
-			}
-			"#,
-			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-		);
-
-		// Packed 48-byte matrices match the CPU stride; a native float4x3 would read with a 64-byte stride.
-		assert_string_contains!(shader, "device _besl_packed_float4x3* palette");
-		assert_string_contains!(shader, "_besl_load_mat4x3(set0.palette[item])");
-		assert_string_contains!(shader, "_besl_store_mat4x3(set0.palette[item+1],affine)");
-
-		compile_natively(&shader, "besl-affine-matrix-array").await;
-	}
-
-	#[compio::test]
-	async fn packed_vector_reads_unpack_in_matrix_products() {
-		let shader = lower_fixture(
-			r#"
-			Body: struct { velocity: vec3f, color: vec4f }
-			Frame: struct { basis: mat4x3f, projection: mat4f }
-			bodies: descriptor<{ type: Body[], binding: 0, access: read_write }>;
-			frame: descriptor<{ type: Frame, binding: 1, access: read }>;
-			push_constant: push_constant {
-				offset: vec3f,
-				scale: f32,
-			}
-			main: fn (input: StageInput) -> void {
-				let item: u32 = input.thread_id.x;
-				let row: vec4f = bodies[item].velocity * frame.basis;
-				let offset: vec4f = push_constant.offset * frame.basis;
-				let projected: vec4f = frame.projection * bodies[item].color;
-				bodies[item].color = projected + row + offset * push_constant.scale;
-			}
-			"#,
-			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-		);
-
-		// Metal multiplies matrices only by native vectors, so packed member reads in a matrix product are unpacked.
-		assert_string_contains!(shader, "float3(set0.bodies[item].velocity)*_besl_load_mat4x3(");
-		assert_string_contains!(shader, "float3(push_constant.offset)*_besl_load_mat4x3(");
-		assert_string_contains!(shader, "set0.frame->projection*float4(set0.bodies[item].color)");
-
-		compile_natively(&shader, "besl-packed-vector-matrix-products").await;
-	}
-
-	#[compio::test]
-	async fn prefix_operators_and_if_values_lower_to_native_msl() {
-		let shader = lower_fixture(
-			r#"
-			Body: struct { velocity: vec3f, color: vec4f, bits: u32, weight: f16 }
-			Frame: struct { projection: mat4f }
-			bodies: descriptor<{ type: Body[], binding: 0, access: read_write }>;
-			frame: descriptor<{ type: Frame, binding: 1, access: read }>;
-			main: fn (input: StageInput) -> void {
-				let item: u32 = input.thread_id.x;
-				let flag: bool = bodies[item].bits > 3;
-				bodies[item].bits = ~bodies[item].bits ^ (if (flag) { 1 } else { 2 });
-				bodies[item].velocity = - -bodies[item].velocity - -bodies[item].velocity;
-				bodies[item].weight = if (!flag) { bodies[item].weight } else { 1.0 };
-				bodies[item].color = frame.projection * -bodies[item].color + frame.projection * (if (flag) { bodies[item].color } else { bodies[item].color });
-			}
-			"#,
-			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-		);
-		assert_string_contains!(shader, "((~set0.bodies[item].bits)^(flag?1:2))");
-		// A nested negation keeps its parentheses, so `- -x` never prints as the decrement `--x`.
-		assert_string_contains!(shader, "((-(-set0.bodies[item].velocity))-(-set0.bodies[item].velocity))");
-		// A literal branch beside an f16 branch is narrowed so both branches share one type.
-		assert_string_contains!(shader, "((!flag)?set0.bodies[item].weight:half(1.0))");
-		// Negating or selecting packed reads keeps them packed, so a matrix product unpacks the whole operand.
-		assert_string_contains!(shader, "set0.frame->projection*float4(-set0.bodies[item].color)");
-		assert_string_contains!(
-			shader,
-			"set0.frame->projection*float4(flag?set0.bodies[item].color:set0.bodies[item].color)"
-		);
-
-		compile_natively(&shader, "besl-prefix-operators-and-if-values").await;
-	}
-
-	#[compio::test]
-	async fn vector_members_use_packed_msl_storage() {
-		let shader = lower_fixture(
-			r#"
-			Sprite: struct { depth: f32, uv: vec2f, texel: vec2u, extent: vec2u16, scale: vec2f16, normal: vec3f, tint: vec4f, mask: vec4u }
-			sprites: descriptor<{ type: Sprite[], binding: 0, access: read_write }>;
-			atlas: descriptor<{ type: Texture2D, binding: 1, access: read }>;
-			push_constant: push_constant {
-				offset: f32,
-				jitter: vec2f,
-			}
-			main: fn (input: StageInput) -> void {
-				let item: u32 = input.thread_id.x;
-				let color: vec4f = sample(atlas, sprites[item].uv + push_constant.jitter);
-				let texel: vec4f = fetch(atlas, sprites[item].texel);
-				sprites[item].uv = sprites[item].uv * push_constant.offset + vec2f(color.x, texel.y);
-				sprites[item].texel.x = sprites[item].texel.x + u32(sprites[item].extent.x);
-				sprites[item].depth = f32(sprites[item].scale.y) + length(sprites[item].uv) + dot(sprites[item].tint, color);
-				sprites[item].tint = sprites[item].tint * f32(sprites[item].mask.w);
-				sprites[item].normal = normalize(cross(sprites[item].normal, vec3f(0.0, 1.0, 0.0)));
-			}
-			"#,
-			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-		);
-
-		// Packed members keep scalar alignment, so `uv` follows `depth` at offset 4, `normal` takes 12 bytes from offset
-		// 28, and `tint` follows at offset 40, as in HLSL, GLSL scalar layout, and the CPU `ghi::pod` vectors.
-		assert_string_contains!(
-			shader,
-			"struct Sprite{float depth;packed_float2 uv;packed_uint2 texel;packed_ushort2 extent;packed_half2 scale;packed_float3 normal;packed_float4 tint;packed_uint4 mask;};"
-		);
-		assert_string_contains!(shader, "struct PushConstant{float offset;packed_float2 jitter;};");
-
-		compile_natively(&shader, "besl-packed-vector-members").await;
-	}
-
-	#[compio::test]
-	async fn scalar_runtime_arrays_use_packed_msl_element_pointers() {
-		let shader = lower_fixture(
-			super::super::SCALAR_RUNTIME_ARRAY_COMPUTE,
-			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-		);
-
-		// `packed_float3` keeps the 12-byte CPU stride; a plain `float3` would read with a 16-byte stride.
-		assert_string_contains!(shader, "const device packed_float3* positions");
-		assert_string_contains!(shader, "const device ushort* indices");
-		assert_string_contains!(shader, "const device uchar* corners");
-		assert_string_contains!(shader, "device uint* results");
-
-		compile_natively(&shader, "besl-scalar-runtime-array").await;
-	}
-
-	/// Verifies a `StorageImageArray` lowers to one `texture2d_array` whose `read` and `write` take the selected layer.
-	#[compio::test]
-	async fn layered_storage_images_lower_to_texture_arrays_in_msl() {
-		let shader = lower_fixture(
-			super::super::LAYERED_STORAGE_IMAGE_COMPUTE,
-			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
-		);
-
-		assert_string_contains!(shader, "texture2d_array<float, access::write>");
-		assert_string_contains!(shader, "texture2d_array<float, access::read>");
-		assert_string_contains!(shader, "set0.source.read(gid.xy,face)");
-		assert_string_contains!(shader, "set0.faces.write(texel*float(extent.x),gid.xy,face)");
-		assert_string_contains!(shader, "uint2(set0.faces.get_width(),set0.faces.get_height())");
-
-		compile_natively(&shader, "besl-layered-storage-image").await;
-	}
-
-	#[compio::test]
-	async fn descriptor_array_elements_reach_every_texture_intrinsic_in_msl() {
-		let shader = lower_fixture(super::super::DESCRIPTOR_ARRAY_FRAGMENT, &ShaderGenerationSettings::fragment());
-
-		assert_string_contains!(
-			shader,
-			"uint2(set0.textures[set0.items[index].slot].get_width(),set0.textures[set0.items[index].slot].get_height())"
-		);
-		assert_string_contains!(
-			shader,
-			"set0.textures[index+1].sample(set0.textures_sampler[index+1], uv, metal::level(0.0))"
-		);
-		assert_string_contains!(
-			shader,
-			"set0.textures[set0.items[index].slot].sample(set0.textures_sampler[set0.items[index].slot], uv)"
-		);
-
-		compile_natively(&shader, "besl-descriptor-array-intrinsics").await;
-	}
-
-	#[compio::test]
-	async fn structural_position_uses_metal_position_without_colliding_with_a_local() {
-		let shader = lower_fixture(super::super::STRUCTURAL_POSITION_VERTEX, &ShaderGenerationSettings::vertex());
-
-		assert_string_contains!(
-			shader,
-			"struct VertexOutput{float4 position [[position]];float2 _besl_interface_uv"
-		);
-		assert_string_contains!(shader, "float4 position=float4(float(_besl_stage_vertex_index),0.0,0.0,1.0);");
-		assert_string_contains!(shader, "out.position=_besl_interface_position;");
-		assert!(!shader.contains("_besl_interface_position [[user("));
-
-		compile_natively(&shader, "besl-structural-position").await;
-	}
-
-	/// Verifies the vertex layer lowers to the `[[render_target_array_index]]` member of `VertexOutput` instead of a
-	/// user attribute.
-	#[compio::test]
-	async fn render_target_array_index_lowers_to_the_metal_layer_attribute() {
-		let shader = lower_fixture(super::super::LAYERED_VERTEX, &ShaderGenerationSettings::vertex());
-
-		assert_string_contains!(shader, "uint render_target_array_index [[render_target_array_index]];");
-		assert_string_contains!(
-			shader,
-			"out.render_target_array_index=_besl_interface_render_target_array_index;"
-		);
-		assert!(!shader.contains("_besl_interface_render_target_array_index [[user("));
-
-		compile_natively(&shader, "besl-render-target-array-index").await;
-	}
-
-	/// Verifies the fragment primitive index arrives as a `[[primitive_id]]` entry-point parameter that code reads by its
-	/// stage-input symbol, instead of a `FragmentInput` attribute.
-	#[compio::test]
-	async fn primitive_index_lowers_to_a_metal_primitive_id_parameter() {
-		let shader = lower_fixture(super::super::PRIMITIVE_INDEX_FRAGMENT, &ShaderGenerationSettings::fragment());
-
-		assert_string_contains!(shader, "uint _besl_stage_primitive_index [[primitive_id]]");
-		assert_string_contains!(shader, "float(_besl_stage_primitive_index)");
-		assert!(!shader.contains("primitive_index [[user("));
-		assert!(!shader.contains("_besl_stage_primitive_index=_besl_stage_primitive_index;"));
-
-		compile_natively(&shader, "besl-primitive-index").await;
 	}
 
 	#[test]
@@ -567,130 +1050,6 @@ mod tests {
 	}
 
 	#[compio::test]
-	async fn texture_lod_qualifies_metal_level_helper() {
-		let source = r#"
-			depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
-			sample_depth: fn (uv: vec2f, level: u32) -> f32 {
-				return texture_lod(depth_texture, uv, f32(level)).x;
-			}
-			main: fn () -> void {
-				sample_depth(vec2f(0.5, 0.5), 1);
-			}
-		"#;
-		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
-		assert_string_contains!(shader, "metal::level(float(level))");
-
-		compile_natively(&shader, "besl-texture-lod-level-shadowing").await;
-	}
-
-	#[compio::test]
-	async fn gather_reads_the_texel_quad_with_the_metal_gather() {
-		let source = r#"
-			depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
-			array_depth_texture: descriptor<{ type: Texture2DArray, binding: 1, access: read }>;
-			main: fn () -> void {
-				let quad: vec4f = gather(depth_texture, vec2f(0.5, 0.5));
-				let layer_quad: vec4f = gather(array_depth_texture, vec2f(0.5, 0.5), 1);
-				quad;
-				layer_quad;
-			}
-		"#;
-		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
-		assert_string_contains!(shader, "set0.depth_texture.gather(set0.depth_texture_sampler, ");
-		assert_string_contains!(shader, "set0.array_depth_texture.gather(set0.array_depth_texture_sampler, ");
-		assert_string_contains!(shader, ", int2(0), component::x)");
-
-		compile_natively(&shader, "besl-gather").await;
-	}
-
-	/// Verifies a texture parameter arrives with its sampler, through a binding and through another parameter.
-	#[compio::test]
-	async fn texture_parameters_carry_their_sampler_in_msl() {
-		let source = r#"
-			array_depth_texture: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
-			quad_maximum: fn (depth_map: ArrayTexture2D, uv: vec2f, layer: u32) -> f32 {
-				let quad: vec4f = gather(depth_map, uv, layer);
-				return max(max(quad.x, quad.y), max(quad.z, quad.w));
-			}
-			first_layer_maximum: fn (depth_map: ArrayTexture2D, uv: vec2f) -> f32 {
-				return quad_maximum(depth_map, uv, 0);
-			}
-			main: fn () -> void {
-				first_layer_maximum(array_depth_texture, vec2f(0.5, 0.5));
-			}
-		"#;
-		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(8)));
-		assert_string_contains!(
-			shader,
-			"float quad_maximum(texture2d_array<float> depth_map,sampler depth_map_sampler,float2 uv,uint layer)"
-		);
-		assert_string_contains!(shader, "quad_maximum(depth_map,depth_map_sampler,uv,0)");
-		assert_string_contains!(
-			shader,
-			"depth_map.gather(depth_map_sampler, uv, layer, int2(0), component::x)"
-		);
-		assert_string_contains!(
-			shader,
-			"first_layer_maximum(set0.array_depth_texture,set0.array_depth_texture_sampler,"
-		);
-
-		compile_natively(&shader, "besl-texture-parameter-sampler").await;
-	}
-
-	#[compio::test]
-	async fn conservative_downsampling_gathers_and_reduces_in_shader_code() {
-		let source = r#"
-			depth_texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
-			array_depth_texture: descriptor<{ type: Texture2DArray, binding: 1, access: read }>;
-			main: fn () -> void {
-				let minimum: f32 = downsample_min(depth_texture, vec2f(0.5, 0.5), 0.0);
-				let maximum: f32 = downsample_max(depth_texture, vec2f(0.5, 0.5), 0.0);
-				let array_maximum: f32 = downsample_max(array_depth_texture, vec2f(0.5, 0.5), 1, 0.0);
-				minimum;
-				maximum;
-				array_maximum;
-			}
-		"#;
-		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8));
-		let shader = lower_fixture(source, &settings);
-		assert_string_contains!(shader, "_besl_downsample_min(set0.depth_texture, set0.depth_texture_sampler");
-		assert_string_contains!(shader, "_besl_downsample_max(set0.depth_texture, set0.depth_texture_sampler");
-		assert_string_contains!(shader, ".gather(texture_sampler, uv, int2(0), component::x)");
-		assert_string_contains!(shader, ".gather(texture_sampler, uv, layer, int2(0), component::x)");
-		assert_string_contains!(shader, "texture.read(a, level).x");
-
-		compile_natively(&shader, "besl-downsample-gather").await;
-	}
-
-	#[compio::test]
-	async fn fixed_samplers_are_constexpr_samplers_outside_the_argument_buffer() {
-		let source = r#"
-			nearest_texel: sampler<{ filter: nearest, mip_filter: nearest, address: repeat }>;
-			tiles: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: nearest_texel }>;
-			albedo: descriptor<{ type: Texture2D, binding: 1, access: read }>;
-			result: descriptor<{ type: f32[], binding: 2, access: write }>;
-			main: fn () -> void {
-				result[0] = texture_lod(tiles, vec2f(0.5, 0.5), 1.0).x + texture_lod(albedo, vec2f(0.5, 0.5), 0.0).x;
-			}
-		"#;
-		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::line(1)));
-
-		assert_string_contains!(
-			shader,
-			"constexpr sampler _besl_tiles_sampler(coord::normalized, filter::nearest, mip_filter::nearest, address::repeat);"
-		);
-		// The fixed sampler takes no argument ID, so the next binding takes the ID after the texture.
-		assert_string_contains!(
-			shader,
-			"texture2d<float> tiles [[id(0)]];texture2d<float> albedo [[id(1)]];sampler albedo_sampler [[id(2)]];"
-		);
-		assert_string_contains!(shader, "set0.tiles.sample(_besl_tiles_sampler,");
-		assert_string_contains!(shader, "set0.albedo.sample(set0.albedo_sampler,");
-
-		compile_natively(&shader, "besl-fixed-samplers").await;
-	}
-
-	#[compio::test]
 	async fn anisotropic_fixed_sampler_arrays_sample_through_one_constexpr_sampler() {
 		let builtins = besl::Builtins::new();
 		let shader = generate(
@@ -717,120 +1076,6 @@ mod tests {
 		compile_natively(&shader, "besl-anisotropic-fixed-sampler-array").await;
 	}
 
-	#[compio::test]
-	async fn reducing_samplers_reduce_in_shader_code() {
-		let source = r#"
-			farthest_depth: sampler<{ mip_filter: nearest, reduction: min }>;
-			nearest_occluder: sampler<{ mip_filter: nearest, reduction: max }>;
-			pyramid: descriptor<{ type: Texture2D, binding: 0, access: read, sampler: farthest_depth }>;
-			occluders: descriptor<{ type: Texture2D, binding: 1, access: read, sampler: nearest_occluder }>;
-			result: descriptor<{ type: f32[], binding: 2, access: write }>;
-			main: fn () -> void {
-				result[0] = texture_lod(pyramid, vec2f(0.5, 0.5), 2.0).x;
-				result[1] = downsample_max(occluders, vec2f(0.5, 0.5), 0.0);
-			}
-		"#;
-		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::line(1)));
-
-		// No GPU older than Apple10 reduces in a sampler, so the constexpr sampler declares none.
-		assert_string_contains!(
-			shader,
-			"constexpr sampler _besl_pyramid_sampler(coord::normalized, filter::linear, mip_filter::nearest, address::clamp_to_edge);"
-		);
-		assert_string_does_not_contain!(shader, "reduction::");
-		assert_string_contains!(
-			shader,
-			"float4(_besl_downsample_min(set0.pyramid, _besl_pyramid_sampler, float2(0.5,0.5), 2.0), 0.0, 0.0, 1.0)"
-		);
-		assert_string_contains!(shader, "_besl_downsample_max(set0.occluders, _besl_occluders_sampler,");
-		// A nearest mip filter reads the level nearest the LOD, clamped to the image.
-		assert_string_contains!(shader, "uint(lod + 0.5), texture.get_num_mip_levels() - 1");
-
-		compile_natively(&shader, "besl-reducing-samplers").await;
-	}
-
-	#[compio::test]
-	async fn buffer_memory_classes_select_metal_address_spaces() {
-		let builtins = besl::Builtins::new();
-		let source = r#"
-			DispatchValues: struct { value: u32, }
-			Vertices: struct { values: u32[1024], }
-			Counters: struct { values: u32[1024], }
-			dispatch_values: descriptor<{ type: DispatchValues, binding: 0, access: read, memory: constant }>;
-			vertices: descriptor<{ type: Vertices, binding: 1, access: read, memory: device }>;
-			counters: descriptor<{ type: Counters, binding: 2, access: read_write, memory: device }>;
-			main: fn () -> void {
-				let index: u32 = thread_id().x;
-				counters.values[index] = vertices.values[index] + dispatch_values.value;
-			}
-		"#;
-		let mut program =
-			besl::compile_to_besl(source, besl::Program::new(&builtins)).expect("Expected memory-class source to link");
-		let settings = ShaderGenerationSettings::compute(utils::Extent::square(8));
-
-		let argument_buffer_shader = generate(&settings, &mut program);
-		assert_string_contains!(
-			argument_buffer_shader,
-			"constant _dispatch_values* dispatch_values [[id(0)]];"
-		);
-		assert_string_contains!(argument_buffer_shader, "const device uint* vertices [[id(1)]];");
-		assert_string_contains!(argument_buffer_shader, "device uint* counters [[id(2)]];");
-
-		compile_natively(&argument_buffer_shader, "besl-buffer-memory-classes").await;
-	}
-
-	#[compio::test]
-	async fn local_arrays_copy_and_pass_by_value_in_metal_syntax() {
-		// Metal has neither GLSL's `float4[3]` type spelling nor its array constructor, and C arrays can't be copied or
-		// passed by value, so value arrays become `metal::array`.
-		let source = r#"
-		first: fn (values: vec4f[3], count: u32) -> vec4f {
-			let copy: vec4f[3] = values;
-			copy[0] = copy[min(count, 2)];
-			return copy[0];
-		}
-		main: fn () -> void {
-			let positions: vec4f[3] = vec4f[3](
-				vec4f(0.0, 0.0, 0.0, 1.0),
-				vec4f(1.0, 0.0, 0.0, 1.0),
-				vec4f(0.0, 1.0, 0.0, 1.0)
-			);
-			positions[0] = positions[1];
-			let index: u32 = clamp(max(thread_idx(), 1), 0, 2);
-			first(positions, index);
-		}
-		"#;
-
-		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::square(1)));
-
-		assert_string_contains!(shader, "metal::array<float4, 3> positions=metal::array<float4, 3>{");
-		assert_string_contains!(shader, "float4 first(metal::array<float4, 3> values,");
-		assert_string_contains!(shader, "metal::array<float4, 3> copy=values;");
-		// Unsigned overloads cast their arguments, because C++ spells BESL's unsigned literals as `int`.
-		assert_string_contains!(shader, "min(uint(count),uint(2))");
-		assert!(
-			!shader.contains("float4[3]"),
-			"Expected no GLSL array type spelling in MSL output, got: {shader}"
-		);
-
-		compile_natively(&shader, "besl-local-array").await;
-	}
-
-	const COMPUTE_WORKGROUP_FIXTURE_SOURCE: &str = r#"
-		scratch: workgroup<f32, 64>;
-
-		store_scratch: fn (value: f32) -> void {
-			scratch[thread_idx()] = value;
-			workgroup_barrier();
-		}
-
-		main: fn () -> void {
-			store_scratch(f32(thread_idx()));
-			let value: f32 = scratch[thread_idx()];
-			value;
-		}
-	"#;
-
 	/// Compiles generated MSL with the Metal toolchain on macOS so a lowering that Metal rejects fails the test.
 	async fn compile_natively(shader: &str, name: &str) {
 		#[cfg(target_os = "macos")]
@@ -840,51 +1085,6 @@ mod tests {
 			.unwrap_or_else(|error| panic!("Expected {name} MSL to compile natively. {error}"));
 		#[cfg(not(target_os = "macos"))]
 		let _ = (shader, name);
-	}
-
-	#[test]
-	fn find_lsb_lowers_to_a_helper_that_reports_no_bit_for_zero() {
-		let shader = lower_fixture(
-			r#"
-			result: descriptor<{ type: u32, binding: 0, access: read_write }>;
-
-			main: fn () -> void {
-				let bits: u32 = 40;
-				result = find_lsb(bits);
-			}
-			"#,
-			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-		);
-		assert_string_contains!(shader, "value == 0u ? 0xffffffffu : ctz(value)");
-		assert_string_contains!(shader, "_besl_find_lsb(bits)");
-	}
-
-	#[test]
-	fn subgroup_lane_id_is_forwarded_only_to_helpers_that_use_it() {
-		let shader = lower_fixture(
-			r#"
-			lane: fn () -> u32 {
-				return subgroup_lane_index();
-			}
-			ordinary: fn () -> u32 {
-				return 1;
-			}
-			main: fn () -> void {
-				let lane_index: u32 = lane();
-				if (lane_index == ordinary()) {
-					lane_index;
-				}
-			}
-		"#,
-			&ShaderGenerationSettings::compute(utils::Extent::line(32)),
-		);
-		assert_string_contains!(
-			shader,
-			"uint lane(uint3 gid,uint thread_index,uint3 threadgroup_position,uint simd_lane_id)"
-		);
-		assert_string_contains!(shader, "lane(gid,thread_index,threadgroup_position,simd_lane_id)");
-		assert_string_contains!(shader, "uint ordinary()");
-		assert_string_contains!(shader, "uint simd_lane_id [[thread_index_in_simdgroup]]");
 	}
 
 	#[test]
@@ -919,53 +1119,6 @@ mod tests {
 		assert_string_contains!(shader, ".render_target_array_index = 2");
 		assert_string_contains!(shader, ".instance_index = meshlet_index");
 		assert_string_contains!(shader, ".primitive_index = meshlet_index");
-	}
-
-	#[compio::test]
-	async fn mat4x3_buffer_storage_is_packed_behind_native_matrix_expressions() {
-		let shader = lower_fixture(
-			r#"
-				Transform: struct {
-					model: mat4x3f,
-					tag: u32,
-				}
-				Transforms: struct {
-					values: Transform[2],
-					direct: mat4x3f[2],
-				}
-				transforms: descriptor<{ type: Transforms, binding: 0, access: read_write, memory: device }>;
-
-				main: fn() -> void {
-					let model: mat4x3f = transforms.values[0].model;
-					let position: vec3f = model * vec4f(1.0, 2.0, 3.0, 1.0);
-					let local: Transform = Transform(model, 7);
-					local.model = transforms.direct[0];
-					let local_position: vec3f = local.model * vec4f(4.0, 5.0, 6.0, 1.0);
-					transforms.values[1].model = local.model;
-					transforms.direct[1] = transforms.direct[0];
-					position;
-					local_position;
-				}
-			"#,
-			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-		);
-		assert_string_contains!(shader, "struct _besl_packed_float4x3 { packed_float3 columns[4]; };");
-		assert_string_contains!(shader, "struct Transform{_besl_packed_float4x3 model;uint tag;};");
-		assert_string_contains!(shader, "_besl_packed_float4x3 direct[2]");
-		assert_string_contains!(shader, "float4x3 model=_besl_load_mat4x3(");
-		assert_string_contains!(shader, "float3 position=(model*float4(1.0,2.0,3.0,1.0));");
-		assert_string_contains!(
-			shader,
-			"float3 local_position=(_besl_load_mat4x3(local.model)*float4(4.0,5.0,6.0,1.0));"
-		);
-		assert!(
-			!shader.contains("mul("),
-			"MSL matrix expressions must use Metal's native multiplication operator."
-		);
-		assert_string_contains!(shader, "Transform local=Transform{_besl_pack_mat4x3(model),7};");
-		assert_string_contains!(shader, "_besl_store_mat4x3(");
-
-		compile_natively(&shader, "besl-packed-mat4x3").await;
 	}
 
 	/// Verifies the task stage maps BESL builtins, workgroup storage, barriers and the mesh dispatch onto Metal object-stage features.
@@ -1054,26 +1207,6 @@ mod tests {
 		);
 	}
 
-	/// Verifies workgroup storage stays in threadgroup memory, reaches helpers by pointer, and keeps its barrier.
-	/// A dropped barrier or a per-thread copy of the storage still compiles, so the lowering is asserted as well as compiled.
-	#[compio::test]
-	async fn generated_compute_workgroup_stage_compiles_with_metal() {
-		let shader = lower_fixture(
-			COMPUTE_WORKGROUP_FIXTURE_SOURCE,
-			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
-		);
-		assert_string_contains!(shader, "uint thread_index [[thread_index_in_threadgroup]]");
-		assert_string_contains!(shader, "threadgroup float scratch[64];");
-		assert_string_contains!(shader, "threadgroup float* scratch");
-		assert_string_contains!(shader, "threadgroup_barrier(mem_flags::mem_threadgroup)");
-		assert_string_contains!(
-			shader,
-			"store_scratch(float(thread_index),gid,thread_index,threadgroup_position,scratch)"
-		);
-
-		compile_natively(&shader, "besl-compute-workgroup-fixture").await;
-	}
-
 	/// A tile shader that shares texels through workgroup storage and writes two outputs, one of them from a helper.
 	const TILE_FIXTURE_SOURCE: &str = r#"
 		source: descriptor<{ type: Texture2D, binding: 0, access: read }>;
@@ -1125,36 +1258,6 @@ mod tests {
 		);
 
 		compile_natively(&shader, "besl-tile-fixture").await;
-	}
-
-	/// Verifies subgroup intrinsics map onto Metal SIMD-group operations with the lane type Metal expects.
-	#[compio::test]
-	async fn generated_compute_subgroup_stage_compiles_with_metal() {
-		let shader = lower_fixture(
-			r#"
-			scratch: workgroup<u32, 1>;
-
-			main: fn () -> void {
-				let mask: vec4u = subgroup_ballot(thread_idx() < 4);
-				let leader: u32 = subgroup_ballot_find_lsb(mask);
-				let value: u32 = subgroup_broadcast_u32(thread_idx(), leader);
-				let neighbor: f32 = subgroup_shuffle_xor_f32(f32(value), 1);
-				if (subgroup_ballot_any(mask)) {
-					scratch[0] = subgroup_ballot_count(subgroup_ballot_and_not(mask, subgroup_ballot(value == 0))) + u32(neighbor);
-				}
-			}
-			"#,
-			&ShaderGenerationSettings::compute(utils::Extent::line(32)),
-		);
-		assert_string_contains!(shader, "simd_ballot(predicate)");
-		assert_string_contains!(shader, "simd_broadcast(value, ushort(source_lane))");
-		assert_string_contains!(shader, "simd_shuffle_xor(value, ushort(mask))");
-		assert_string_contains!(shader, "_besl_subgroup_shuffle_xor_f32(float(value),1)");
-		assert_string_contains!(shader, "_besl_subgroup_ballot_find_lsb(mask)");
-		assert_string_contains!(shader, "_besl_subgroup_ballot_count(");
-		assert_string_contains!(shader, "threadgroup uint scratch[1]");
-
-		compile_natively(&shader, "besl-compute-subgroup-fixture").await;
 	}
 
 	#[test]
@@ -1234,45 +1337,12 @@ mod tests {
 		assert_string_contains!(shader, "void main(){enabled;count;scale;color;}");
 	}
 
-	#[compio::test]
-	/// Verifies the vertex invocation indices arrive as `[[vertex_id]]` and `[[instance_id]]` parameters named by their
-	/// stage-input symbols, so locals and helper parameters named `vertex_index` and `instance_index` compile beside
-	/// them.
-	async fn vertex_builtin_stage_inputs_lower_to_msl_semantics_beside_locals_of_the_same_name() {
-		let shader = lower_fixture(
-			super::super::STAGE_INPUT_NAMESAKES_VERTEX,
-			&ShaderGenerationSettings::vertex(),
-		);
-		assert_string_contains!(shader, "struct VertexInput{};");
-		assert_string_contains!(
-			shader,
-			"uint _besl_stage_vertex_index [[vertex_id]],uint _besl_stage_instance_index [[instance_id]]"
-		);
-		assert_string_contains!(shader, "uint vertex_index=_besl_stage_vertex_index;");
-		assert_string_contains!(shader, "uint instance_index=_besl_stage_instance_index;");
-
-		compile_natively(&shader, "besl-vertex-invocation-indices").await;
-	}
-
 	#[test]
 	fn fragment_builtin_stage_io_lowers_to_msl_semantics() {
-		let builtins = besl::Builtins::new();
-		let mut root = besl::Program::new(&builtins);
-		let bool_type = root.get_child(root.root(), "bool").expect("Expected bool type");
-		let f32_type = root.get_child(root.root(), "f32").expect("Expected f32 type");
-		let front_facing_name = root.intern("front_facing");
-		root.add_to_root(besl::Node::input(front_facing_name, bool_type, 0));
-		let u32_type = root.get_child(root.root(), "u32").expect("Expected u32 type");
-		let depth_name = root.intern("depth");
-		root.add_to_root(besl::Node::output(depth_name, f32_type, 0));
-		let stencil_name = root.intern("stencil");
-		root.add_to_root(besl::Node::output(stencil_name, u32_type, 1));
-		let sample_mask_name = root.intern("sample_mask");
-		root.add_to_root(besl::Node::output(sample_mask_name, u32_type, 2));
-
-		let mut program =
-			besl::compile_to_besl("main: fn () -> void { front_facing; depth; stencil; sample_mask; }", root).unwrap();
-		let shader = generate(&ShaderGenerationSettings::fragment(), &mut program);
+		let shader = lower_fixture(
+			"front_facing: input<bool, 0>; depth: output<f32, 0>; stencil: output<u32, 1>; sample_mask: output<u32, 2>; main: fn () -> void { front_facing; depth; stencil; sample_mask; }",
+			&ShaderGenerationSettings::fragment(),
+		);
 		assert_string_contains!(shader, "struct FragmentInput{};");
 		assert_string_contains!(shader, "float depth [[depth(any)]];");
 		assert_string_contains!(shader, "uint stencil [[stencil]];");
@@ -1322,32 +1392,13 @@ mod tests {
 	#[test]
 	fn raster_helpers_receive_argument_buffer_context() {
 		let builtins = besl::Builtins::new();
-		let mut root = besl::Program::new(&builtins);
-		let mat4f = root.get_child(root.root(), "mat4f").expect("Expected mat4f type");
-		let vec3f = root.get_child(root.root(), "vec3f").expect("Expected vec3f type");
-		let vec4f = root.get_child(root.root(), "vec4f").expect("Expected vec4f type");
-		let view_projection_name = root.intern("view_projection");
-		let view_projection = root.add(besl::Node::member(view_projection_name, mat4f));
-		let camera_name = root.intern("Camera");
-		let camera = root.add_to_root(besl::Node::r#struct(camera_name, vec![view_projection]));
-		let cameras_name = root.intern("cameras");
-		let cameras = root.add(besl::Node::array(cameras_name, camera, 1));
-		root.add_to_root(besl::Node::binding_in_memory(
-			cameras_name,
-			besl::BindingTypes::Buffer { members: vec![cameras] },
-			0,
-			true,
-			false,
-			besl::BufferMemoryClass::Constant,
-			None,
-		));
-		let in_position_name = root.intern("in_position");
-		root.add_to_root(besl::Node::input(in_position_name, vec3f, 0));
-		let position_name = root.intern("position");
-		root.add_to_root(besl::Node::output(position_name, vec4f, 0));
-
 		let mut program = besl::compile_to_besl(
 			r#"
+			Camera: struct { view_projection: mat4f, }
+			Cameras: struct { cameras: Camera[1], }
+			cameras: descriptor<{ type: Cameras, binding: 0, access: read, memory: constant }>;
+			in_position: input<vec3f, 0>;
+			position: output<vec4f, 0>;
 			camera_matrix: fn () -> mat4f {
 				return cameras.cameras[0].view_projection;
 			}
@@ -1355,7 +1406,7 @@ mod tests {
 				position = camera_matrix() * vec4f(in_position.x, in_position.y, in_position.z, 1.0);
 			}
 			"#,
-			root,
+			besl::Program::new(&builtins),
 		)
 		.expect("Failed to compile the raster helper fixture. The most likely cause is invalid BESL syntax.");
 		let shader = generate(&ShaderGenerationSettings::vertex(), &mut program);
@@ -1444,133 +1495,6 @@ mod tests {
 		);
 	}
 
-	#[compio::test]
-	async fn else_chains_lower_to_msl() {
-		let shader = lower_fixture(
-			super::super::ELSE_CHAIN,
-			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-		);
-		assert_string_contains!(shader, "if(n<1){n=2;}else if(n<4){n=3;}else{n=4;}");
-
-		compile_natively(&shader, "besl-else-chain").await;
-	}
-
-	#[compio::test]
-	async fn grouped_accessor_bases_keep_their_parentheses_in_msl() {
-		let shader = lower_fixture(
-			super::super::GROUPED_ACCESSOR_BASES,
-			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-		);
-		assert_string_contains!(shader, "float sum_y=(v+w).y;");
-		assert_string_contains!(shader, "uint picked=(values)[i];");
-
-		compile_natively(&shader, "besl-grouped-accessor-bases").await;
-	}
-
-	#[compio::test]
-	async fn if_and_match_values_with_statements_compile_to_native_msl() {
-		let shader = lower_fixture(
-			super::super::BRANCH_VALUES,
-			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-		);
-		// `scale` ran before the `match`, so it is captured before the switch that sets the match's value.
-		assert_string_contains!(shader, "_besl_value_1=scale;float _besl_value_0;switch(n){");
-		assert_string_contains!(shader, "float weight=(_besl_value_1*_besl_value_0);");
-		assert_string_contains!(
-			shader,
-			"float _besl_value_2;if(n>1){float lit=(weight*weight);_besl_value_2=lit;}else{_besl_value_2=0.0;}"
-		);
-
-		compile_natively(&shader, "besl-branch-values").await;
-	}
-
-	#[compio::test]
-	async fn match_lowers_to_msl_switch() {
-		let shader = lower_fixture(
-			super::super::MATCH_IN_LOOP,
-			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-		);
-		assert_string_contains!(
-			shader,
-			"{bool besl_match_break_0=false;switch(i){case 0u:{n=1;break;}case 1u:case 2u:{besl_match_break_0=true;break;break;}default:{break;}}if(besl_match_break_0){break;}}"
-		);
-		assert_string_contains!(shader, "switch(uint(small)){case 65535u:{n=2;break;}default:{n=3;break;}}");
-
-		compile_natively(&shader, "besl-match").await;
-	}
-
-	#[compio::test]
-	async fn short_scalar_arrays_lower_to_msl_vectors() {
-		let shader = lower_fixture(
-			super::super::SHORT_SCALAR_ARRAYS,
-			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-		);
-		assert_string_contains!(shader, "float3 scalar_f32()");
-		assert_string_contains!(shader, "ushort3 scalar_u16()");
-		assert_string_contains!(shader, "uint3 scalar_u32()");
-		assert_string_contains!(shader, "uint3 mirror_indices(uint3 indices)");
-		assert_string_contains!(shader, "float3 floats=scalar_f32();");
-		assert_string_contains!(shader, "ushort3 shorts=scalar_u16();");
-		assert_string_contains!(shader, "uint3 indices=mirror_indices(scalar_u32());");
-
-		compile_natively(&shader, "besl-short-scalar-arrays").await;
-	}
-
-	#[compio::test]
-	async fn source_declared_atomic_images_and_push_constants_lower_to_msl() {
-		let source = r#"
-			Counters: struct {
-				values: atomicu32[8],
-			}
-			counters: descriptor<{ type: Counters, binding: 0, access: read_write }>;
-			index_image: descriptor<{ type: StorageImage<r32ui>, binding: 1, access: read }>;
-			shared_keys: workgroup<atomicu32, 8>;
-			push_constant: push_constant {
-				base: u32,
-			}
-			main: fn () -> void {
-				let coord: vec2u = thread_id();
-				let index: u32 = image_load_u32(index_image, coord) + push_constant.base;
-				let old: u32 = atomic_add(counters.values[index], 1);
-				let claimed: u32 = atomic_compare_exchange(counters.values[index], old, 7);
-				let shared_claimed: u32 = atomic_compare_exchange(shared_keys[index % 8], 4294967295, index);
-				atomic_store(counters.values[index], atomic_load(counters.values[old]));
-			}
-		"#;
-
-		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::line(1)));
-		assert_string_contains!(shader, "device atomic_uint* counters");
-		assert_string_contains!(shader, "texture2d<uint, access::read> index_image");
-		assert_string_contains!(shader, "constant PushConstant& push_constant [[buffer(15)]]");
-		assert_string_contains!(shader, ".read(coord).x");
-		assert_string_contains!(shader, "atomic_fetch_add_explicit(&");
-		assert_string_contains!(shader, "_besl_atomic_compare_exchange(set0.counters[index],old,7)");
-		assert_string_contains!(shader, "_besl_atomic_compare_exchange(shared_keys[index%8],4294967295,index)");
-		assert_string_contains!(
-			shader,
-			"while (!atomic_compare_exchange_weak_explicit(&value, &expected, desired"
-		);
-		assert_string_contains!(shader, "atomic_load_explicit(&");
-		assert_string_contains!(shader, "atomic_store_explicit(&");
-
-		compile_natively(&shader, "besl-atomic-compare-exchange").await;
-	}
-
-	/// Verifies both image atomics lower to Metal texture atomics on read-write textures, and that Metal accepts them.
-	#[compio::test]
-	async fn image_atomics_lower_to_msl_texture_atomics() {
-		let shader = lower_fixture(
-			super::super::IMAGE_ATOMICS,
-			&ShaderGenerationSettings::compute(utils::Extent::square(8)),
-		);
-		assert_string_contains!(shader, "texture2d<uint, access::read_write> flags");
-		assert_string_contains!(shader, ".atomic_fetch_or(coord,4).x");
-		assert_string_contains!(shader, ".atomic_fetch_max(coord,previous_flags+1).x");
-		assert_string_contains!(shader, ".write(uint4(previous_depth),coord)");
-
-		compile_natively(&shader, "besl-image-atomics").await;
-	}
-
 	/// Verifies raster entry points and called helpers receive source-declared push constants.
 	#[compio::test]
 	async fn source_declared_raster_push_constants_are_entry_point_parameters() {
@@ -1598,136 +1522,6 @@ mod tests {
 		compile_natively(&shader, "besl-raster-push-constant").await;
 	}
 
-	/// Verifies `pow(2, x)` is rewritten to `exp2(x)` for full and half precision.
-	#[test]
-	fn power_of_two_uses_exp2() {
-		let shader = lower_fixture(
-			"main: fn () -> void { let full: f32 = pow(2.0, 3.0); let half: f16 = pow(f16(2.0), f16(3.0)); full; half; }",
-			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-		);
-
-		assert_eq!(shader.matches("exp2(").count(), 2);
-		assert!(!shader.contains("pow("));
-	}
-
-	/// Verifies integer atomics use Metal's explicit relaxed operations on the right atomic types, and half-precision math keeps half types.
-	#[compio::test]
-	async fn modern_half_and_integer_atomics_lower_to_relaxed_msl() {
-		let source = r#"
-			unsigned_value: workgroup<atomicu32>;
-			signed_value: workgroup<atomici32>;
-			main: fn () -> void {
-				let signed_one: i32 = 1;
-				atomic_store(unsigned_value, 1);
-				atomic_load(unsigned_value);
-				atomic_exchange(unsigned_value, 2);
-				atomic_add(unsigned_value, 1);
-				atomic_sub(unsigned_value, 1);
-				atomic_min(unsigned_value, 1);
-				atomic_max(unsigned_value, 2);
-				atomic_and(unsigned_value, 3);
-				atomic_or(unsigned_value, 4);
-				atomic_xor(unsigned_value, 5);
-				atomic_compare_exchange(unsigned_value, 1, 2);
-				atomic_store(signed_value, signed_one);
-				atomic_min(signed_value, signed_one);
-				let zero: f16 = f16(0.0);
-				let one: f16 = f16(1.0);
-				let fused: f16 = fma(one, one, one);
-				let fused_vector: vec3f16 = fma(vec3f16(one, one, one), vec3f16(one, one, one), vec3f16(one, one, one));
-				if (is_nan(zero / zero) || is_infinite(one / zero) || is_finite(fused) || is_normal(fused_vector.x)) {
-					atomic_store(unsigned_value, 0);
-				}
-			}
-		"#;
-		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::line(1)));
-
-		assert_string_contains!(shader, "threadgroup atomic_uint unsigned_value;");
-		// Signed atomics must stay signed so `atomic_min` compares as signed integers.
-		assert_string_contains!(shader, "threadgroup atomic_int signed_value;");
-		for operation in [
-			"atomic_store_explicit(&",
-			"atomic_load_explicit(&",
-			"atomic_exchange_explicit(&",
-			"atomic_fetch_add_explicit(&",
-			"atomic_fetch_sub_explicit(&",
-			"atomic_fetch_min_explicit(&",
-			"atomic_fetch_max_explicit(&",
-			"atomic_fetch_and_explicit(&",
-			"atomic_fetch_or_explicit(&",
-			"atomic_fetch_xor_explicit(&",
-			"_besl_atomic_compare_exchange(",
-		] {
-			assert_string_contains!(shader, operation);
-		}
-		assert_string_contains!(shader, "memory_order_relaxed");
-		assert_string_contains!(shader, "half fused=fma(");
-		assert_string_contains!(shader, "half3 fused_vector=fma(");
-		for predicate in ["isnan(", "isinf(", "isfinite(", "isnormal("] {
-			assert_string_contains!(shader, predicate);
-		}
-
-		compile_natively(&shader, "besl-modern-half-atomics").await;
-	}
-
-	/// Verifies the component-wise vector intrinsics lower to Metal calls that the Metal compiler accepts.
-	#[compio::test]
-	async fn vector_intrinsics_lower_to_msl() {
-		let source = r#"
-		main: fn () -> void {
-			let toward: vec3f = vec3f(1.0, -2.0, 0.0);
-			let signs: vec3f = sign(toward);
-			let gap: f32 = distance(toward, vec3f(0.0, 0.0, 0.0));
-			let doubled: vec2f = exp2(vec2f(1.0, 2.0));
-			let lowest: vec3f = min(abs(toward), floor(toward));
-			let edges: vec4f = step(vec4f(0.0, 0.0, 0.0, 0.0), vec4f(1.0, -1.0, 0.0, 2.0));
-			let texel: vec2u = clamp(vec2u(7, 2), vec2u(3, 3), vec2u(5, 5));
-			signs;
-			gap;
-			doubled;
-			lowest;
-			edges;
-			texel;
-		}
-		"#;
-
-		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::line(1)));
-		assert_string_contains!(shader, "float3 signs=sign(toward);");
-		assert_string_contains!(shader, "float gap=distance(toward,float3(0.0,0.0,0.0));");
-		assert_string_contains!(shader, "float2 doubled=exp2(float2(1.0,2.0));");
-
-		compile_natively(&shader, "besl-vector-intrinsics").await;
-	}
-
-	/// Verifies BESL intrinsics without a same-named Metal function lower to their Metal equivalents.
-	#[compio::test]
-	async fn intrinsics_lower_to_valid_msl_names() {
-		let source = r#"
-		main: fn () -> void {
-			let angle: f32 = radians(180.0);
-			let inverse: f32 = inversesqrt(4.0);
-			let trigonometry: vec2f = sincos(angle);
-			let fused: vec2f = fma(vec2f(2.0, 3.0), vec2f(4.0, 5.0), vec2f(1.0, 2.0));
-			let rounded: vec2i = round_to_i32(vec2f(0.0 - 1.6, 2.4));
-			angle;
-			inverse;
-			trigonometry;
-			fused;
-			rounded;
-		}
-		"#;
-
-		let shader = lower_fixture(source, &ShaderGenerationSettings::compute(utils::Extent::line(1)));
-		assert_string_contains!(shader, "float angle=(180.0*(PI/180.0));");
-		assert_string_contains!(shader, "rsqrt(4.0)");
-		assert_string_contains!(shader, "float2 trigonometry=_besl_sincos(angle);");
-		assert_string_contains!(shader, "float2 fused=fma(float2(2.0,3.0),float2(4.0,5.0),float2(1.0,2.0));");
-		// Rounds half away from zero like BESL, then converts, instead of truncating.
-		assert_string_contains!(shader, "int2 rounded=int2(round(float2(0.0-1.6,2.4)));");
-
-		compile_natively(&shader, "besl-intrinsic-names").await;
-	}
-
 	/// Verifies `fetch` reads an exact texel with `read` instead of filtering through the sampler.
 	#[compio::test]
 	async fn fetch_intrinsic_lowers_to_msl() {
@@ -1739,19 +1533,6 @@ mod tests {
 		assert_string_contains!(shader, "float4 texel=set0.texture.read(coord);");
 
 		compile_natively(&shader, "besl-fetch").await;
-	}
-
-	/// Verifies a global scalar-array constant is placed in Metal's `constant` address space with its vector spelling.
-	#[compio::test]
-	async fn const_array_variable_lowers_to_msl() {
-		let shader = lower_fixture(
-			super::super::CONST_ARRAY,
-			&ShaderGenerationSettings::compute(utils::Extent::line(1)),
-		);
-		assert_string_contains!(shader, "constant float3 WEIGHTS = float3(0.5,0.25,0.125);");
-		assert_string_contains!(shader, "float value=WEIGHTS[1];");
-
-		compile_natively(&shader, "besl-const-array").await;
 	}
 
 	/// Verifies a fragment `sample` pairs the texture with its generated sampler.
@@ -1878,20 +1659,6 @@ mod tests {
 		assert_string_contains!(shader, "set0.hits[item]=Hit{hit.record,hit.besl_distance,");
 
 		compile_natively(&shader, "besl-compute-ray-queries").await;
-	}
-
-	/// Verifies a fragment reads `input.thread_id` as the pixel it covers.
-	#[compio::test]
-	async fn fragment_thread_id_lowers_to_the_fragment_pixel() {
-		let script = r#"
-		main: fn (input: StageInput) -> output { pixel: vec2u } {
-			return { pixel: input.thread_id };
-		}
-		"#;
-		let shader = lower_fixture(script, &ShaderGenerationSettings::fragment());
-		assert_string_contains!(shader, "uint2(_besl_fragment_position.xy)");
-
-		compile_natively(&shader, "besl-fragment-thread-id").await;
 	}
 
 	/// Verifies a fragment entry that returns an authored output struct returns that struct from the Metal entry point.

@@ -30,13 +30,8 @@ impl AssetHandler for BESLShaderAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (source, format) = context.resolve(id).await?;
+		let source = context.resolve(id).await?;
 		let spec = context.load_sidecar(id).await?;
-
-		if format != "besl" {
-			return Err(LoadErrors::UnsupportedType);
-		}
-
 		let source = std::str::from_utf8(&source).map_err(|_| LoadErrors::FailedToProcess)?;
 
 		let settings_error = |error: String| {
@@ -111,7 +106,7 @@ pub(crate) async fn load_pixel_chain(
 				pixel_chain::ChainFile::Root(path) => path.to_string(),
 				pixel_chain::ChainFile::Missing => continue,
 			};
-			let (bytes, _) = match context.resolve(ResourceId::new(&file_id)).await {
+			let bytes = match context.resolve(ResourceId::new(&file_id)).await {
 				Ok(resolved) => resolved,
 				Err(LoadErrors::OutOfFileHandles) => return Err(module_out_of_file_handles(&file_id)),
 				// The module may live in the other of its two files.
@@ -253,7 +248,7 @@ pub(crate) async fn read_module_files(
 			} else {
 				id.resolve_relative(file)
 			};
-			let (bytes, _) = match context.resolve(ResourceId::new(&file_id)).await {
+			let bytes = match context.resolve(ResourceId::new(&file_id)).await {
 				Ok(resolved) => resolved,
 				Err(LoadErrors::OutOfFileHandles) => return Err(module_out_of_file_handles(&file_id)),
 				// The module may live in the other of its two files.
@@ -782,10 +777,8 @@ mod tests {
 			shader_compilation_docs_path("Failed to parse BESL source (UnexpectedToken)"),
 			Some(BESL_DOCS_PATH)
 		);
-	}
 
-	#[test]
-	fn backend_source_and_native_compiler_errors_do_not_claim_to_be_besl_guidance() {
+		// Backend source and native compiler errors don't claim to be BESL guidance.
 		for error in [
 			"Failed to generate MSL shader source. The MSL shader generator returned an error.",
 			"Failed to compile MSL shader. The Metal compiler reported an error.\nstderr:\nshader.metal:7:3: error: unknown identifier",
@@ -1037,16 +1030,6 @@ mod tests {
 		}
 	}
 
-	/// Verifies a tile sidecar without a workgroup runs one thread per pixel.
-	#[test]
-	fn tile_settings_default_to_one_thread_per_pixel() {
-		let spec = crate::asset::parse_json(r#"{ "stage": "Tile", "tile": 16 }"#).unwrap();
-
-		let settings = parse_shader_settings(Some(&spec)).expect("a tile sidecar without a workgroup should parse");
-
-		assert_eq!(settings.stage.local_size(), Some(utils::Extent::new(16, 16, 1)));
-	}
-
 	#[test]
 	fn shader_settings_default_workgroups_and_require_stage_specific_mesh_limits() {
 		for (stage, expected) in [
@@ -1062,6 +1045,13 @@ mod tests {
 			assert_eq!(ShaderTypes::from(settings.stage), expected);
 			assert_eq!(settings.stage.local_size(), None);
 		}
+
+		// A tile shader runs one thread per pixel unless it sets a workgroup.
+		let tile = crate::asset::parse_json(r#"{ "stage": "Tile", "tile": 16 }"#).unwrap();
+		assert_eq!(
+			parse_shader_settings(Some(&tile)).unwrap().stage.local_size(),
+			Some(utils::Extent::new(16, 16, 1))
+		);
 
 		let compute_without_workgroup = crate::asset::parse_json(r#"{ "stage": "Compute" }"#).unwrap();
 
@@ -1115,7 +1105,7 @@ mod tests {
 	}
 
 	#[test]
-	fn workgroup_dimensions_accept_positional_and_named_omissions() {
+	fn workgroup_dimensions_accept_positional_and_named_omissions_and_reject_invalid_shapes() {
 		for (workgroup, expected) in [
 			("[]", (1, 1, 1)),
 			("[32]", (32, 1, 1)),
@@ -1134,10 +1124,7 @@ mod tests {
 				"failed to deserialize {workgroup}"
 			);
 		}
-	}
 
-	#[test]
-	fn workgroup_dimensions_reject_invalid_values_and_shapes() {
 		for workgroup in [
 			"[1, 1, 1, 1]",
 			"[0]",

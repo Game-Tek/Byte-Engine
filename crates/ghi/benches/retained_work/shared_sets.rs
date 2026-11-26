@@ -26,17 +26,18 @@ enum Table {
 /// texture of that set, as a frame does while textures stream in.
 fn render(bencher: Bencher, pipelines: usize, table: Table) {
 	let (_instance, _device, mut context, queue) = setup();
-	let vertex_source = ghi::shader::compile("benchmark vertex", ShaderSource::PlatformNative {
-		glsl: "#version 450\n#pragma shader_stage(vertex)\nvoid main() { vec2 p[3] = vec2[](vec2(0,1),vec2(1,-1),vec2(-1,-1)); gl_Position = vec4(p[gl_VertexIndex], 0, 1); }",
-		msl: "#include <metal_stdlib>\nusing namespace metal; vertex float4 vertex_main(uint id [[vertex_id]]) { float2 p[3] = {float2(0,1),float2(1,-1),float2(-1,-1)}; return float4(p[id], 0, 1); }",
-		msl_entry_point: "vertex_main",
-		hlsl: "float4 vertex_main(uint id : SV_VertexID) : SV_POSITION { float2 p[3] = {float2(0,1),float2(1,-1),float2(-1,-1)}; return float4(p[id], 0, 1); }",
-		hlsl_entry_point: "vertex_main",
-	})
-	.expect("Failed to compile benchmark vertex shader. The most likely cause is invalid native shader source.");
-	let vertex = context
-		.create_shader(None, vertex_source.as_source(), ShaderTypes::Vertex, [])
-		.expect("Failed to create benchmark vertex shader. The most likely cause is unsupported shader code.");
+	let vertex = shader(
+		&mut context,
+		ShaderSource::PlatformNative {
+			glsl: "#version 450\n#pragma shader_stage(vertex)\nvoid main() { vec2 p[3] = vec2[](vec2(0,1),vec2(1,-1),vec2(-1,-1)); gl_Position = vec4(p[gl_VertexIndex], 0, 1); }",
+			msl: "#include <metal_stdlib>\nusing namespace metal; vertex float4 vertex_main(uint id [[vertex_id]]) { float2 p[3] = {float2(0,1),float2(1,-1),float2(-1,-1)}; return float4(p[id], 0, 1); }",
+			msl_entry_point: "vertex_main",
+			hlsl: "float4 vertex_main(uint id : SV_VertexID) : SV_POSITION { float2 p[3] = {float2(0,1),float2(1,-1),float2(-1,-1)}; return float4(p[id], 0, 1); }",
+			hlsl_entry_point: "vertex_main",
+		},
+		ShaderTypes::Vertex,
+		[],
+	);
 
 	let textures = ShaderResourceDescriptor::new(
 		ResourceSlot::new(0),
@@ -55,22 +56,14 @@ fn render(bencher: Bencher, pipelines: usize, table: Table) {
 			let glsl = format!("#version 450\n#pragma shader_stage(fragment)\n#extension GL_EXT_descriptor_heap : require\n#extension GL_EXT_nonuniform_qualifier : require\nlayout(constant_id = 1984) const uint SET0 = 0u; layout(push_constant) uniform Sets {{ uvec2 sets[15]; }} push_constants; layout(descriptor_heap, descriptor_stride = 64) uniform texture2D textures[]; layout(descriptor_heap) uniform sampler samplers[]; layout(location=0) out vec4 output_color; void main() {{ uvec2 base = push_constants.sets[SET0]; output_color = texture(sampler2D(textures[base.x + {index}u], samplers[base.y + {index}u]), vec2(0.5)); }}");
 			let msl = format!("#include <metal_stdlib>\nusing namespace metal; struct Textures {{ texture2d<float> textures [[id(0)]][{TEXTURES}]; sampler samplers [[id({TEXTURES})]][{TEXTURES}]; }}; fragment float4 fragment_main(constant Textures& set [[buffer(16)]]) {{ return set.textures[{index}].sample(set.samplers[{index}], float2(0.5)); }}");
 			let hlsl = format!("cbuffer _BeslSets : register(b1, space0) {{ uint4 _besl_sets[1]; }}; static Texture2D<float4> table_texture = ResourceDescriptorHeap[_besl_sets[0].x + {index}u]; static SamplerState table_sampler = SamplerDescriptorHeap[_besl_sets[0].y + {index}u]; float4 fragment_main() : SV_TARGET0 {{ return table_texture.Sample(table_sampler, float2(0.5, 0.5)); }}");
-			let source = ghi::shader::compile("benchmark fragment", ShaderSource::PlatformNative {
+			let source = ShaderSource::PlatformNative {
 				glsl: &glsl,
 				msl: &msl,
 				msl_entry_point: "fragment_main",
 				hlsl: &hlsl,
 				hlsl_entry_point: "fragment_main",
-			})
-			.expect("Failed to compile benchmark fragment shader. The most likely cause is invalid native shader source.");
-			let fragment = context
-				.create_shader(
-					None,
-					source.as_source(),
-					ShaderTypes::Fragment,
-					[ghi::ShaderDescriptorSet::new(layout.clone())],
-				)
-				.expect("Failed to create benchmark fragment shader. The most likely cause is unsupported shader resources.");
+			};
+			let fragment = shader(&mut context, source, ShaderTypes::Fragment, [ghi::ShaderDescriptorSet::new(layout.clone())]);
 			context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 				&[],
 				&[],

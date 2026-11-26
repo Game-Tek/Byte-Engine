@@ -45,8 +45,8 @@ pub(crate) const SKINNING_WEIGHTS_STRIDE: usize = std::mem::size_of::<[f32; 4]>(
 ///
 /// All loaded meshes share these buffers, so size them for the most geometry an application keeps resident at once.
 /// A mesh whose coarsest levels do not fit is rejected when it is uploaded. Finer levels load only while an instance
-/// wants them, and the levels no instance wants give their room back when another mesh needs it. Pass the capacity to
-/// [`super::VisibilityPipelineSettings::with_geometry_capacity`], or set it with the startup parameters under
+/// wants them, and the levels no instance wants give their room back when another mesh needs it. Set it with
+/// the startup parameters under
 /// [`super::GEOMETRY_CAPACITY_PARAMETER_PREFIX`], such as `render.geometry.triangle-capacity`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GeometryCapacity {
@@ -248,7 +248,7 @@ pub(crate) fn allocate_vertices(ranges: &Mutex<GeometryRanges>, length: u32, ele
 		.map(|range| range.start as u32..range.end as u32);
 	if range.is_none() {
 		log::error!(
-			"Visibility vertex buffer capacity exceeded. The most likely cause is that the resident meshes and posed skinned instances need more vertices than the geometry capacity holds, with {length} more for {element}; raise it with VisibilityPipelineSettings::with_geometry_capacity or render.geometry.vertex-capacity."
+			"Visibility vertex buffer capacity exceeded. The most likely cause is that the resident meshes and posed skinned instances need more vertices than the geometry capacity holds, with {length} more for {element}; raise it with render.geometry.vertex-capacity."
 		);
 	}
 	range
@@ -411,7 +411,7 @@ impl GeometryHandles {
 	/// Creates every geometry stream with the element count `capacity` gives it, and the flat triangle lists when
 	/// `ray_tracing` is set.
 	///
-	/// `capacity` comes from [`super::VisibilityPipelineSettings::geometry_capacity`], which only holds validated values.
+	/// `capacity` comes from [`super::VisibilityPipelineSettings::geometry_capacity`], which holds only validated values.
 	/// Set `ray_tracing` when surfel GI is built in and the device traces rays. Next, hand the handles to
 	/// [`GeometryBuffers::import`] so the loader can append meshes.
 	pub(crate) fn new(context: &mut ghi::implementation::Context, capacity: GeometryCapacity, ray_tracing: bool) -> Self {

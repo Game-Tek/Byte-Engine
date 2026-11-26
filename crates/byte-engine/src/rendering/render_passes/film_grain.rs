@@ -254,22 +254,15 @@ impl FilmGrainPass {
 		let output = render_pass_builder
 			.create_main_render_target(ghi::image::Builder::new(main_format, ghi::Uses::Image).name("Film Grain"));
 
+		let parameters = render_pass_builder.create_parameters("Film Grain Parameters");
 		let context = render_pass_builder.context();
-		let parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Film Grain Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
 		let sampler = context.build_sampler(ghi::sampler::Builder::new());
 
 		let apply_pass = simple_tile::Pipeline::compile(
 			render_pass_builder,
-			simple_tile::Descriptor::new(
-				"Film Grain Apply",
-				"byte_engine/rendering/film_grain/apply.pipeline",
-				&[output.format()],
-			),
+			"Film Grain Apply",
+			"byte_engine/rendering/film_grain/apply.pipeline",
+			&[output.format()],
 		)
 		.bind(
 			"Film Grain Apply Descriptor Set",
@@ -298,14 +291,7 @@ impl RenderPass<FilmGrain> for FilmGrainPass {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		// No grain, or a shader still compiling, records nothing, which leaves `main` unchanged.
-		let ready = if self.settings.level > 0.0 {
-			self.apply_pass.ready(frame)
-		} else {
-			None
-		};
-		let Some(apply) = ready else {
-			return None;
-		};
+		let apply = (self.settings.level > 0.0).then(|| self.apply_pass.ready(frame)).flatten()?;
 		let extent = sink.extent();
 		self.frame = self.frame.wrapping_add(1);
 		*frame.map(self.parameters) = film_grain_shader_data(&self.settings, extent.height(), self.frame);

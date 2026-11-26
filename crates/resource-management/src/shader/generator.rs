@@ -652,7 +652,82 @@ pub(crate) trait NodeEmitter<'p> {
 	fn match_break_depth(&mut self) -> &mut Option<usize>;
 
 	/// Appends the string representation of a BESL node to the output buffer.
+	///
+	/// Backends match the nodes whose lowering is their own, such as bindings and stage interfaces, and pass every
+	/// other node to [`Self::emit_common_node`].
 	fn emit_node(&mut self, string: &mut String, node: &besl::NodeId);
+
+	/// Writes the nodes every backend lowers alike: declarations that emit nothing, functions, structs,
+	/// specializations, members, parameters, and statements and expressions.
+	///
+	/// Panics on a node that only the backend's [`Self::emit_node`] lowers.
+	fn emit_common_node(&mut self, string: &mut String, this_node: &besl::NodeId) {
+		let program = self.program();
+		match program[this_node].node() {
+			// A `use` and a signature only link names, and a layer's members emit where code reads them.
+			besl::Nodes::Scope { .. } | besl::Nodes::Use { .. } | besl::Nodes::Layer { .. } | besl::Nodes::Signature { .. } => {
+			}
+			besl::Nodes::Function {
+				name,
+				statements,
+				return_type,
+				params,
+				..
+			} => self.emit_function_node(string, this_node, program.text(*name), statements, return_type, params),
+			// The ray tracing prelude declares `Hit` before the helpers that return it.
+			besl::Nodes::Struct { name, .. } if program.text(*name) == besl::HIT_STRUCT => {}
+			besl::Nodes::Struct {
+				name, fields, template, ..
+			} => self.emit_struct_node(string, program.text(*name), fields, template),
+			besl::Nodes::Specialization { name, r#type, id } => {
+				self.emit_specialization_node(string, program.text(*name), r#type, *id)
+			}
+			besl::Nodes::Member { name, r#type, count } => {
+				if let Some(type_name) = program.name(*r#type) {
+					// A member may be a user struct, which is declared under its escaped name.
+					Self::type_identifier(type_name).push_to(string);
+					string.push(' ');
+				}
+				Self::identifier(program.text(*name)).push_to(string);
+				if let Some(count) = count {
+					let _ = write!(string, "[{count}]");
+				}
+			}
+			besl::Nodes::Parameter { name, r#type } => {
+				self.emit_variable_declaration(string, program.text(*name), program.name(*r#type).unwrap())
+			}
+			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
+			besl::Nodes::Conditional {
+				condition,
+				statements,
+				else_branch,
+			} => self.emit_conditional_node(string, condition, statements, else_branch.as_ref()),
+			besl::Nodes::Match {
+				scrutinee,
+				r#type,
+				arms,
+				default,
+			} => self.emit_match_node(string, scrutinee, r#type, arms, default),
+			besl::Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			} => self.emit_for_loop_node(string, initializer, condition, update, statements),
+			besl::Nodes::Intrinsic { elements, .. } => {
+				for element in elements {
+					self.emit_node(string, element);
+				}
+			}
+			besl::Nodes::PushConstant { .. }
+			| besl::Nodes::Input { .. }
+			| besl::Nodes::Output { .. }
+			| besl::Nodes::TaskPayload { .. }
+			| besl::Nodes::Workgroup { .. }
+			| besl::Nodes::Binding { .. }
+			| besl::Nodes::Const { .. } => unreachable!("The backend lowers its own declarations in `emit_node`."),
+		}
+	}
 
 	/// Emits a backend intrinsic call.
 	fn emit_intrinsic_call(
@@ -948,22 +1023,12 @@ pub(crate) trait NodeEmitter<'p> {
 					&& is_numeric_literal(program, left)
 					&& expression_uses_f16(program, right);
 				let right_as_f16 = is_numeric_literal(program, right) && expression_uses_f16(program, left);
-				let emit_value = |emitter: &mut Self, string: &mut String, value: &besl::NodeId, as_f16: bool| {
-					if as_f16 {
-						Self::emit_type_name(string, "f16");
-						string.push('(');
-						emitter.emit_node(string, value);
-						string.push(')');
-					} else {
-						emitter.emit_wrapped_expression(string, value);
-					}
-				};
 
-				emit_value(self, string, left, left_as_f16);
+				self.emit_operand(string, left, left_as_f16);
 				string.push_str(formatting.space_str());
 				string.push_str(operator.token());
 				string.push_str(formatting.space_str());
-				emit_value(self, string, right, right_as_f16);
+				self.emit_operand(string, right, right_as_f16);
 			}
 			besl::Expressions::Unary { operator, operand } => {
 				string.push_str(operator.token());
@@ -978,25 +1043,15 @@ pub(crate) trait NodeEmitter<'p> {
 				// implicitly narrow float literals to float16_t and both branches must have one type.
 				let true_as_f16 = is_numeric_literal(program, if_true) && expression_uses_f16(program, if_false);
 				let false_as_f16 = is_numeric_literal(program, if_false) && expression_uses_f16(program, if_true);
-				let emit_branch = |emitter: &mut Self, string: &mut String, value: &besl::NodeId, as_f16: bool| {
-					if as_f16 {
-						Self::emit_type_name(string, "f16");
-						string.push('(');
-						emitter.emit_node(string, value);
-						string.push(')');
-					} else {
-						emitter.emit_wrapped_expression(string, value);
-					}
-				};
 				self.emit_wrapped_expression(string, condition);
 				string.push_str(formatting.space_str());
 				string.push('?');
 				string.push_str(formatting.space_str());
-				emit_branch(self, string, if_true, true_as_f16);
+				self.emit_operand(string, if_true, true_as_f16);
 				string.push_str(formatting.space_str());
 				string.push(':');
 				string.push_str(formatting.space_str());
-				emit_branch(self, string, if_false, false_as_f16);
+				self.emit_operand(string, if_false, false_as_f16);
 			}
 			besl::Expressions::FunctionCall {
 				parameters, function, ..
@@ -1243,6 +1298,19 @@ pub(crate) trait NodeEmitter<'p> {
 		}
 	}
 
+	/// Writes one operand of an operator or a branch of a conditional value, cast to `f16` when `as_f16` is set and
+	/// wrapped in parentheses when it is compound.
+	fn emit_operand(&mut self, string: &mut String, value: &besl::NodeId, as_f16: bool) {
+		if as_f16 {
+			Self::emit_type_name(string, "f16");
+			string.push('(');
+			self.emit_node(string, value);
+			string.push(')');
+		} else {
+			self.emit_wrapped_expression(string, value);
+		}
+	}
+
 	/// Emits a type name with optional array dimension suffix, delegating type mapping to
 	/// [`Self::type_from_besl`].
 	fn emit_type_name(string: &mut String, source: &str) {
@@ -1278,6 +1346,48 @@ pub(crate) trait NodeEmitter<'p> {
 			}
 			self.emit_node(string, argument);
 		}
+	}
+
+	/// Writes an intrinsic lowering spelled as `template`, target-language text with placeholders: `$0` to `$9` write
+	/// that argument, `$*` writes every argument as [`Self::emit_call_arguments`] does, and `$,` writes the separator.
+	/// `$` followed by a letter and a digit, such as `$s0`, writes that argument through
+	/// [`Self::emit_template_argument`].
+	///
+	/// Backends write every lowering whose shape doesn't depend on the program this way, so each one reads as the
+	/// code it emits.
+	fn emit_template(&mut self, string: &mut String, template: &str, arguments: &[besl::NodeId]) {
+		let mut rest = template;
+		while let Some(start) = rest.find('$') {
+			string.push_str(&rest[..start]);
+			let placeholder = &rest.as_bytes()[start + 1..];
+			let argument = |digit: u8| usize::from(digit - b'0');
+			let length = match placeholder[0] {
+				digit @ b'0'..=b'9' => {
+					self.emit_node(string, &arguments[argument(digit)]);
+					2
+				}
+				b'*' => {
+					self.emit_call_arguments(string, arguments);
+					2
+				}
+				b',' => {
+					self.emit_separator(string);
+					2
+				}
+				kind => {
+					self.emit_template_argument(string, kind, arguments, argument(placeholder[1]));
+					3
+				}
+			};
+			rest = &rest[start + length..];
+		}
+		string.push_str(rest);
+	}
+
+	/// Writes `arguments[index]` the way the template placeholder `$<kind><index>` asks, such as the sampler paired
+	/// with a texture. See [`Self::emit_template`]; backends without such placeholders keep the default.
+	fn emit_template_argument(&mut self, _string: &mut String, kind: u8, _arguments: &[besl::NodeId], _index: usize) {
+		unreachable!("The backend's intrinsic templates use no `${}` placeholder.", kind as char)
 	}
 }
 
@@ -1344,159 +1454,79 @@ pub mod tests {
 		assert!(super::validate_workgroup_storage_stage(&program, &super::Stages::Fragment, &order).is_err());
 	}
 
-	/// Builds one sampled-image binding for resource-interface tests. Add it to a program with [`besl::Program::add`].
-	pub fn sampled_binding(name: besl::Name, slot: u32, read: bool, write: bool) -> besl::Node {
-		besl::Node::binding(
-			name,
-			besl::BindingTypes::CombinedImageSampler {
-				format: String::new(),
-				sampler: None,
-			},
-			slot,
-			read,
-			write,
-		)
-	}
-
 	pub fn bindings<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
-		let script = r#"
+		link(
+			r#"
+		Buff: struct { member: f32 }
+		buff: descriptor<{ type: Buff, binding: 0, access: read_write }>;
+		image: descriptor<{ type: StorageImage<r8>, binding: 1, access: write }>;
+		texture: descriptor<{ type: Texture2D, binding: 2, access: read }>;
 		main: fn () -> void {
 			buff;
 			image;
 			texture;
 		}
-		"#;
-
-		let mut program = besl::Program::new(builtins);
-
-		let float_type = builtin(&program, "f32");
-		let member_name = program.intern("member");
-		let member = program.add(besl::Node::member(member_name, float_type));
-
-		let buff_name = program.intern("buff");
-		program.add_to_root(besl::Node::binding(
-			buff_name,
-			besl::BindingTypes::Buffer { members: vec![member] },
-			0,
-			true,
-			true,
-		));
-		let image_name = program.intern("image");
-		program.add_to_root(besl::Node::binding(
-			image_name,
-			besl::BindingTypes::Image {
-				format: Some("r8".to_string()),
-				layered: false,
-			},
-			1,
-			false,
-			true,
-		));
-		let texture_name = program.intern("texture");
-		program.add_to_root(besl::Node::binding(
-			texture_name,
-			besl::BindingTypes::CombinedImageSampler {
-				format: "".to_string(),
-				sampler: None,
-			},
-			2,
-			true,
-			false,
-		));
-
-		link(script, program)
+		"#,
+			besl::Program::new(builtins),
+		)
 	}
 
 	/// Builds the 52-byte meshlet record, whose `vec4f` members follow 16 bytes of scalars and are followed by a
 	/// `vec2u16`, to verify scalar-aligned vector storage across backends.
 	pub fn vec4f_meshlet_binding<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
-		let script = r#"
+		link(
+			r#"
+		Meshlet: struct {
+			primitive_offset: u32,
+			triangle_offset: u32,
+			primitive_count: u32,
+			triangle_count: u32,
+			center_radius: vec4f,
+			cone_apex_cutoff: vec4f,
+			cone_axis: vec2u16,
+		}
+		Buff: struct { meshlets: Meshlet[2] }
+		buff: descriptor<{ type: Buff, binding: 0, access: read }>;
 		main: fn () -> void {
 			let center: vec4f = buff.meshlets[1].center_radius;
 			center.x;
 			buff.meshlets[0].cone_apex_cutoff.w;
 		}
-		"#;
-		let mut program = besl::Program::new(builtins);
-		let u32_type = builtin(&program, "u32");
-		let vec4f_type = builtin(&program, "vec4f");
-		let vec2u16_type = builtin(&program, "vec2u16");
-		let fields = [
-			("primitive_offset", u32_type),
-			("triangle_offset", u32_type),
-			("primitive_count", u32_type),
-			("triangle_count", u32_type),
-			("center_radius", vec4f_type),
-			("cone_apex_cutoff", vec4f_type),
-			("cone_axis", vec2u16_type),
-		]
-		.map(|(name, r#type)| {
-			let name = program.intern(name);
-			program.add(besl::Node::member(name, r#type))
-		})
-		.to_vec();
-		let meshlet_name = program.intern("Meshlet");
-		let meshlet = program.add_to_root(besl::Node::r#struct(meshlet_name, fields));
-		let meshlets_name = program.intern("meshlets");
-		let meshlets = program.add(besl::Node::array(meshlets_name, meshlet, 2));
-		let buff_name = program.intern("buff");
-		program.add_to_root(besl::Node::binding(
-			buff_name,
-			besl::BindingTypes::Buffer { members: vec![meshlets] },
-			0,
-			true,
-			false,
-		));
-
-		link(script, program)
+		"#,
+			besl::Program::new(builtins),
+		)
 	}
 
 	/// Builds a flattened vec2u16 array binding used to verify native-width backend storage strides.
 	pub fn vec2u16_array_binding<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
-		let script = "main: fn () -> void { buff.values[1]; }";
-		let mut program = besl::Program::new(builtins);
-		let vec2u16_type = builtin(&program, "vec2u16");
-		let values_name = program.intern("values");
-		let values = program.add(besl::Node::array(values_name, vec2u16_type, 2));
-		let buff_name = program.intern("buff");
-		program.add_to_root(besl::Node::binding(
-			buff_name,
-			besl::BindingTypes::Buffer { members: vec![values] },
-			0,
-			true,
-			true,
-		));
-
-		link(script, program)
+		link(
+			r#"
+		Buff: struct { values: vec2u16[2] }
+		buff: descriptor<{ type: Buff, binding: 0, access: read_write }>;
+		main: fn () -> void { buff.values[1]; }
+		"#,
+			besl::Program::new(builtins),
+		)
 	}
 
 	/// Builds mixed packed-u16 storage members used to verify backend alignment against the VM layout.
 	pub fn mixed_vec4u16_binding<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
-		let script = "main: fn () -> void { buff.value; buff.tail; }";
-		let mut program = besl::Program::new(builtins);
-		let vec4u16_type = builtin(&program, "vec4u16");
-		let u16_type = builtin(&program, "u16");
-		let value_name = program.intern("value");
-		let tail_name = program.intern("tail");
-		let members = vec![
-			program.add(besl::Node::member(value_name, vec4u16_type)),
-			program.add(besl::Node::member(tail_name, u16_type)),
-		];
-		let buff_name = program.intern("buff");
-		program.add_to_root(besl::Node::binding(
-			buff_name,
-			besl::BindingTypes::Buffer { members },
-			0,
-			true,
-			true,
-		));
-
-		link(script, program)
+		link(
+			r#"
+		Buff: struct { value: vec4u16, tail: u16 }
+		buff: descriptor<{ type: Buff, binding: 0, access: read_write }>;
+		main: fn () -> void { buff.value; buff.tail; }
+		"#,
+			besl::Program::new(builtins),
+		)
 	}
 
 	/// Builds mixed f16 storage members used to verify native backend type and packing mappings.
 	pub fn mixed_f16_storage_binding<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
-		let script = r#"
+		link(
+			r#"
+		Buff: struct { scalar: f16, uv: vec2f16, normal: vec3f16, color: vec4f16 }
+		buff: descriptor<{ type: Buff, binding: 0, access: read_write }>;
 		main: fn () -> void {
 			let uv32: vec2f = vec2f(0.25, 0.75);
 			let uv16: vec2f16 = vec2f16(uv32);
@@ -1519,30 +1549,9 @@ pub mod tests {
 			scaled_uv;
 			buffer_scaled_uv;
 		}
-		"#;
-		let mut program = besl::Program::new(builtins);
-		let members = [
-			("scalar", "f16"),
-			("uv", "vec2f16"),
-			("normal", "vec3f16"),
-			("color", "vec4f16"),
-		]
-		.map(|(name, type_name)| {
-			let r#type = builtin(&program, type_name);
-			let name = program.intern(name);
-			program.add(besl::Node::member(name, r#type))
-		})
-		.to_vec();
-		let buff_name = program.intern("buff");
-		program.add_to_root(besl::Node::binding(
-			buff_name,
-			besl::BindingTypes::Buffer { members },
-			0,
-			true,
-			true,
-		));
-
-		link(script, program)
+		"#,
+			besl::Program::new(builtins),
+		)
 	}
 
 	/// Builds a mesh shader that writes one per-vertex and one per-primitive output array, used to verify where each
@@ -1573,50 +1582,29 @@ pub mod tests {
 
 	/// Builds packed integer vector inputs and outputs used to verify interpolation qualifiers.
 	pub fn packed_u16_stage_io<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
-		let script = "main: fn () -> void { packed_input; packed_output; }";
-		let mut program = besl::Program::new(builtins);
-		let vec2u16_type = builtin(&program, "vec2u16");
-		let vec4u16_type = builtin(&program, "vec4u16");
-		let packed_input_name = program.intern("packed_input");
-		program.add_to_root(besl::Node::input(packed_input_name, vec2u16_type, 0));
-		let packed_output_name = program.intern("packed_output");
-		program.add_to_root(besl::Node::output(packed_output_name, vec4u16_type, 1));
-
-		link(script, program)
+		link(
+			r#"
+		packed_input: input<vec2u16, 0>;
+		packed_output: output<vec4u16, 1>;
+		main: fn () -> void { packed_input; packed_output; }
+		"#,
+			besl::Program::new(builtins),
+		)
 	}
 
 	pub fn same_named_buffer_member_access<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
-		let script = r#"
+		link(
+			r#"
+		Meshes: struct { meshes: u32[2] }
+		meshes: descriptor<{ type: Meshes, binding: 0, access: read }>;
+		PixelMapping: struct { pixel_mapping: u32[2] }
+		pixel_mapping: descriptor<{ type: PixelMapping, binding: 1, access: write }>;
 		main: fn () -> void {
 			pixel_mapping.pixel_mapping[0] = meshes.meshes[1];
 		}
-		"#;
-
-		let mut program = besl::Program::new(builtins);
-		let u32_type = builtin(&program, "u32");
-
-		let meshes_name = program.intern("meshes");
-		let meshes = program.add(besl::Node::array(meshes_name, u32_type, 2));
-		program.add_to_root(besl::Node::binding(
-			meshes_name,
-			besl::BindingTypes::Buffer { members: vec![meshes] },
-			0,
-			true,
-			false,
-		));
-		let pixel_mapping_name = program.intern("pixel_mapping");
-		let pixel_mapping = program.add(besl::Node::array(pixel_mapping_name, u32_type, 2));
-		program.add_to_root(besl::Node::binding(
-			pixel_mapping_name,
-			besl::BindingTypes::Buffer {
-				members: vec![pixel_mapping],
-			},
-			1,
-			false,
-			true,
-		));
-
-		link(script, program)
+		"#,
+			besl::Program::new(builtins),
+		)
 	}
 
 	/// Builds a `main` that reads one specialization of each supported shape: `bool`, `u32`, and `f32` scalars at ids 0,
@@ -1649,17 +1637,17 @@ pub mod tests {
 
 	/// Builds a compute `main` that reads one exact texel with `fetch`.
 	pub fn texel_fetch<'b>(builtins: &'b besl::Builtins) -> besl::Program<'b> {
-		let script = r#"
+		link(
+			r#"
+		texture: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 		main: fn () -> void {
 			let coord: vec2u = vec2u(1, 2);
 			let texel: vec4f = fetch(texture, coord);
 			texel;
 		}
-		"#;
-		let mut program = besl::Program::new(builtins);
-		let texture_name = program.intern("texture");
-		program.add_to_root(sampled_binding(texture_name, 0, true, false));
-		link(script, program)
+		"#,
+			besl::Program::new(builtins),
+		)
 	}
 
 	/// Returns the linked program, whose `main` calls `used`, which calls `used_by_used`, and never calls `not_used`.

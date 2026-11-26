@@ -231,7 +231,7 @@ fn features_measure_nodes_and_the_trajectory_in_each_frames_root_frame() {
 }
 
 #[test]
-fn databases_that_cannot_be_searched_are_rejected() {
+fn databases_that_cannot_be_searched_and_settings_out_of_their_range_are_rejected() {
 	let walking = walk(2.0, 1.0);
 	let duplicated = Animation {
 		skeleton: Reference::in_memory(
@@ -280,10 +280,8 @@ fn databases_that_cannot_be_searched_are_rejected() {
 		error("trajectory: { times: [2.5] }", &walking),
 		DatabaseError::NoPickableFrame
 	);
-}
 
-#[test]
-fn settings_out_of_their_range_or_unknown_fail_to_parse() {
+	// Settings out of their range, or unknown, fail to parse.
 	for extra in [
 		"sample_rate: 0",
 		"nodes: { foot: {} }",

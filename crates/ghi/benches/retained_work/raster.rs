@@ -25,35 +25,34 @@ enum Workload {
 #[allow(clippy::excessive_nesting)]
 fn render(bencher: Bencher, objects: usize, workload: Workload) {
 	let (_instance, _device, mut context, queue) = setup();
-	let vertex_source = ghi::shader::compile("benchmark vertex", ShaderSource::PlatformNative {
-		glsl: "#version 450\n#pragma shader_stage(vertex)\nlayout(push_constant) uniform Transform { layout(offset = 128) vec4 tile; uint object_index; }; void main() { vec2 p[3] = vec2[](vec2(0,1),vec2(1,-1),vec2(-1,-1)); gl_Position = vec4(p[gl_VertexIndex]*tile.xy+tile.zw,0,1); }",
-		msl: "#include <metal_stdlib>\nusing namespace metal; vertex float4 vertex_main(uint id [[vertex_id]], constant float4& tile [[buffer(15)]]) { float2 p[3] = {float2(0,1),float2(1,-1),float2(-1,-1)}; return float4(p[id]*tile.xy+tile.zw,0,1); }",
-		msl_entry_point: "vertex_main",
-		hlsl: "cbuffer Transform : register(b0, space0) { float4 tile; }; float4 vertex_main(uint id : SV_VertexID) : SV_POSITION { float2 p[3] = {float2(0,1),float2(1,-1),float2(-1,-1)}; return float4(p[id]*tile.xy+tile.zw,0,1); }",
-		hlsl_entry_point: "vertex_main",
-	}).expect("Failed to compile benchmark vertex shader. The most likely cause is invalid native shader source.");
-	// All native sources read slot zero so descriptor retention remains observable at the public API seam. Vulkan and
-	// Direct3D 12 find it at the set's resource base, since it is the set's first binding.
-	let fragment_source = ghi::shader::compile("benchmark fragment", ShaderSource::PlatformNative {
-		glsl: "#version 450\n#pragma shader_stage(fragment)\n#extension GL_EXT_descriptor_heap : require\n#extension GL_EXT_nonuniform_qualifier : require\nlayout(constant_id = 1984) const uint SET0 = 0u; layout(descriptor_heap, descriptor_stride = 64, std430) readonly buffer Colors { vec4 colors[]; } color_buffers[]; layout(push_constant) uniform Object { uvec2 sets[15]; layout(offset = 128) vec4 tile; uint object_index; }; layout(location=0) out vec4 output_color; void main() { output_color = color_buffers[sets[SET0].x].colors[object_index]; }",
-		msl: "#include <metal_stdlib>\nusing namespace metal; struct Resources { device float4* color [[id(0)]]; }; struct Object { float4 tile; uint object_index; }; fragment float4 fragment_main(constant Resources& resources [[buffer(16)]], constant Object& object [[buffer(15)]]) { return resources.color[object.object_index]; }",
-		msl_entry_point: "fragment_main",
-		hlsl: "cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[1]; }; static StructuredBuffer<float4> colors = ResourceDescriptorHeap[_besl_sets[0].x]; cbuffer Object : register(b0, space0) { float4 tile; uint object_index; }; float4 fragment_main() : SV_TARGET0 { return colors[object_index]; }",
-		hlsl_entry_point: "fragment_main",
-	}).expect("Failed to compile benchmark fragment shader. The most likely cause is invalid native shader source.");
+	let vertex = shader(
+		&mut context,
+		ShaderSource::PlatformNative {
+			glsl: "#version 450\n#pragma shader_stage(vertex)\nlayout(push_constant) uniform Transform { layout(offset = 128) vec4 tile; uint object_index; }; void main() { vec2 p[3] = vec2[](vec2(0,1),vec2(1,-1),vec2(-1,-1)); gl_Position = vec4(p[gl_VertexIndex]*tile.xy+tile.zw,0,1); }",
+			msl: "#include <metal_stdlib>\nusing namespace metal; vertex float4 vertex_main(uint id [[vertex_id]], constant float4& tile [[buffer(15)]]) { float2 p[3] = {float2(0,1),float2(1,-1),float2(-1,-1)}; return float4(p[id]*tile.xy+tile.zw,0,1); }",
+			msl_entry_point: "vertex_main",
+			hlsl: "cbuffer Transform : register(b0, space0) { float4 tile; }; float4 vertex_main(uint id : SV_VertexID) : SV_POSITION { float2 p[3] = {float2(0,1),float2(1,-1),float2(-1,-1)}; return float4(p[id]*tile.xy+tile.zw,0,1); }",
+			hlsl_entry_point: "vertex_main",
+		},
+		ShaderTypes::Vertex,
+		[],
+	);
 	let resource = ShaderResourceDescriptor::single(ResourceSlot::new(0), ResourceKind::StorageBuffer, AccessPolicies::READ);
 	let layout = ghi::DescriptorSetLayout::new("Benchmark Colors", [resource]);
-	let vertex = context
-		.create_shader(None, vertex_source.as_source(), ShaderTypes::Vertex, [])
-		.expect("Failed to create benchmark vertex shader. The most likely cause is unsupported shader code.");
-	let fragment = context
-		.create_shader(
-			None,
-			fragment_source.as_source(),
-			ShaderTypes::Fragment,
-			[ghi::ShaderDescriptorSet::new(layout.clone())],
-		)
-		.expect("Failed to create benchmark fragment shader. The most likely cause is unsupported shader resources.");
+	// All native sources read slot zero so descriptor retention remains observable at the public API seam. Vulkan and
+	// Direct3D 12 find it at the set's resource base, since it is the set's first binding.
+	let fragment = shader(
+		&mut context,
+		ShaderSource::PlatformNative {
+			glsl: "#version 450\n#pragma shader_stage(fragment)\n#extension GL_EXT_descriptor_heap : require\n#extension GL_EXT_nonuniform_qualifier : require\nlayout(constant_id = 1984) const uint SET0 = 0u; layout(descriptor_heap, descriptor_stride = 64, std430) readonly buffer Colors { vec4 colors[]; } color_buffers[]; layout(push_constant) uniform Object { uvec2 sets[15]; layout(offset = 128) vec4 tile; uint object_index; }; layout(location=0) out vec4 output_color; void main() { output_color = color_buffers[sets[SET0].x].colors[object_index]; }",
+			msl: "#include <metal_stdlib>\nusing namespace metal; struct Resources { device float4* color [[id(0)]]; }; struct Object { float4 tile; uint object_index; }; fragment float4 fragment_main(constant Resources& resources [[buffer(16)]], constant Object& object [[buffer(15)]]) { return resources.color[object.object_index]; }",
+			msl_entry_point: "fragment_main",
+			hlsl: "cbuffer _BeslSets : register(b1, space0) { uint4 _besl_sets[1]; }; static StructuredBuffer<float4> colors = ResourceDescriptorHeap[_besl_sets[0].x]; cbuffer Object : register(b0, space0) { float4 tile; uint object_index; }; float4 fragment_main() : SV_TARGET0 { return colors[object_index]; }",
+			hlsl_entry_point: "fragment_main",
+		},
+		ShaderTypes::Fragment,
+		[ghi::ShaderDescriptorSet::new(layout.clone())],
+	);
 	let pipeline = context.create_raster_pipeline(ghi::pipelines::raster::Builder::new(
 		&[ghi::pipelines::PushConstantRange::new(0, 32)],
 		&[],
@@ -161,22 +160,13 @@ fn render(bencher: Bencher, objects: usize, workload: Workload) {
 		context.wait();
 		index += 1;
 	});
-	let mut readback = None;
-	context
-		.queue(queue)
-		.execute(Some(FrameRequest::new(index, signal)), &[], signal, |execution| {
-			execution.record(commands[0], |recording| {
-				readback = Some(
-					recording
-						.transfer_texture(target.into())
-						.expect("Benchmark readback failed. The most likely cause is an unsupported transfer source."),
-				);
-			});
-			[]
-		});
-	context.wait();
+	let readback = context.record(queue, None, |recording| {
+		recording
+			.transfer_texture(target.into())
+			.expect("Benchmark readback failed. The most likely cause is an unsupported transfer source.")
+	});
 	let pixels = context
-		.get_image_data(readback.unwrap())
+		.get_image_data(readback)
 		.expect("Benchmark mapping failed. The most likely cause is incomplete GPU readback.");
 	// Native viewport conventions can invert Y; require one consistent orientation across the image.
 	let matches = |flip_y: bool| {

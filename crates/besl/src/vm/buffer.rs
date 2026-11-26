@@ -182,10 +182,7 @@ impl Buffer {
 	pub fn read_f32(&self, member_name: &str) -> Result<f32, VmError> {
 		match self.read(member_name)? {
 			Value::F32(value) => Ok(value),
-			value => Err(VmError::TypeMismatch {
-				expected: "f32".to_string(),
-				found: value.value_type().name().to_string(),
-			}),
+			value => Err(VmError::mismatch("f32", value.value_type().name())),
 		}
 	}
 
@@ -193,10 +190,7 @@ impl Buffer {
 	pub fn read_f16(&self, member_name: &str) -> Result<f16, VmError> {
 		match self.read(member_name)? {
 			Value::F16(value) => Ok(value),
-			value => Err(VmError::TypeMismatch {
-				expected: "f16".to_string(),
-				found: value.value_type().name().to_string(),
-			}),
+			value => Err(VmError::mismatch("f16", value.value_type().name())),
 		}
 	}
 
@@ -264,10 +258,7 @@ impl Buffer {
 
 	pub(super) fn write_value(&mut self, offset: usize, value_type: &ValueType, value: &Value) -> Result<(), VmError> {
 		if !value.matches_type(value_type) {
-			return Err(VmError::TypeMismatch {
-				expected: value_type.name().to_string(),
-				found: value.value_type().name().to_string(),
-			});
+			return Err(VmError::mismatch(value_type.name(), value.value_type().name()));
 		}
 
 		match value {

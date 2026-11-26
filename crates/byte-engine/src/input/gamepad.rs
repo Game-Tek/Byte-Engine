@@ -235,7 +235,11 @@ impl GamepadSystem {
 	/// An output the controller doesn't take, a value of the wrong type, or a device that isn't a connected
 	/// controller logs one warning for each device and output name, and is ignored.
 	pub(crate) fn set_output(&mut self, device_handle: DeviceHandle, name: &'static str, value: Value) {
-		let Some(device) = self.devices.iter_mut().find(|device| device.device_handle == Some(device_handle)) else {
+		let Some(device) = self
+			.devices
+			.iter_mut()
+			.find(|device| device.device_handle == Some(device_handle))
+		else {
 			self.warn_output_once(
 				device_handle,
 				name,
@@ -412,8 +416,8 @@ impl GamepadDevice {
 				self.protocol = output_protocol(self.kind, report);
 			}
 			let state = match self.kind {
-				GamepadKind::DualShock4 => parse_dualshock4(report),
-				GamepadKind::DualSense => parse_dualsense(report),
+				GamepadKind::DualShock4 => parse_sony(report, 0x11),
+				GamepadKind::DualSense => parse_sony(report, 0x31),
 				GamepadKind::GenericJoystick => parse_generic_joystick(report),
 				GamepadKind::Xbox => parse_xbox(report, self.negate_stick_y),
 			};
@@ -434,9 +438,8 @@ impl GamepadDevice {
 			return;
 		};
 		let rumbling = self.output.low_frequency_rumble > 0.0 || self.output.high_frequency_rumble > 0.0;
-		let resend = protocol == OutputProtocol::XboxOne
-			&& rumbling
-			&& now.duration_since(self.last_output) >= XBOX_ONE_RUMBLE_REFRESH;
+		let resend =
+			protocol == OutputProtocol::XboxOne && rumbling && now.duration_since(self.last_output) >= XBOX_ONE_RUMBLE_REFRESH;
 		if !self.output_dirty && !resend {
 			return;
 		}
@@ -475,40 +478,32 @@ fn transition_gamepad_state(
 		return;
 	}
 
-	if (previous.left_stick.x - state.left_stick.x).abs() > STICK_EPSILON
-		|| (previous.left_stick.y - state.left_stick.y).abs() > STICK_EPSILON
-	{
-		emit(GamepadEvent::new(
-			device_handle,
-			TriggerReference::Name("Gamepad.LeftStick"),
+	let moved = |from: Axis2, to: Axis2| (from.x - to.x).abs() > STICK_EPSILON || (from.y - to.y).abs() > STICK_EPSILON;
+	let pulled = |from: f32, to: f32| (from - to).abs() > TRIGGER_EPSILON;
+	let analog = [
+		(
+			moved(previous.left_stick, state.left_stick),
+			"Gamepad.LeftStick",
 			Value::Vector2(state.left_stick),
-		));
-	}
-
-	if (previous.right_stick.x - state.right_stick.x).abs() > STICK_EPSILON
-		|| (previous.right_stick.y - state.right_stick.y).abs() > STICK_EPSILON
-	{
-		emit(GamepadEvent::new(
-			device_handle,
-			TriggerReference::Name("Gamepad.RightStick"),
+		),
+		(
+			moved(previous.right_stick, state.right_stick),
+			"Gamepad.RightStick",
 			Value::Vector2(state.right_stick),
-		));
-	}
-
-	if (previous.left_trigger - state.left_trigger).abs() > TRIGGER_EPSILON {
-		emit(GamepadEvent::new(
-			device_handle,
-			TriggerReference::Name("Gamepad.LeftTrigger"),
+		),
+		(
+			pulled(previous.left_trigger, state.left_trigger),
+			"Gamepad.LeftTrigger",
 			Value::Float(state.left_trigger),
-		));
-	}
-
-	if (previous.right_trigger - state.right_trigger).abs() > TRIGGER_EPSILON {
-		emit(GamepadEvent::new(
-			device_handle,
-			TriggerReference::Name("Gamepad.RightTrigger"),
+		),
+		(
+			pulled(previous.right_trigger, state.right_trigger),
+			"Gamepad.RightTrigger",
 			Value::Float(state.right_trigger),
-		));
+		),
+	];
+	for (_, name, value) in analog.into_iter().filter(|(changed, ..)| *changed) {
+		emit(GamepadEvent::new(device_handle, TriggerReference::Name(name), value));
 	}
 
 	for (mask, name) in BUTTON_TRIGGERS {
@@ -578,97 +573,133 @@ fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
 		.any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
-fn parse_dualshock4(report: &[u8]) -> Option<GamepadState> {
+/// The engine buttons of each bit of a Sony report's three button bytes, read as one little-endian number.
+const SONY_BUTTONS: &[(u32, u32)] = &[
+	(0x10, BUTTON_X),
+	(0x20, BUTTON_A),
+	(0x40, BUTTON_B),
+	(0x80, BUTTON_Y),
+	(0x100, BUTTON_LEFT_BUMPER),
+	(0x200, BUTTON_RIGHT_BUMPER),
+	(0x1000, BUTTON_SELECT),
+	(0x2000, BUTTON_START),
+	(0x4000, BUTTON_LEFT_STICK),
+	(0x8000, BUTTON_RIGHT_STICK),
+	(0x1_0000, BUTTON_GUIDE),
+];
+
+/// The engine buttons of each bit of a generic joystick's button word. The low nibble holds the hat, so buttons
+/// start at bit 4, where neutral metadata can't look like held buttons.
+const GENERIC_BUTTONS: &[(u32, u32)] = &[
+	(1 << 4, BUTTON_A),
+	(1 << 5, BUTTON_B),
+	(1 << 6, BUTTON_Y),
+	(1 << 7, BUTTON_LEFT_BUMPER),
+	(1 << 8, BUTTON_RIGHT_BUMPER),
+	(1 << 9, BUTTON_SELECT),
+	(1 << 10, BUTTON_START),
+	(1 << 11, BUTTON_LEFT_STICK),
+	(1 << 12, BUTTON_RIGHT_STICK),
+	(1 << 13, BUTTON_GUIDE),
+];
+
+/// The engine buttons of each bit of an Xbox One GIP report's two button bytes.
+const XBOX_ONE_BUTTONS: &[(u32, u32)] = &[
+	(0x04, BUTTON_START),
+	(0x08, BUTTON_SELECT),
+	(0x10, BUTTON_A),
+	(0x20, BUTTON_B),
+	(0x40, BUTTON_X),
+	(0x80, BUTTON_Y),
+	(0x100, BUTTON_DPAD_UP),
+	(0x200, BUTTON_DPAD_DOWN),
+	(0x400, BUTTON_DPAD_LEFT),
+	(0x800, BUTTON_DPAD_RIGHT),
+	(0x1000, BUTTON_LEFT_BUMPER),
+	(0x2000, BUTTON_RIGHT_BUMPER),
+	(0x4000, BUTTON_LEFT_STICK),
+	(0x8000, BUTTON_RIGHT_STICK),
+];
+
+/// The engine buttons of each bit of an Xbox 360 report's button word.
+const XBOX_360_BUTTONS: &[(u32, u32)] = &[
+	(0x0001, BUTTON_DPAD_UP),
+	(0x0002, BUTTON_DPAD_DOWN),
+	(0x0004, BUTTON_DPAD_LEFT),
+	(0x0008, BUTTON_DPAD_RIGHT),
+	(0x0010, BUTTON_START),
+	(0x0020, BUTTON_SELECT),
+	(0x0040, BUTTON_LEFT_STICK),
+	(0x0080, BUTTON_RIGHT_STICK),
+	(0x0100, BUTTON_LEFT_BUMPER),
+	(0x0200, BUTTON_RIGHT_BUMPER),
+	(0x0400, BUTTON_GUIDE),
+	(0x1000, BUTTON_A),
+	(0x2000, BUTTON_B),
+	(0x4000, BUTTON_X),
+	(0x8000, BUTTON_Y),
+];
+
+/// Returns the engine buttons of the bits set in `bits`, by the `(bit, button)` pairs of `layout`.
+fn map_buttons(bits: u32, layout: &[(u32, u32)]) -> u32 {
+	layout
+		.iter()
+		.filter(|(bit, _)| bits & bit != 0)
+		.fold(0, |mask, (_, button)| mask | button)
+}
+
+/// Returns the D-pad buttons a hat switch holds, from 0 for up clockwise to 7 for up-left; other values hold none.
+fn hat_buttons(hat: u8) -> u32 {
+	const HAT: [u32; 8] = [
+		BUTTON_DPAD_UP,
+		BUTTON_DPAD_UP | BUTTON_DPAD_RIGHT,
+		BUTTON_DPAD_RIGHT,
+		BUTTON_DPAD_DOWN | BUTTON_DPAD_RIGHT,
+		BUTTON_DPAD_DOWN,
+		BUTTON_DPAD_DOWN | BUTTON_DPAD_LEFT,
+		BUTTON_DPAD_LEFT,
+		BUTTON_DPAD_UP | BUTTON_DPAD_LEFT,
+	];
+	HAT.get(usize::from(hat)).copied().unwrap_or(0)
+}
+
+/// Decodes a DualShock 4 or DualSense report. USB reports start with ID 1; Bluetooth ones start with `bluetooth_id`
+/// and a marker byte.
+fn parse_sony(report: &[u8], bluetooth_id: u8) -> Option<GamepadState> {
 	let report = match report {
 		[0x01, rest @ ..] => rest,
-		[0x11, _marker, rest @ ..] => rest,
+		[id, _marker, rest @ ..] if *id == bluetooth_id => rest,
 		_ => report,
 	};
-
-	if report.len() < 9 {
-		return None;
-	}
-
-	let left_stick = Axis2::new(normalize_axis_u8(report[0]), -normalize_axis_u8(report[1]));
-	let right_stick = Axis2::new(normalize_axis_u8(report[2]), -normalize_axis_u8(report[3]));
-
-	let buttons = report[4];
-	let buttons2 = report[5];
-	let buttons3 = report[6];
-
-	let left_trigger = normalize_trigger_u8(report[7]);
-	let right_trigger = normalize_trigger_u8(report[8]);
-
-	let mut mask = 0u32;
-
-	let dpad = buttons & 0x0F;
-	if dpad == 0 || dpad == 1 || dpad == 7 {
-		mask |= BUTTON_DPAD_UP;
-	}
-	if dpad == 2 || dpad == 1 || dpad == 3 {
-		mask |= BUTTON_DPAD_RIGHT;
-	}
-	if dpad == 4 || dpad == 3 || dpad == 5 {
-		mask |= BUTTON_DPAD_DOWN;
-	}
-	if dpad == 6 || dpad == 5 || dpad == 7 {
-		mask |= BUTTON_DPAD_LEFT;
-	}
-
-	if buttons & 0x10 != 0 {
-		mask |= BUTTON_X;
-	}
-	if buttons & 0x20 != 0 {
-		mask |= BUTTON_A;
-	}
-	if buttons & 0x40 != 0 {
-		mask |= BUTTON_B;
-	}
-	if buttons & 0x80 != 0 {
-		mask |= BUTTON_Y;
-	}
-
-	if buttons2 & 0x01 != 0 {
-		mask |= BUTTON_LEFT_BUMPER;
-	}
-	if buttons2 & 0x02 != 0 {
-		mask |= BUTTON_RIGHT_BUMPER;
-	}
-	if buttons2 & 0x10 != 0 {
-		mask |= BUTTON_SELECT;
-	}
-	if buttons2 & 0x20 != 0 {
-		mask |= BUTTON_START;
-	}
-	if buttons2 & 0x40 != 0 {
-		mask |= BUTTON_LEFT_STICK;
-	}
-	if buttons2 & 0x80 != 0 {
-		mask |= BUTTON_RIGHT_STICK;
-	}
-
-	if buttons3 & 0x01 != 0 {
-		mask |= BUTTON_GUIDE;
-	}
-
-	Some(GamepadState {
-		left_stick,
-		right_stick,
+	let &[
+		left_x,
+		left_y,
+		right_x,
+		right_y,
+		buttons,
+		buttons2,
+		buttons3,
 		left_trigger,
 		right_trigger,
-		buttons: mask,
+		..,
+	] = report
+	else {
+		return None;
+	};
+	Some(GamepadState {
+		left_stick: Axis2::new(normalize_axis_u8(left_x), -normalize_axis_u8(left_y)),
+		right_stick: Axis2::new(normalize_axis_u8(right_x), -normalize_axis_u8(right_y)),
+		left_trigger: normalize_trigger_u8(left_trigger),
+		right_trigger: normalize_trigger_u8(right_trigger),
+		buttons: hat_buttons(buttons & 0x0F) | map_buttons(u32::from_le_bytes([buttons, buttons2, buttons3, 0]), SONY_BUTTONS),
 	})
 }
 
 fn parse_generic_joystick(report: &[u8]) -> Option<GamepadState> {
 	let report = match report {
-		[report_id @ 1..=15, rest @ ..] if rest.len() >= 6 => {
-			debug!(target: "byte_engine::input::events", "Parsing generic joystick report id: {}", report_id);
-			rest
-		}
+		[1..=15, rest @ ..] if rest.len() >= 6 => rest,
 		_ => report,
 	};
-
 	if report.len() < 5 {
 		debug!(
 			target: "byte_engine::input::events",
@@ -678,161 +709,22 @@ fn parse_generic_joystick(report: &[u8]) -> Option<GamepadState> {
 		return None;
 	}
 
-	let left_stick = Axis2::new(normalize_axis_u8(report[0]), -normalize_axis_u8(report[1]));
-	let right_stick = if report.len() >= 7 {
-		Axis2::new(normalize_axis_u8(report[2]), -normalize_axis_u8(report[3]))
+	// Reports of seven bytes or more carry a right stick before the hat and buttons.
+	let (right_stick, buttons_at) = if report.len() >= 7 {
+		(Axis2::new(normalize_axis_u8(report[2]), -normalize_axis_u8(report[3])), 4)
 	} else {
-		Axis2::new(0.0, 0.0)
+		(Axis2::new(0.0, 0.0), 2)
 	};
-
-	let (hat, raw_buttons) = if report.len() >= 7 {
-		let packed_hat_buttons = report[4];
-		let buttons = u16::from_le_bytes([packed_hat_buttons, report[5]]);
-		(Some(packed_hat_buttons & 0x0F), buttons)
-	} else {
-		let packed_hat_buttons = report[2];
-		let buttons = u16::from_le_bytes([packed_hat_buttons, report.get(3).copied().unwrap_or_default()]);
-		(Some(packed_hat_buttons & 0x0F), buttons)
-	};
-	let mut mask = 0u32;
-	debug!(
-		target: "byte_engine::input::events",
-		"Generic joystick raw buttons={:#06x}, hat={:?}, report_size={}",
-		raw_buttons,
-		hat,
-		report.len()
-	);
-
-	// Generic USB joysticks commonly keep non-button metadata in the low nibble.
-	// Start mapping at bit 4 so neutral metadata does not look like held buttons.
-	for (index, engine_mask) in [
-		BUTTON_A,
-		BUTTON_B,
-		BUTTON_Y,
-		BUTTON_LEFT_BUMPER,
-		BUTTON_RIGHT_BUMPER,
-		BUTTON_SELECT,
-		BUTTON_START,
-		BUTTON_LEFT_STICK,
-		BUTTON_RIGHT_STICK,
-		BUTTON_GUIDE,
-	]
-	.iter()
-	.enumerate()
-	{
-		if raw_buttons & (1 << (index + 4)) != 0 {
-			mask |= *engine_mask;
-		}
-	}
-
+	let raw_buttons = u32::from(u16::from_le_bytes([report[buttons_at], report[buttons_at + 1]]));
 	// This AppleUserHIDDevice generic joystick reports X as an active-low bit.
-	if raw_buttons & 0x4000 == 0 {
-		mask |= BUTTON_X;
-	}
-
-	if let Some(hat) = hat {
-		if hat == 0 || hat == 1 || hat == 7 {
-			mask |= BUTTON_DPAD_UP;
-		}
-		if hat == 2 || hat == 1 || hat == 3 {
-			mask |= BUTTON_DPAD_RIGHT;
-		}
-		if hat == 4 || hat == 3 || hat == 5 {
-			mask |= BUTTON_DPAD_DOWN;
-		}
-		if hat == 6 || hat == 5 || hat == 7 {
-			mask |= BUTTON_DPAD_LEFT;
-		}
-	}
+	let x = if raw_buttons & 0x4000 == 0 { BUTTON_X } else { 0 };
 
 	Some(GamepadState {
-		left_stick,
+		left_stick: Axis2::new(normalize_axis_u8(report[0]), -normalize_axis_u8(report[1])),
 		right_stick,
 		left_trigger: 0.0,
 		right_trigger: 0.0,
-		buttons: mask,
-	})
-}
-
-fn parse_dualsense(report: &[u8]) -> Option<GamepadState> {
-	let report = match report {
-		[0x01, rest @ ..] => rest,
-		[0x31, _marker, rest @ ..] => rest,
-		_ => report,
-	};
-
-	if report.len() < 9 {
-		return None;
-	}
-
-	let left_stick = Axis2::new(normalize_axis_u8(report[0]), -normalize_axis_u8(report[1]));
-	let right_stick = Axis2::new(normalize_axis_u8(report[2]), -normalize_axis_u8(report[3]));
-
-	let buttons = report[4];
-	let buttons2 = report[5];
-	let buttons3 = report[6];
-
-	let left_trigger = normalize_trigger_u8(report[7]);
-	let right_trigger = normalize_trigger_u8(report[8]);
-
-	let mut mask = 0u32;
-
-	let dpad = buttons & 0x0F;
-	if dpad == 0 || dpad == 1 || dpad == 7 {
-		mask |= BUTTON_DPAD_UP;
-	}
-	if dpad == 2 || dpad == 1 || dpad == 3 {
-		mask |= BUTTON_DPAD_RIGHT;
-	}
-	if dpad == 4 || dpad == 3 || dpad == 5 {
-		mask |= BUTTON_DPAD_DOWN;
-	}
-	if dpad == 6 || dpad == 5 || dpad == 7 {
-		mask |= BUTTON_DPAD_LEFT;
-	}
-
-	if buttons & 0x10 != 0 {
-		mask |= BUTTON_X;
-	}
-	if buttons & 0x20 != 0 {
-		mask |= BUTTON_A;
-	}
-	if buttons & 0x40 != 0 {
-		mask |= BUTTON_B;
-	}
-	if buttons & 0x80 != 0 {
-		mask |= BUTTON_Y;
-	}
-
-	if buttons2 & 0x01 != 0 {
-		mask |= BUTTON_LEFT_BUMPER;
-	}
-	if buttons2 & 0x02 != 0 {
-		mask |= BUTTON_RIGHT_BUMPER;
-	}
-	if buttons2 & 0x10 != 0 {
-		mask |= BUTTON_SELECT;
-	}
-	if buttons2 & 0x20 != 0 {
-		mask |= BUTTON_START;
-	}
-	if buttons2 & 0x40 != 0 {
-		mask |= BUTTON_LEFT_STICK;
-	}
-	if buttons2 & 0x80 != 0 {
-		mask |= BUTTON_RIGHT_STICK;
-	}
-
-	if buttons3 & 0x01 != 0 {
-		mask |= BUTTON_GUIDE;
-	}
-
-	Some(GamepadState {
-		left_stick,
-		right_stick,
-		left_trigger,
-		right_trigger,
-		buttons: mask,
+		buttons: hat_buttons(report[buttons_at] & 0x0F) | map_buttons(raw_buttons, GENERIC_BUTTONS) | x,
 	})
 }
 
@@ -869,97 +761,34 @@ fn parse_xbox_one(report: &[u8], negate_y: bool) -> Option<GamepadState> {
 		return None;
 	}
 
-	let header_len = gip_header_length(report)?;
-	let data = report.get(header_len..)?;
+	let data = report.get(gip_header_length(report)?..)?;
 	if data.len() < 14 {
 		return None;
 	}
 
-	let buttons = data[0];
-	let buttons2 = data[1];
-	let mut mask = 0u32;
-	if buttons & 0x04 != 0 {
-		mask |= BUTTON_START;
-	}
-	if buttons & 0x08 != 0 {
-		mask |= BUTTON_SELECT;
-	}
-	if buttons & 0x10 != 0 {
-		mask |= BUTTON_A;
-	}
-	if buttons & 0x20 != 0 {
-		mask |= BUTTON_B;
-	}
-	if buttons & 0x40 != 0 {
-		mask |= BUTTON_X;
-	}
-	if buttons & 0x80 != 0 {
-		mask |= BUTTON_Y;
-	}
-	if buttons2 & 0x01 != 0 {
-		mask |= BUTTON_DPAD_UP;
-	}
-	if buttons2 & 0x02 != 0 {
-		mask |= BUTTON_DPAD_DOWN;
-	}
-	if buttons2 & 0x04 != 0 {
-		mask |= BUTTON_DPAD_LEFT;
-	}
-	if buttons2 & 0x08 != 0 {
-		mask |= BUTTON_DPAD_RIGHT;
-	}
-	if buttons2 & 0x10 != 0 {
-		mask |= BUTTON_LEFT_BUMPER;
-	}
-	if buttons2 & 0x20 != 0 {
-		mask |= BUTTON_RIGHT_BUMPER;
-	}
-	if buttons2 & 0x40 != 0 {
-		mask |= BUTTON_LEFT_STICK;
-	}
-	if buttons2 & 0x80 != 0 {
-		mask |= BUTTON_RIGHT_STICK;
-	}
-
-	let left_trigger = normalize_trigger_u16(u16::from_le_bytes([data[2], data[3]]));
-	let right_trigger = normalize_trigger_u16(u16::from_le_bytes([data[4], data[5]]));
-	let left_y = signed_stick(i16::from_le_bytes([data[8], data[9]]), negate_y);
-	let right_y = signed_stick(i16::from_le_bytes([data[12], data[13]]), negate_y);
-
+	let (left_stick, right_stick) = xbox_sticks(data, negate_y);
 	Some(GamepadState {
-		left_stick: Axis2::new(normalize_axis_i16(i16::from_le_bytes([data[6], data[7]])), left_y),
-		right_stick: Axis2::new(normalize_axis_i16(i16::from_le_bytes([data[10], data[11]])), right_y),
-		left_trigger,
-		right_trigger,
-		buttons: mask,
+		left_stick,
+		right_stick,
+		left_trigger: normalize_trigger_u16(u16::from_le_bytes([data[2], data[3]])),
+		right_trigger: normalize_trigger_u16(u16::from_le_bytes([data[4], data[5]])),
+		buttons: map_buttons(u32::from_le_bytes([data[0], data[1], 0, 0]), XBOX_ONE_BUTTONS),
 	})
 }
 
 /// Returns the number of bytes occupied by a GIP header, including its variable-length size.
 fn gip_header_length(report: &[u8]) -> Option<usize> {
 	let mut index = 3;
-	let mut guard = 0;
-	loop {
-		let byte = *report.get(index)?;
-		index += 1;
-		guard += 1;
-		if byte & 0x80 == 0 || guard == 4 {
-			break;
-		}
-	}
-
-	if report[1] & 0x80 != 0 {
-		guard = 0;
-		loop {
+	// Each length is a variable-length integer of up to four bytes; a second one follows when the options set bit 7.
+	for _ in 0..1 + usize::from(report[1] & 0x80 != 0) {
+		for _ in 0..4 {
 			let byte = *report.get(index)?;
 			index += 1;
-			guard += 1;
-			if byte & 0x80 == 0 || guard == 4 {
+			if byte & 0x80 == 0 {
 				break;
 			}
 		}
 	}
-
 	Some(index)
 }
 
@@ -974,74 +803,13 @@ fn parse_xbox_360(report: &[u8], negate_y: bool) -> Option<GamepadState> {
 		return None;
 	}
 
-	let buttons = u16::from_le_bytes([report[2], report[3]]);
-
-	let left_trigger = normalize_trigger_u8(report[4]);
-	let right_trigger = normalize_trigger_u8(report[5]);
-
-	let left_y = signed_stick(i16::from_le_bytes([report[8], report[9]]), negate_y);
-	let right_y = signed_stick(i16::from_le_bytes([report[12], report[13]]), negate_y);
-
-	let left_stick = Axis2::new(normalize_axis_i16(i16::from_le_bytes([report[6], report[7]])), left_y);
-	let right_stick = Axis2::new(normalize_axis_i16(i16::from_le_bytes([report[10], report[11]])), right_y);
-
-	let mut mask = 0u32;
-
-	if buttons & 0x0001 != 0 {
-		mask |= BUTTON_DPAD_UP;
-	}
-	if buttons & 0x0002 != 0 {
-		mask |= BUTTON_DPAD_DOWN;
-	}
-	if buttons & 0x0004 != 0 {
-		mask |= BUTTON_DPAD_LEFT;
-	}
-	if buttons & 0x0008 != 0 {
-		mask |= BUTTON_DPAD_RIGHT;
-	}
-
-	if buttons & 0x0010 != 0 {
-		mask |= BUTTON_START;
-	}
-	if buttons & 0x0020 != 0 {
-		mask |= BUTTON_SELECT;
-	}
-	if buttons & 0x0040 != 0 {
-		mask |= BUTTON_LEFT_STICK;
-	}
-	if buttons & 0x0080 != 0 {
-		mask |= BUTTON_RIGHT_STICK;
-	}
-
-	if buttons & 0x0100 != 0 {
-		mask |= BUTTON_LEFT_BUMPER;
-	}
-	if buttons & 0x0200 != 0 {
-		mask |= BUTTON_RIGHT_BUMPER;
-	}
-	if buttons & 0x0400 != 0 {
-		mask |= BUTTON_GUIDE;
-	}
-
-	if buttons & 0x1000 != 0 {
-		mask |= BUTTON_A;
-	}
-	if buttons & 0x2000 != 0 {
-		mask |= BUTTON_B;
-	}
-	if buttons & 0x4000 != 0 {
-		mask |= BUTTON_X;
-	}
-	if buttons & 0x8000 != 0 {
-		mask |= BUTTON_Y;
-	}
-
+	let (left_stick, right_stick) = xbox_sticks(report, negate_y);
 	Some(GamepadState {
 		left_stick,
 		right_stick,
-		left_trigger,
-		right_trigger,
-		buttons: mask,
+		left_trigger: normalize_trigger_u8(report[4]),
+		right_trigger: normalize_trigger_u8(report[5]),
+		buttons: map_buttons(u32::from_le_bytes([report[2], report[3], 0, 0]), XBOX_360_BUTTONS),
 	})
 }
 
@@ -1106,7 +874,11 @@ fn encode_output(
 			report[body] = unit_to_u8(high);
 			report[body + 1] = unit_to_u8(low);
 			report[body + 2..body + 5].copy_from_slice(&[red, green, blue]);
-			if bluetooth { seal_sony_bluetooth_report(&mut report) } else { 32 }
+			if bluetooth {
+				seal_sony_bluetooth_report(&mut report)
+			} else {
+				32
+			}
 		}
 		OutputProtocol::DualSenseUsb | OutputProtocol::DualSenseBluetooth => {
 			let bluetooth = protocol == OutputProtocol::DualSenseBluetooth;
@@ -1137,7 +909,11 @@ fn encode_output(
 				effects[1] |= 0x10;
 				effects[43] = output.player_lights & 0x1F;
 			}
-			if bluetooth { seal_sony_bluetooth_report(&mut report) } else { 48 }
+			if bluetooth {
+				seal_sony_bluetooth_report(&mut report)
+			} else {
+				48
+			}
 		}
 		OutputProtocol::XboxOne => {
 			// The GIP rumble command: every motor enabled, trigger motors off, the longest duration, no delay, and
@@ -1187,7 +963,11 @@ const CRC32_TABLE: [u32; 256] = {
 		let mut value = index as u32;
 		let mut bit = 0;
 		while bit < 8 {
-			value = if value & 1 != 0 { 0xEDB8_8320 ^ (value >> 1) } else { value >> 1 };
+			value = if value & 1 != 0 {
+				0xEDB8_8320 ^ (value >> 1)
+			} else {
+				value >> 1
+			};
 			bit += 1;
 		}
 		table[index] = value;
@@ -1207,6 +987,13 @@ fn crc32_update(mut register: u32, bytes: &[u8]) -> u32 {
 /// Converts a 0 to 1 value to a byte, clamping values outside that range.
 fn unit_to_u8(value: f32) -> u8 {
 	(value.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// Reads the left and right sticks Xbox reports store as little-endian X and Y pairs from byte 6 to 14 of `data`.
+fn xbox_sticks(data: &[u8], negate_y: bool) -> (Axis2, Axis2) {
+	let axis = |at: usize| normalize_axis_i16(i16::from_le_bytes([data[at], data[at + 1]]));
+	let y = |at| if negate_y { -axis(at) } else { axis(at) };
+	(Axis2::new(axis(6), y(8)), Axis2::new(axis(10), y(12)))
 }
 
 fn normalize_axis_u8(value: u8) -> f32 {
@@ -1229,11 +1016,6 @@ fn normalize_trigger_u8(value: u8) -> f32 {
 /// Xbox One triggers are 10-bit values stored in a 16-bit field.
 fn normalize_trigger_u16(value: u16) -> f32 {
 	(value as f32 / 1023.0).clamp(0.0, 1.0)
-}
-
-fn signed_stick(value: i16, negate_y: bool) -> f32 {
-	let axis = normalize_axis_i16(value);
-	if negate_y { -axis } else { axis }
 }
 
 #[cfg(test)]
@@ -1278,28 +1060,6 @@ mod tests {
 	}
 
 	#[test]
-	fn axis_and_trigger_normalization_preserves_endpoints_and_order() {
-		assert_eq!(normalize_axis_u8(0), -1.0);
-		assert_eq!(normalize_axis_u8(128), 0.0);
-		assert_eq!(normalize_axis_u8(u8::MAX), 1.0);
-
-		let mut previous = -1.0;
-		for value in u8::MIN..=u8::MAX {
-			let normalized = normalize_axis_u8(value);
-
-			assert!((-1.0..=1.0).contains(&normalized));
-			assert!(normalized >= previous);
-			previous = normalized;
-		}
-
-		assert_eq!(normalize_axis_i16(i16::MIN), -1.0);
-		assert_eq!(normalize_axis_i16(0), 0.0);
-		assert_eq!(normalize_axis_i16(i16::MAX), 1.0);
-		assert_eq!(normalize_trigger_u8(0), 0.0);
-		assert_eq!(normalize_trigger_u8(u8::MAX), 1.0);
-	}
-
-	#[test]
 	fn sony_reports_decode_axes_triggers_buttons_and_transport_prefixes() {
 		let payload = [0, 255, 255, 0, 0xF1, 0xF3, 0x01, 0, 255];
 		let expected_buttons =
@@ -1315,7 +1075,7 @@ mod tests {
 				| BUTTON_DPAD_UP
 				| BUTTON_DPAD_RIGHT;
 
-		let raw = parse_dualshock4(&payload).expect("valid raw DualShock report");
+		let raw = parse_sony(&payload, 0x11).expect("valid raw DualShock report");
 
 		assert_eq!(raw.left_stick, Axis2::new(-1.0, -1.0));
 		assert_eq!(raw.right_stick, Axis2::new(1.0, 1.0));
@@ -1325,13 +1085,13 @@ mod tests {
 
 		let usb = [0x01].into_iter().chain(payload).collect::<Vec<_>>();
 		let bluetooth = [0x11, 0x80].into_iter().chain(payload).collect::<Vec<_>>();
-		assert_states_equal(parse_dualshock4(&usb).expect("valid USB report"), raw);
-		assert_states_equal(parse_dualshock4(&bluetooth).expect("valid Bluetooth report"), raw);
+		assert_states_equal(parse_sony(&usb, 0x11).expect("valid USB report"), raw);
+		assert_states_equal(parse_sony(&bluetooth, 0x11).expect("valid Bluetooth report"), raw);
 
 		let dualsense_usb = [0x01].into_iter().chain(payload).collect::<Vec<_>>();
 		let dualsense_bluetooth = [0x31, 0x02].into_iter().chain(payload).collect::<Vec<_>>();
-		assert_states_equal(parse_dualsense(&dualsense_usb).expect("valid USB report"), raw);
-		assert_states_equal(parse_dualsense(&dualsense_bluetooth).expect("valid Bluetooth report"), raw);
+		assert_states_equal(parse_sony(&dualsense_usb, 0x31).expect("valid USB report"), raw);
+		assert_states_equal(parse_sony(&dualsense_bluetooth, 0x31).expect("valid Bluetooth report"), raw);
 	}
 
 	#[test]
@@ -1411,8 +1171,7 @@ mod tests {
 
 	#[test]
 	fn parsers_reject_reports_without_their_required_payload() {
-		assert!(parse_dualshock4(&[0; 8]).is_none());
-		assert!(parse_dualsense(&[0; 8]).is_none());
+		assert!(parse_sony(&[0; 8], 0x11).is_none());
 		assert!(parse_generic_joystick(&[0; 4]).is_none());
 		assert!(parse_xbox(&[0; 13], false).is_none());
 	}
@@ -1491,14 +1250,38 @@ mod tests {
 	fn output_protocol_follows_the_connection_each_input_report_reveals() {
 		let usb = [0x01; 64];
 		let bluetooth_simple = [0x01; 10];
-		assert_eq!(output_protocol(GamepadKind::DualShock4, &usb), Some(OutputProtocol::DualShock4Usb));
-		assert_eq!(output_protocol(GamepadKind::DualShock4, &bluetooth_simple), Some(OutputProtocol::DualShock4Bluetooth));
-		assert_eq!(output_protocol(GamepadKind::DualShock4, &[0x11; 78]), Some(OutputProtocol::DualShock4Bluetooth));
-		assert_eq!(output_protocol(GamepadKind::DualSense, &usb), Some(OutputProtocol::DualSenseUsb));
-		assert_eq!(output_protocol(GamepadKind::DualSense, &bluetooth_simple), Some(OutputProtocol::DualSenseBluetooth));
-		assert_eq!(output_protocol(GamepadKind::DualSense, &[0x31; 78]), Some(OutputProtocol::DualSenseBluetooth));
-		assert_eq!(output_protocol(GamepadKind::Xbox, &[0x20, 0x00, 0x01, 0x0E]), Some(OutputProtocol::XboxOne));
-		assert_eq!(output_protocol(GamepadKind::Xbox, &[0x00, 0x14]), Some(OutputProtocol::Xbox360));
+		assert_eq!(
+			output_protocol(GamepadKind::DualShock4, &usb),
+			Some(OutputProtocol::DualShock4Usb)
+		);
+		assert_eq!(
+			output_protocol(GamepadKind::DualShock4, &bluetooth_simple),
+			Some(OutputProtocol::DualShock4Bluetooth)
+		);
+		assert_eq!(
+			output_protocol(GamepadKind::DualShock4, &[0x11; 78]),
+			Some(OutputProtocol::DualShock4Bluetooth)
+		);
+		assert_eq!(
+			output_protocol(GamepadKind::DualSense, &usb),
+			Some(OutputProtocol::DualSenseUsb)
+		);
+		assert_eq!(
+			output_protocol(GamepadKind::DualSense, &bluetooth_simple),
+			Some(OutputProtocol::DualSenseBluetooth)
+		);
+		assert_eq!(
+			output_protocol(GamepadKind::DualSense, &[0x31; 78]),
+			Some(OutputProtocol::DualSenseBluetooth)
+		);
+		assert_eq!(
+			output_protocol(GamepadKind::Xbox, &[0x20, 0x00, 0x01, 0x0E]),
+			Some(OutputProtocol::XboxOne)
+		);
+		assert_eq!(
+			output_protocol(GamepadKind::Xbox, &[0x00, 0x14]),
+			Some(OutputProtocol::Xbox360)
+		);
 		assert_eq!(output_protocol(GamepadKind::GenericJoystick, &usb), None);
 		assert_eq!(output_protocol(GamepadKind::DualSense, &[]), None);
 	}

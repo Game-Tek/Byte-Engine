@@ -191,7 +191,7 @@ pub(crate) async fn load_fbx_texture_image(
 
 	let url = resolve_fbx_texture_path(mesh_url, path)?;
 
-	let (bytes, ..) = context.resolve(ResourceId::new(&url)).await.inspect_err(|error| {
+	let bytes = context.resolve(ResourceId::new(&url)).await.inspect_err(|error| {
 		if error.blames_source() {
 			context.error(format_args!(
 				"FBX texture '{url}' could not be loaded. The most likely cause is a missing file-local image reference."

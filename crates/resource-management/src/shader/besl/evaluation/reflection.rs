@@ -350,15 +350,11 @@ pub(super) fn checked_align_up(value: usize, alignment: usize) -> Result<usize, 
 	})
 }
 
-use super::opacity::{OpacityEvaluation, evaluate_opacity};
-
-/// The `ProgramEvaluation` struct holds information derived from evaluating a BESL program.
+/// The `ProgramEvaluation` struct holds the binding reflection of one BESL program.
 #[derive(Clone, Debug)]
-/// The `ProgramEvaluation` struct holds binding reflection and output opacity for one BESL program.
 pub struct ProgramEvaluation {
 	bindings: Vec<BindingUsage>,
 	sets: Vec<SetUsage>,
-	opacity: OpacityEvaluation,
 	ray_payload: Option<RayPayload>,
 }
 
@@ -375,47 +371,7 @@ impl ProgramEvaluation {
 		Ok(Self {
 			bindings: collect_bindings(program, &root)?,
 			sets: collect_sets(program, &root)?,
-			opacity: evaluate_opacity(program, &main),
 			ray_payload: reflect_ray_payload(program, &main)?,
-		})
-	}
-
-	pub fn from_main(program: &mut besl::Program, main_function_node: &besl::NodeId) -> Result<Self, String> {
-		{
-			let node_borrow = &program[main_function_node];
-			let node_ref = node_borrow.node();
-
-			match node_ref {
-				besl::Nodes::Function { name, .. } => {
-					if program.text(*name) != "main" {
-						return Err(
-							"Main node is not `main`. The program description likely passed a non-main function node."
-								.to_string(),
-						);
-					}
-				}
-				_ => {
-					return Err(
-						"Invalid main node. The program description likely contains a `main` symbol that is not a function."
-							.to_string(),
-					);
-				}
-			}
-		}
-
-		besl::optimization::optimize(program, main_function_node);
-
-		let bindings = collect_bindings(program, main_function_node)?;
-		let sets = collect_sets(program, main_function_node)?;
-
-		let opacity = evaluate_opacity(program, main_function_node);
-		let ray_payload = reflect_ray_payload(program, main_function_node)?;
-
-		Ok(Self {
-			bindings,
-			sets,
-			opacity,
-			ray_payload,
 		})
 	}
 
@@ -431,10 +387,6 @@ impl ProgramEvaluation {
 
 	pub fn into_bindings(self) -> Vec<BindingUsage> {
 		self.bindings
-	}
-
-	pub fn opacity(&self) -> OpacityEvaluation {
-		self.opacity
 	}
 
 	/// Returns the payload the program passes through ray tracing: the one a closest-hit `main` takes, or the one its

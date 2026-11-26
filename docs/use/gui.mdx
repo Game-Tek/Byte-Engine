@@ -995,7 +995,9 @@ engine.pointer_released(center);
 engine.evaluate(size, &allocator);
 ```
 
-The button's component hears `Events::Actuated` in the second evaluation.
+The button's component hears `Events::Actuated` in the second evaluation. When
+you already hold the element's `Id`, `Engine::geometry` returns the same
+geometry.
 
 ## Drag a UI item onto an application target
 

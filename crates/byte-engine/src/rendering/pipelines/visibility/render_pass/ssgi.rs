@@ -13,11 +13,11 @@
 //! `render.gi.technique` set to `ssgi`, and leave it out of the shaders with `render.ssgi.enabled`; see
 //! [`super::GiSettings`].
 
-use ghi::context::{Context as _, ContextCreate as _};
+use ghi::context::ContextCreate as _;
 use ghi::frame::Frame as _;
 use utils::Extent;
 
-use super::min_depth_pyramid::{MIN_DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
+use super::min_depth_pyramid::MinDepthPyramidPass;
 use super::{ComputeStage, Pipelines, SinkHistory};
 use crate::rendering::lookup_textures::BLUE_NOISE_SLICES;
 use crate::rendering::pipelines::visibility::set_layouts;
@@ -137,68 +137,55 @@ pub(super) struct SsgiPass {
 impl SsgiPass {
 	/// Wires the trace and temporal descriptor sets.
 	///
-	/// `min_depth_pyramid` and `view_data` come from [`super::min_depth_pyramid::MinDepthPyramidPass`]. Create `targets` with
-	/// [`create_indirect_diffuse_targets`], and `diffuse_radiance` with [`create_diffuse_radiance_target`]. Next,
-	/// bind [`IndirectDiffuseTargets::history`], [`IndirectDiffuseTargets::normals`], the pyramid, and `view_data` in material evaluation.
+	/// `min_depth_pyramid` must run first. Create `targets` with [`create_indirect_diffuse_targets`], and `diffuse_radiance` with
+	/// [`create_diffuse_radiance_target`]. Next, bind [`IndirectDiffuseTargets::history`], [`IndirectDiffuseTargets::normals`], the
+	/// pyramid, and its view data in material evaluation.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
-		min_depth_pyramid: ghi::ImageHandle,
-		view_data: ghi::BufferHandle<ScreenViewData>,
+		min_depth_pyramid: &MinDepthPyramidPass,
 		targets: IndirectDiffuseTargets,
 		diffuse_radiance: ghi::ImageHandle,
 		blue_noise: ghi::ImageHandle,
 	) -> Self {
-		let screen_trace_layout = set_layouts::layout(set_layouts::SCREEN_TRACE);
-		let screen_trace_descriptor_set = screen_trace_layout.create_set(context, "SSGI Screen Trace Descriptor Set");
-		let ssgi_layout = set_layouts::layout(set_layouts::SSGI);
-		let parameters_descriptor_set = ssgi_layout.create_set(context, "SSGI Parameters Descriptor Set");
-		let ssgi_trace_layout = set_layouts::layout(set_layouts::SSGI_TRACE);
-		let trace_descriptor_set = ssgi_trace_layout.create_set(context, "SSGI Trace Descriptor Set");
-		let ssgi_temporal_layout = set_layouts::layout(set_layouts::SSGI_TEMPORAL);
-		let temporal_descriptor_set = ssgi_temporal_layout.create_set(context, "SSGI Temporal Descriptor Set");
-		let parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("SSGI Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
-		let point_sampler = context.build_sampler(
-			ghi::sampler::Builder::new()
-				.filtering_mode(ghi::FilteringModes::Closest)
-				.mip_map_mode(ghi::FilteringModes::Closest)
-				.max_lod((MIN_DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
-		);
+		let parameters = context.build_buffer(super::frame_buffer("SSGI Parameters"));
+		let point_sampler = min_depth_pyramid.trace_sampler;
 		let IndirectDiffuseTargets { raw, normals, history } = targets;
-		let screen_trace = screen_trace_layout.binder(screen_trace_descriptor_set);
-		let trace = ssgi_trace_layout.binder(trace_descriptor_set);
-		let temporal = ssgi_temporal_layout.binder(temporal_descriptor_set);
-		context.write(&[
-			screen_trace.buffer("screen_view", view_data),
-			screen_trace.sampled("depth_pyramid", min_depth_pyramid, point_sampler),
-			ssgi_layout
-				.binder(parameters_descriptor_set)
-				.buffer("ssgi_parameters", parameters),
-			trace.image("raw_output", raw),
-			trace.image("normal_output", normals),
-			// Point sampling keeps a hit's light from blending with the background next to the hit object.
-			trace.sampled_with_frame("previous_radiance_map", diffuse_radiance, point_sampler, -1),
-			trace.sampled("blue_noise", blue_noise, point_sampler),
-			temporal.sampled("raw_radiance", raw, point_sampler),
-			temporal.image("history_output", history),
-			temporal.sampled_with_frame("previous_history", history, point_sampler, -1),
-			temporal.sampled_with_frame("previous_depth_pyramid", min_depth_pyramid, point_sampler, -1),
-			temporal.sampled("surface_normals", normals, point_sampler),
-			temporal.sampled_with_frame("previous_surface_normals", normals, point_sampler, -1),
-		]);
+		let parameters_descriptor_set =
+			set_layouts::create_set(context, set_layouts::SSGI, "SSGI Parameters Descriptor Set", |set| {
+				[set.buffer("ssgi_parameters", parameters)]
+			});
+		let trace_descriptor_set =
+			set_layouts::create_set(context, set_layouts::SSGI_TRACE, "SSGI Trace Descriptor Set", |set| {
+				[
+					set.image("raw_output", raw),
+					set.image("normal_output", normals),
+					// Point sampling keeps a hit's light from blending with the background next to the hit object.
+					set.sampled_with_frame("previous_radiance_map", diffuse_radiance, point_sampler, -1),
+					set.sampled("blue_noise", blue_noise, point_sampler),
+				]
+			});
+		let temporal_descriptor_set =
+			set_layouts::create_set(context, set_layouts::SSGI_TEMPORAL, "SSGI Temporal Descriptor Set", |set| {
+				[
+					set.sampled("raw_radiance", raw, point_sampler),
+					set.image("history_output", history),
+					set.sampled_with_frame("previous_history", history, point_sampler, -1),
+					set.sampled_with_frame(
+						"previous_depth_pyramid",
+						min_depth_pyramid.min_depth_pyramid,
+						point_sampler,
+						-1,
+					),
+					set.sampled("surface_normals", normals, point_sampler),
+					set.sampled_with_frame("previous_surface_normals", normals, point_sampler, -1),
+				]
+			});
+		let screen_trace = min_depth_pyramid.screen_trace_descriptor_set;
 
 		Self {
-			trace_descriptor_sets: [screen_trace_descriptor_set, parameters_descriptor_set, trace_descriptor_set],
-			temporal_descriptor_sets: [
-				screen_trace_descriptor_set,
-				parameters_descriptor_set,
-				temporal_descriptor_set,
-			],
+			trace_descriptor_sets: [screen_trace, parameters_descriptor_set, trace_descriptor_set],
+			temporal_descriptor_sets: [screen_trace, parameters_descriptor_set, temporal_descriptor_set],
 			pipelines: Pipelines::request(pipeline_manager, SSGI_PIPELINES),
 			parameters,
 		}

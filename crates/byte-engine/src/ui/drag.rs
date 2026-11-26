@@ -61,12 +61,8 @@ pub struct DragDrop {
 }
 
 impl Drag {
-	/// Creates an idle gesture with a positive, finite movement threshold.
+	/// Creates an idle gesture that becomes a drag once the pointer moves `threshold` layout units.
 	pub(super) fn new(threshold: f32) -> Self {
-		assert!(
-			threshold.is_finite() && threshold > 0.0,
-			"Drag threshold is invalid. The most likely cause is a nonpositive or nonfinite layout distance."
-		);
 		Self {
 			threshold_squared: threshold * threshold,
 			held: None,

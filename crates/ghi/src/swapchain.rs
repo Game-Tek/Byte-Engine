@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use crate::{PrivateHandle, PrivateHandles};
+use crate::PrivateHandle;
 
 /// Sleeps until the next paced present slot and advances it by `interval`.
 ///
@@ -27,12 +27,6 @@ pub(crate) fn pace_present(next_slot: &mut Option<Instant>, interval: Option<Dur
 crate::handle::index_handle! {
 	#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 	pub(crate) struct SwapchainHandle;
-}
-
-impl From<SwapchainHandle> for PrivateHandles {
-	fn from(val: SwapchainHandle) -> Self {
-		PrivateHandles::Swapchain(val)
-	}
 }
 
 impl PrivateHandle for SwapchainHandle {

@@ -4,7 +4,7 @@
 //! transparent layer reuses the visibility buffer. It runs while an enabled pass of the sink reads `Velocity`, such as
 //! temporal antialiasing or motion blur; see the temporal antialiasing design note.
 
-use ghi::context::{Context as _, ContextCreate as _};
+use ghi::context::ContextCreate as _;
 use ghi::frame::Frame as _;
 use math::{Matrix, inverse};
 use utils::Extent;
@@ -95,14 +95,7 @@ impl VelocityPass {
 		targets: VelocityTargets,
 		instance_capacity: u32,
 	) -> Self {
-		let velocity_layout = set_layouts::layout(set_layouts::VELOCITY);
-		let descriptor_set = velocity_layout.create_set(context, "Velocity Descriptor Set");
-		let parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Velocity Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
+		let parameters = context.build_buffer(super::frame_buffer("Velocity Parameters"));
 		// Only the GPU writes the previous models, so one copy serves every frame: each frame's velocity reads what the
 		// previous frame's model store left before its own store replaces it.
 		let previous_models = context.build_buffer::<[ghi::pod::Mat4x3f]>(
@@ -110,17 +103,18 @@ impl VelocityPass {
 				.name("Velocity Previous Models")
 				.length(instance_capacity as usize),
 		);
-		let binder = velocity_layout.binder(descriptor_set);
-		context.write(&[
-			binder.buffer("parameters", parameters),
-			binder.texture("depth", depth),
-			binder.image("primitive_index", primitive_index),
-			binder.image("instance_index", instance_index),
-			binder.buffer("previous_models", previous_models),
-			binder.buffer("previous_vertex_positions", previous_vertex_positions),
-			binder.image("velocity_output", targets.velocity),
-			binder.image("reactive_output", targets.reactive),
-		]);
+		let descriptor_set = set_layouts::create_set(context, set_layouts::VELOCITY, "Velocity Descriptor Set", |set| {
+			[
+				set.buffer("parameters", parameters),
+				set.texture("depth", depth),
+				set.image("primitive_index", primitive_index),
+				set.image("instance_index", instance_index),
+				set.buffer("previous_models", previous_models),
+				set.buffer("previous_vertex_positions", previous_vertex_positions),
+				set.image("velocity_output", targets.velocity),
+				set.image("reactive_output", targets.reactive),
+			]
+		});
 		Self {
 			descriptor_sets: [scene_descriptor_set, descriptor_set],
 			parameters,

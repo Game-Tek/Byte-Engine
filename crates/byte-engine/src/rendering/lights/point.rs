@@ -1,8 +1,4 @@
-use super::{LightColor, LocalEmission, PhotometricError, PhotometricIntensity, checked_shadow_range, serde_through_proxy};
-use crate::{
-	inspector::Inspectable,
-	rendering::lights::{Light, LightClasses},
-};
+use super::{LightColor, LocalEmission, PhotometricError, PhotometricIntensity, serde_through_proxy};
 
 /// The `PointLight` struct provides photometric settings for omnidirectional local emitters.
 ///
@@ -13,8 +9,8 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, facet::Facet)]
 #[facet(opaque, proxy = SerializablePointLight)]
 pub struct PointLight {
-	color: LightColor,
-	intensity: PhotometricIntensity,
+	pub(super) color: LightColor,
+	pub(super) intensity: PhotometricIntensity,
 	/// What the color and intensity resolve to, with the shadow-range overrides every local light shares.
 	pub(crate) emission: LocalEmission,
 }
@@ -39,16 +35,6 @@ impl PointLight {
 			intensity,
 			emission,
 		})
-	}
-
-	/// Returns the color the light was authored with.
-	pub fn color(&self) -> LightColor {
-		self.color
-	}
-
-	/// Returns the intensity the light was authored with.
-	pub fn intensity(&self) -> &PhotometricIntensity {
-		&self.intensity
 	}
 }
 
@@ -76,11 +62,9 @@ impl TryFrom<SerializablePointLight> for PointLight {
 
 	/// Checks the payload against the light's rules before building it.
 	fn try_from(value: SerializablePointLight) -> Result<Self, Self::Error> {
-		checked_shadow_range(value.shadow_near, value.shadow_far).map_err(|error| error.to_string())?;
-		let mut light = PointLight::new(value.color, value.intensity).map_err(|error| error.to_string())?;
-		light.emission.shadow_near_override = value.shadow_near;
-		light.emission.shadow_far_override = value.shadow_far;
-		light.with_blinds(value.blinds).map_err(|error| error.to_string())
+		PointLight::new(value.color, value.intensity)
+			.map_err(|error| error.to_string())?
+			.with_payload_emission(value.shadow_near, value.shadow_far, value.blinds)
 	}
 }
 
@@ -97,15 +81,3 @@ impl From<&PointLight> for SerializablePointLight {
 }
 
 serde_through_proxy!(PointLight, SerializablePointLight);
-
-impl Light for PointLight {
-	fn class(&self) -> LightClasses {
-		LightClasses::Point
-	}
-}
-
-impl Inspectable for PointLight {
-	fn as_string(&self) -> String {
-		format!("{:?}", self)
-	}
-}

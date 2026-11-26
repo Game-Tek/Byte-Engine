@@ -6,13 +6,9 @@ struct ParsedLut {
 
 /// The `LUTAssetHandler` struct bakes `.lut` and `.cube` lookup-table assets into LUT resources.
 #[derive(Default)]
-pub struct LUTAssetHandler {}
+pub struct LUTAssetHandler;
 
 impl LUTAssetHandler {
-	pub fn new() -> LUTAssetHandler {
-		Self::default()
-	}
-
 	/// Parses the textual LUT description into normalized metadata and sample entries.
 	fn parse_lut(data: &[u8]) -> Result<ParsedLut, String> {
 		let source = std::str::from_utf8(data).map_err(|error| {
@@ -95,11 +91,7 @@ impl AssetHandler for LUTAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (data, dt) = context.resolve(url).await?;
-
-		if !self.can_handle(&dt) {
-			return Err(LoadErrors::UnsupportedType);
-		}
+		let data = context.resolve(url).await?;
 
 		// The source bytes borrow the bake allocator, so parsing stays in this task.
 		let parsed = Self::parse_lut(&data).map_err(|_| LoadErrors::FailedToProcess)?;
@@ -198,7 +190,7 @@ async fn bake_through(
 
 	let mut sources = Vec::with_capacity(2);
 	for shader in [LATTICE_SHADER, settings.through.as_str()] {
-		let (bytes, _) = context.resolve(ResourceId::new(shader)).await.map_err(|_| {
+		let bytes = context.resolve(ResourceId::new(shader)).await.map_err(|_| {
 			format!(
 				"Shader '{shader}', which LUT '{id}' is baked through, could not be read. The most likely cause is a `through` that names a file that doesn't exist. Point `through` at a pixel shader's `.besl` file."
 			)
@@ -543,7 +535,7 @@ pixel: fn (color: vec4f, coordinate: vec2u, extent: vec2u, lut: Lut) -> vec4f {
 		sources.add_file(super::LATTICE_SHADER, LATTICE.as_bytes());
 		sources.add_file("shaders/halve.besl", HALVE_THE_LOOK.as_bytes());
 		let mut manager = AssetManager::new(sources, resource::storage_backend::MemoryStorageBackend::new());
-		manager.add_asset_handler(LUTAssetHandler::new());
+		manager.add_asset_handler(LUTAssetHandler);
 		manager
 	}
 

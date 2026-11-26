@@ -86,7 +86,7 @@ impl AnimationGraphBenchmarkFixture {
 				.map(|&(resource_id, direction, duration)| {
 					(
 						resource_id,
-						locomotion_animation(resource_id, node_count, direction, duration),
+						PackedAnimationData::from_resource(locomotion_clip(resource_id, node_count, direction, duration)),
 					)
 				})
 				.collect(),
@@ -367,7 +367,7 @@ fn benchmark_animation(name: &str, node_count: usize, motion_scale: f32) -> Pack
 			}
 		})
 		.collect();
-	pack_clip(name, node_count, CLIP_DURATION_SECONDS, None, tracks)
+	PackedAnimationData::from_resource(clip(name, node_count, CLIP_DURATION_SECONDS, None, tracks))
 }
 
 /// Builds the matching benchmark's database from the five locomotion directions, each [`MATCHING_CLIP_SECONDS`] long,
@@ -393,11 +393,6 @@ fn matching_animations(node_count: usize) -> Vec<(&'static str, PackedAnimationD
 				.map(|(&(resource_id, ..), (_, clip))| (resource_id, PackedAnimationData::from_resource(clip))),
 		)
 		.collect()
-}
-
-/// Packs one walk cycle keyed at [`LOCOMOTION_FRAME_RATE`], as [`locomotion_clip`] builds it.
-fn locomotion_animation(name: &str, node_count: usize, direction: [f32; 2], duration: f32) -> PackedAnimationData {
-	PackedAnimationData::from_resource(locomotion_clip(name, node_count, direction, duration))
 }
 
 /// Builds one walk cycle keyed at [`LOCOMOTION_FRAME_RATE`]: the root travels along `direction` and bobs, and every
@@ -453,17 +448,6 @@ fn locomotion_clip(name: &str, node_count: usize, direction: [f32; 2], duration:
 		})
 		.collect();
 	clip(name, node_count, duration, Some(LOCOMOTION_FRAME_RATE), tracks)
-}
-
-/// Packs `tracks` as a clip authored for the benchmark skeleton of `node_count` nodes.
-fn pack_clip(
-	name: &str,
-	node_count: usize,
-	duration: f32,
-	frame_rate: Option<f32>,
-	tracks: Vec<NodeTrack>,
-) -> PackedAnimationData {
-	PackedAnimationData::from_resource(clip(name, node_count, duration, frame_rate, tracks))
 }
 
 /// Builds `tracks` into a clip authored for the benchmark skeleton of `node_count` nodes.

@@ -9,8 +9,8 @@
 #[derive(Debug, Clone, PartialEq, facet::Facet)]
 #[facet(opaque, proxy = SerializableConeLight)]
 pub struct ConeLight {
-	color: LightColor,
-	intensity: PhotometricIntensity,
+	pub(super) color: LightColor,
+	pub(super) intensity: PhotometricIntensity,
 	/// What the color and intensity resolve to, with the shadow-range overrides every local light shares.
 	pub(crate) emission: LocalEmission,
 	pub(crate) inner_angle: Radians,
@@ -49,16 +49,6 @@ impl ConeLight {
 			inner_angle,
 			outer_angle,
 		})
-	}
-
-	/// Returns the color the light was authored with.
-	pub fn color(&self) -> LightColor {
-		self.color
-	}
-
-	/// Returns the intensity the light was authored with.
-	pub fn intensity(&self) -> &PhotometricIntensity {
-		&self.intensity
 	}
 
 	/// Returns the half angles of the fully lit inner cone and of the outer cone, in radians from the forward
@@ -119,17 +109,14 @@ impl TryFrom<SerializableConeLight> for ConeLight {
 
 	/// Checks the payload against the light's rules before building it.
 	fn try_from(value: SerializableConeLight) -> Result<Self, Self::Error> {
-		checked_shadow_range(value.shadow_near, value.shadow_far).map_err(|error| error.to_string())?;
-		let mut light = ConeLight::new(
+		ConeLight::new(
 			value.color,
 			value.intensity,
 			Radians::new(value.inner_angle),
 			Radians::new(value.outer_angle),
 		)
-		.map_err(|error| error.to_string())?;
-		light.emission.shadow_near_override = value.shadow_near;
-		light.emission.shadow_far_override = value.shadow_far;
-		light.with_blinds(value.blinds).map_err(|error| error.to_string())
+		.map_err(|error| error.to_string())?
+		.with_payload_emission(value.shadow_near, value.shadow_far, value.blinds)
 	}
 }
 
@@ -149,22 +136,6 @@ impl From<&ConeLight> for SerializableConeLight {
 
 serde_through_proxy!(ConeLight, SerializableConeLight);
 
-impl Light for ConeLight {
-	fn class(&self) -> LightClasses {
-		LightClasses::Cone
-	}
-}
-
-impl Inspectable for ConeLight {
-	fn as_string(&self) -> String {
-		format!("{:?}", self)
-	}
-}
-
 use math::Radians;
 
-use super::{LightColor, LocalEmission, PhotometricError, PhotometricIntensity, checked_shadow_range, serde_through_proxy};
-use crate::{
-	inspector::Inspectable,
-	rendering::lights::{Light, LightClasses},
-};
+use super::{LightColor, LocalEmission, PhotometricError, PhotometricIntensity, serde_through_proxy};

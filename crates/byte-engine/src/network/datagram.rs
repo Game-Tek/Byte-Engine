@@ -10,7 +10,7 @@ use betp::{
 	PacketReadError,
 	client::{Errors as ClientSessionError, Session as ClientSession},
 	packets::{ChallengePacket, Packets, Payload},
-	server::{PacketHandlingResults as ServerSessionError, Session as ServerSession},
+	server::Session as ServerSession,
 };
 
 /// The largest canonical BETP wire packet, including its header.
@@ -26,12 +26,12 @@ pub struct EncodedDatagram {
 
 impl EncodedDatagram {
 	/// Encodes one typed packet without allocating storage for its bytes.
-	pub fn encode(packet: Packets) -> Result<Self, PipelineError> {
+	pub fn encode(packet: Packets) -> Self {
 		let len = packet.wire_size();
 		let mut bytes = [0; MAX_BETP_DATAGRAM_SIZE];
-		betp::write_packet(&mut bytes[..len], packet).ok_or(PipelineError::EncodingFailed)?;
-
-		Ok(Self { bytes, len })
+		// A payload holds at most `MAX_PAYLOAD_SIZE` bytes, so every typed packet fits its own wire size.
+		betp::write_packet(&mut bytes[..len], packet).expect("A typed BETP packet fits its wire size.");
+		Self { bytes, len }
 	}
 
 	/// Returns the encoded packet without unused capacity.
@@ -102,30 +102,7 @@ pub enum DatagramDrop {
 	ConnectionIdMismatch,
 	/// The BETP client session rejected the packet.
 	ClientSession(ClientSessionError),
-	/// The BETP server session rejected the packet.
-	ServerSession(ServerSessionError),
 }
-
-/// The `PipelineError` enum separates local encoding failures from peer-input
-/// drops so adapters can fail explicitly at the responsible layer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PipelineError {
-	/// A typed BETP packet could not fit its canonical wire representation.
-	EncodingFailed,
-}
-
-impl std::fmt::Display for PipelineError {
-	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		match self {
-			Self::EncodingFailed => write!(
-				formatter,
-				"BETP packet encoding failed. The most likely cause is an internal packet-size invariant violation."
-			),
-		}
-	}
-}
-
-impl std::error::Error for PipelineError {}
 
 /// The `ClientDatagramPipeline` struct isolates untrusted wire input from a
 /// client application's accepted-payload boundary.
@@ -163,11 +140,11 @@ impl ClientDatagramPipeline {
 		datagram: &[u8],
 		current_time: Instant,
 		outbound: &mut Vec<EncodedDatagram>,
-	) -> Result<DatagramOutcome, PipelineError> {
+	) -> DatagramOutcome {
 		outbound.clear();
 		let packet = match decode_datagram(datagram) {
 			Ok(packet) => packet,
-			Err(reason) => return Ok(DatagramOutcome::Dropped(reason)),
+			Err(reason) => return DatagramOutcome::Dropped(reason),
 		};
 
 		match packet {
@@ -179,11 +156,11 @@ impl ClientDatagramPipeline {
 					.map_err(DatagramDrop::ClientSession);
 				let packets = match packets {
 					Ok(packets) => packets,
-					Err(reason) => return Ok(DatagramOutcome::Dropped(reason)),
+					Err(reason) => return DatagramOutcome::Dropped(reason),
 				};
 				self.connection_id = Some(id);
-				encode_packets(packets, outbound)?;
-				Ok(DatagramOutcome::Handled)
+				encode_packets(packets, outbound);
+				DatagramOutcome::Handled
 			}
 			packet @ (Packets::Data(_) | Packets::Message(_) | Packets::KeepAlive(_) | Packets::Disconnect(_)) => {
 				// The first packet the server sends on this connection is what confirms it, so it must reach the
@@ -195,7 +172,7 @@ impl ClientDatagramPipeline {
 						.map_err(DatagramDrop::ClientSession)
 				})
 			}
-			_ => Ok(DatagramOutcome::Dropped(DatagramDrop::UnexpectedPacket)),
+			_ => DatagramOutcome::Dropped(DatagramDrop::UnexpectedPacket),
 		}
 	}
 
@@ -203,22 +180,18 @@ impl ClientDatagramPipeline {
 	///
 	/// Returns [`DatagramOutcome::Disconnected`] once the server goes quiet for [`betp::TIMEOUT`], or never confirms
 	/// the connection within it. Check [`Self::is_connected`] to learn when the server has confirmed it.
-	pub fn advance(
-		&mut self,
-		current_time: Instant,
-		outbound: &mut Vec<EncodedDatagram>,
-	) -> Result<DatagramOutcome, PipelineError> {
+	pub fn advance(&mut self, current_time: Instant, outbound: &mut Vec<EncodedDatagram>) -> DatagramOutcome {
 		outbound.clear();
 		let had_ended = self.session.has_ended();
 		let packets = match self.session.update(&[], current_time) {
 			Ok(packets) => packets,
-			Err(error) => return Ok(DatagramOutcome::Dropped(DatagramDrop::ClientSession(error))),
+			Err(error) => return DatagramOutcome::Dropped(DatagramDrop::ClientSession(error)),
 		};
-		encode_packets(packets, outbound)?;
+		encode_packets(packets, outbound);
 
 		match self.connection_id {
-			Some(id) if !had_ended && self.session.has_ended() => Ok(DatagramOutcome::Disconnected { id }),
-			_ => Ok(DatagramOutcome::Handled),
+			Some(id) if !had_ended && self.session.has_ended() => DatagramOutcome::Disconnected { id },
+			_ => DatagramOutcome::Handled,
 		}
 	}
 
@@ -268,11 +241,11 @@ impl ServerDatagramPipeline {
 		datagram: &[u8],
 		current_time: Instant,
 		outbound: &mut Vec<EncodedDatagram>,
-	) -> Result<DatagramOutcome, PipelineError> {
+	) -> DatagramOutcome {
 		outbound.clear();
 		let packet = match decode_datagram(datagram) {
 			Ok(packet) => packet,
-			Err(reason) => return Ok(DatagramOutcome::Dropped(reason)),
+			Err(reason) => return DatagramOutcome::Dropped(reason),
 		};
 
 		match packet {
@@ -281,51 +254,41 @@ impl ServerDatagramPipeline {
 				self.pending_connection_id = Some(id);
 				outbound.push(EncodedDatagram::encode(
 					ChallengePacket::new(request.get_client_salt(), self.server_salt).into(),
-				)?);
-				Ok(DatagramOutcome::Handled)
+				));
+				DatagramOutcome::Handled
 			}
 			Packets::ChallengeResponse(response) if !self.session.is_connected() => {
 				let id = response.get_connection_id();
 				if self.pending_connection_id != Some(id) {
-					return Ok(DatagramOutcome::Dropped(DatagramDrop::ConnectionIdMismatch));
+					return DatagramOutcome::Dropped(DatagramDrop::ConnectionIdMismatch);
 				}
 
 				self.session.accept(id, current_time);
 				self.pending_connection_id = None;
-				Ok(DatagramOutcome::Connected { id })
+				DatagramOutcome::Connected { id }
 			}
 			packet @ (Packets::Data(_) | Packets::Message(_) | Packets::KeepAlive(_) | Packets::Disconnect(_)) => {
 				process_session_packet(packet, self.session.connection_id(), outbound, |packets| {
-					self.session
-						.update(packets, current_time)
-						.map_err(DatagramDrop::ServerSession)
+					Ok(self.session.update(packets, current_time))
 				})
 			}
-			_ => Ok(DatagramOutcome::Dropped(DatagramDrop::UnexpectedPacket)),
+			_ => DatagramOutcome::Dropped(DatagramDrop::UnexpectedPacket),
 		}
 	}
 
 	/// Advances timeout and retry work when no datagram was received.
-	pub fn advance(
-		&mut self,
-		current_time: Instant,
-		outbound: &mut Vec<EncodedDatagram>,
-	) -> Result<DatagramOutcome, PipelineError> {
+	pub fn advance(&mut self, current_time: Instant, outbound: &mut Vec<EncodedDatagram>) -> DatagramOutcome {
 		outbound.clear();
 		let connection_id = self.session.connection_id();
-		let packets = match self.session.update(&[], current_time) {
-			Ok(packets) => packets,
-			Err(error) => return Ok(DatagramOutcome::Dropped(DatagramDrop::ServerSession(error))),
-		};
-		encode_packets(packets, outbound)?;
+		encode_packets(self.session.update(&[], current_time), outbound);
 
 		if let Some(id) = connection_id
 			&& !self.session.is_connected()
 		{
-			return Ok(DatagramOutcome::Disconnected { id });
+			return DatagramOutcome::Disconnected { id };
 		}
 
-		Ok(DatagramOutcome::Handled)
+		DatagramOutcome::Handled
 	}
 
 	/// Queues one application payload for reliable or unreliable delivery.
@@ -355,18 +318,8 @@ fn decode_datagram(datagram: &[u8]) -> Result<Packets, DatagramDrop> {
 }
 
 /// Serializes every session output into reusable, exact-length datagrams.
-fn encode_packets(packets: Vec<Packets>, outbound: &mut Vec<EncodedDatagram>) -> Result<(), PipelineError> {
-	outbound.reserve(packets.len());
-	for packet in packets {
-		match EncodedDatagram::encode(packet) {
-			Ok(datagram) => outbound.push(datagram),
-			Err(error) => {
-				outbound.clear();
-				return Err(error);
-			}
-		}
-	}
-	Ok(())
+fn encode_packets(packets: Vec<Packets>, outbound: &mut Vec<EncodedDatagram>) {
+	outbound.extend(packets.into_iter().map(EncodedDatagram::encode));
 }
 
 /// Accepts a payload, keepalive, or disconnect packet only for the established connection, lets the session handle
@@ -376,26 +329,26 @@ fn process_session_packet(
 	connection_id: Option<u64>,
 	outbound: &mut Vec<EncodedDatagram>,
 	update: impl FnOnce(&[Packets]) -> Result<Vec<Packets>, DatagramDrop>,
-) -> Result<DatagramOutcome, PipelineError> {
+) -> DatagramOutcome {
 	let Some(id) = connection_id else {
-		return Ok(DatagramOutcome::Dropped(DatagramDrop::SessionNotEstablished));
+		return DatagramOutcome::Dropped(DatagramDrop::SessionNotEstablished);
 	};
 	if packet.connection_id() != Some(id) {
-		return Ok(DatagramOutcome::Dropped(DatagramDrop::ConnectionIdMismatch));
+		return DatagramOutcome::Dropped(DatagramDrop::ConnectionIdMismatch);
 	}
 
 	let disconnect = matches!(packet, Packets::Disconnect(_));
 	let packets = match update(std::slice::from_ref(&packet)) {
 		Ok(packets) => packets,
-		Err(reason) => return Ok(DatagramOutcome::Dropped(reason)),
+		Err(reason) => return DatagramOutcome::Dropped(reason),
 	};
-	encode_packets(packets, outbound)?;
+	encode_packets(packets, outbound);
 
-	Ok(if disconnect {
+	if disconnect {
 		DatagramOutcome::Disconnected { id }
 	} else {
 		DatagramOutcome::Handled
-	})
+	}
 }
 
 #[cfg(test)]
@@ -410,7 +363,7 @@ mod tests {
 	const CONNECTION_ID: u64 = CLIENT_SALT ^ SERVER_SALT;
 
 	fn wire(packet: Packets) -> EncodedDatagram {
-		EncodedDatagram::encode(packet).expect("typed BETP packets have a canonical encoding")
+		EncodedDatagram::encode(packet)
 	}
 
 	/// Establishes both pipelines entirely through their raw datagram boundary.
@@ -420,27 +373,27 @@ mod tests {
 		let mut client_output = Vec::new();
 		let mut server_output = Vec::new();
 
-		assert_eq!(client.advance(now, &mut client_output), Ok(DatagramOutcome::Handled));
+		assert_eq!(client.advance(now, &mut client_output), DatagramOutcome::Handled);
 		assert_eq!(client_output.len(), 1);
 		assert_eq!(
 			server.process_datagram(client_output[0].as_bytes(), now, &mut server_output),
-			Ok(DatagramOutcome::Handled)
+			DatagramOutcome::Handled
 		);
 		assert_eq!(server_output.len(), 1);
 		assert_eq!(
 			client.process_datagram(server_output[0].as_bytes(), now, &mut client_output),
-			Ok(DatagramOutcome::Handled)
+			DatagramOutcome::Handled
 		);
 		assert_eq!(client_output.len(), 1);
 		assert_eq!(
 			server.process_datagram(client_output[0].as_bytes(), now, &mut server_output),
-			Ok(DatagramOutcome::Connected { id: CONNECTION_ID })
+			DatagramOutcome::Connected { id: CONNECTION_ID }
 		);
 		// The server's first keepalive confirms the connection to the client.
-		server.advance(now, &mut server_output).unwrap();
+		server.advance(now, &mut server_output);
 		assert_eq!(
 			client.process_datagram(server_output[0].as_bytes(), now, &mut client_output),
-			Ok(DatagramOutcome::Handled)
+			DatagramOutcome::Handled
 		);
 		assert!(client.is_connected());
 
@@ -455,17 +408,13 @@ mod tests {
 		let mut client_output = Vec::new();
 		let mut server_output = Vec::new();
 
-		client.advance(now, &mut client_output).expect("expected test value");
+		client.advance(now, &mut client_output);
 
 		assert_eq!(client_output[0].len(), 13);
-		server
-			.process_datagram(client_output[0].as_bytes(), now, &mut server_output)
-			.expect("expected test value");
+		server.process_datagram(client_output[0].as_bytes(), now, &mut server_output);
 
 		assert_eq!(server_output[0].len(), 21);
-		client
-			.process_datagram(server_output[0].as_bytes(), now, &mut client_output)
-			.expect("expected test value");
+		client.process_datagram(server_output[0].as_bytes(), now, &mut client_output);
 
 		assert_eq!(client_output[0].len(), 13);
 	}
@@ -502,11 +451,11 @@ mod tests {
 
 		assert_eq!(
 			client.process_datagram(datagram.as_bytes(), now, &mut outbound),
-			Ok(DatagramOutcome::Dropped(DatagramDrop::SessionNotEstablished))
+			DatagramOutcome::Dropped(DatagramDrop::SessionNotEstablished)
 		);
 		assert_eq!(
 			server.process_datagram(datagram.as_bytes(), now, &mut outbound),
-			Ok(DatagramOutcome::Dropped(DatagramDrop::SessionNotEstablished))
+			DatagramOutcome::Dropped(DatagramDrop::SessionNotEstablished)
 		);
 		assert!(outbound.is_empty());
 		assert_eq!(client.drain_received().count() + server.drain_received().count(), 0);
@@ -522,19 +471,19 @@ mod tests {
 
 		assert_eq!(
 			client.process_datagram(wrong.as_bytes(), now, &mut outbound),
-			Ok(DatagramOutcome::Dropped(DatagramDrop::ConnectionIdMismatch))
+			DatagramOutcome::Dropped(DatagramDrop::ConnectionIdMismatch)
 		);
 		assert_eq!(
 			server.process_datagram(wrong.as_bytes(), now, &mut outbound),
-			Ok(DatagramOutcome::Dropped(DatagramDrop::ConnectionIdMismatch))
+			DatagramOutcome::Dropped(DatagramDrop::ConnectionIdMismatch)
 		);
 		assert_eq!(
 			client.process_datagram(matching.as_bytes(), now, &mut outbound),
-			Ok(DatagramOutcome::Handled)
+			DatagramOutcome::Handled
 		);
 		assert_eq!(
 			server.process_datagram(matching.as_bytes(), now, &mut outbound),
-			Ok(DatagramOutcome::Handled)
+			DatagramOutcome::Handled
 		);
 		assert_eq!(client.drain_received().collect::<Vec<_>>(), [payload(2)]);
 		assert_eq!(server.drain_received().collect::<Vec<_>>(), [payload(2)]);
@@ -547,8 +496,8 @@ mod tests {
 		let mut outbound = Vec::new();
 
 		for datagram in [message(1, 1), message(1, 1), message(0, 0)] {
-			client.process_datagram(datagram.as_bytes(), now, &mut outbound).unwrap();
-			server.process_datagram(datagram.as_bytes(), now, &mut outbound).unwrap();
+			client.process_datagram(datagram.as_bytes(), now, &mut outbound);
+			server.process_datagram(datagram.as_bytes(), now, &mut outbound);
 		}
 
 		for received in [client.drain_received().collect::<Vec<_>>(), server.drain_received().collect()] {
@@ -563,8 +512,8 @@ mod tests {
 		let mut outbound = Vec::new();
 		let ahead = message(2_000, 6);
 
-		client.process_datagram(ahead.as_bytes(), now, &mut outbound).unwrap();
-		server.process_datagram(ahead.as_bytes(), now, &mut outbound).unwrap();
+		client.process_datagram(ahead.as_bytes(), now, &mut outbound);
+		server.process_datagram(ahead.as_bytes(), now, &mut outbound);
 
 		assert_eq!(client.drain_received().count() + server.drain_received().count(), 0);
 	}
@@ -577,14 +526,14 @@ mod tests {
 
 		assert!(matches!(
 			server.process_datagram(b"not BETP", now, &mut outbound),
-			Ok(DatagramOutcome::Dropped(DatagramDrop::Decode(_)))
+			DatagramOutcome::Dropped(DatagramDrop::Decode(_))
 		));
 		assert!(outbound.is_empty());
 		assert_eq!(
 			server.process_datagram(&[0; MAX_BETP_DATAGRAM_SIZE + 1], now, &mut outbound),
-			Ok(DatagramOutcome::Dropped(DatagramDrop::TooLarge {
+			DatagramOutcome::Dropped(DatagramDrop::TooLarge {
 				actual: MAX_BETP_DATAGRAM_SIZE + 1,
-			}))
+			})
 		);
 	}
 }

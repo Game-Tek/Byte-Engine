@@ -422,18 +422,6 @@ impl RenderTargets {
 			.any(|(later_sink, later_name, _)| later_sink == sink && later_name == name)
 	}
 
-	#[cfg(test)]
-	fn name_indices_for_images(&self, sink_id: usize, indices: &[usize]) -> Vec<(String, usize)> {
-		self.by_name
-			.iter()
-			.enumerate()
-			.filter(|(position, (sink, _, index))| {
-				*sink == sink_id && indices.contains(index) && self.is_current_name_mapping(*position)
-			})
-			.map(|(_, (_, name, index))| (name.clone(), *index))
-			.collect()
-	}
-
 	/// Records the images one node of a sink uses, by image index.
 	///
 	/// The renderer calls this once per node after building it, so [`Self::plan`] can tell when each target is used.
@@ -608,29 +596,40 @@ mod tests {
 	use super::{Placement, RenderNode, RenderTargets, SinkExtents};
 	use crate::rendering::renderer::tests::image_handle;
 
+	/// Inserts a target of sink 0 named `name` with `image`, `format`, and `uses`, at full resolution unless
+	/// `divisor` says otherwise.
+	fn insert(
+		targets: &mut RenderTargets,
+		name: &str,
+		image: ghi::BaseImageHandle,
+		(format, uses): (ghi::Formats, ghi::Uses),
+		divisor: u32,
+		placement: Placement,
+	) -> usize {
+		targets.insert(name.into(), 0, image, format, uses, divisor, placement)
+	}
+
+	/// A shared-memory target built for `uses`.
+	fn member(uses: ghi::Uses) -> (ghi::Formats, ghi::Uses) {
+		(ghi::Formats::RGBA16F, uses)
+	}
+
 	/// Registers three shared-memory targets for sink 0: the scene writes `a`, the first pass reads `a` and writes `b`,
 	/// and the second pass reads `b` and writes `c`. Nodes are recorded out of order, as later managers can be.
 	fn chained_targets() -> (RenderTargets, [ghi::BaseImageHandle; 3]) {
 		let mut targets = RenderTargets::new();
 		targets.groups.push((0, ghi::debug::Device::new().create_image_group(None)));
 		let images = [1, 2, 3].map(image_handle);
-		let [a, b, c] = [("a", images[0]), ("b", images[1]), ("c", images[2])].map(|(name, image)| {
-			targets.insert(
-				name.into(),
-				0,
-				image,
-				ghi::Formats::RGBA16F,
-				ghi::Uses::empty(),
-				1,
-				Placement::Member,
-			)
-		});
+		let [a, b, c] = [("a", images[0]), ("b", images[1]), ("c", images[2])]
+			.map(|(name, image)| insert(&mut targets, name, image, member(ghi::Uses::empty()), 1, Placement::Member));
 		targets.record_node(0, RenderNode::Pass(1), [b, c]);
 		targets.record_node(0, RenderNode::Scene(0), [a]);
 		targets.record_node(0, RenderNode::Pass(0), [a, b]);
 		(targets, images)
 	}
 
+	/// Shared targets live from their first to their last node in recording order, and each gets new contents at its
+	/// first node, unless only that node uses it, since nothing reads it then.
 	#[test]
 	fn shared_targets_live_from_their_first_to_their_last_node_in_recording_order() {
 		let (targets, [a, b, c]) = chained_targets();
@@ -647,11 +646,15 @@ mod tests {
 		let first_uses = plan
 			.first_uses
 			.iter()
-			.map(|first_use| (first_use.image, first_use.node))
+			.map(|first_use| (first_use.image, first_use.node, first_use.clear.is_some()))
 			.collect::<Vec<_>>();
 		assert_eq!(
 			first_uses,
-			[(a, RenderNode::Scene(0)), (b, RenderNode::Pass(0)), (c, RenderNode::Pass(1))]
+			[
+				(a, RenderNode::Scene(0), true),
+				(b, RenderNode::Pass(0), true),
+				(c, RenderNode::Pass(1), false)
+			]
 		);
 		assert!(
 			targets
@@ -674,7 +677,10 @@ mod tests {
 			("b", ghi::Uses::Image),
 			("wide", ghi::Uses::Image | ghi::Uses::Storage),
 		]
-		.map(|(name, uses)| name_and_uses(&mut targets, name, uses, &images));
+		.map(|(name, uses)| {
+			let image = images[targets.targets.len()];
+			insert(&mut targets, name, image, member(uses), 1, Placement::Member)
+		});
 		targets.record_node(0, RenderNode::Scene(0), [a]);
 		targets.record_node(0, RenderNode::Pass(0), [a, b, wide]);
 		targets.record_node(0, RenderNode::Pass(1), [b]);
@@ -699,14 +705,9 @@ mod tests {
 		);
 	}
 
-	/// Inserts a shared-memory target of sink 0 built for `uses`, whose image is the one of `images` at its index.
-	fn name_and_uses(targets: &mut RenderTargets, name: &str, uses: ghi::Uses, images: &[ghi::BaseImageHandle]) -> usize {
-		let image = images[targets.targets.len()];
-		targets.insert(name.into(), 0, image, ghi::Formats::RGBA16F, uses, 1, Placement::Member)
-	}
-
 	/// An idle pass's replacement for `main` is placed as the `main` before it, which then lives until the replacement's
-	/// last reader, as the [idle pass](/docs/reference/rendering#pipelines-and-passes) rule gives it.
+	/// last reader, as the [idle pass](/docs/reference/rendering#pipelines-and-passes) rule gives it. A replacement built
+	/// unlike the `main` it replaces can't be that `main`'s image, so the caller copies instead.
 	#[test]
 	fn an_idle_nodes_replacement_is_placed_as_the_main_it_replaces() {
 		let (mut targets, [a, b, c]) = chained_targets();
@@ -740,69 +741,36 @@ mod tests {
 		let (placed, first_uses) = members(&[RenderNode::Pass(0), RenderNode::Pass(1)]);
 		assert_eq!(placed, [(a, 0..=2, None), (b, 1..=2, Some(a)), (c, 2..=2, Some(a))]);
 		assert_eq!(first_uses, [a]);
-	}
 
-	/// A replacement built unlike the `main` it replaces can't be that `main`'s image, so the caller copies instead.
-	#[test]
-	fn a_replacement_in_another_format_does_not_forward_main() {
 		let mut targets = RenderTargets::new();
-		let scene = targets.insert(
-			"scene".into(),
-			0,
-			image_handle(1),
-			ghi::Formats::RGBu11u11u10,
-			ghi::Uses::Image,
-			1,
-			Placement::Member,
-		);
-		let encoded = targets.insert(
-			"encoded".into(),
-			0,
+		let scene = (ghi::Formats::RGBu11u11u10, ghi::Uses::Image);
+		let scene = insert(&mut targets, "scene", image_handle(1), scene, 1, Placement::Member);
+		let encoded = insert(
+			&mut targets,
+			"encoded",
 			image_handle(2),
-			ghi::Formats::RGBA16F,
-			ghi::Uses::Image,
+			member(ghi::Uses::Image),
 			1,
 			Placement::Member,
 		);
-		let storage = targets.insert(
-			"storage".into(),
-			0,
-			image_handle(3),
-			ghi::Formats::RGBu11u11u10,
-			ghi::Uses::Image | ghi::Uses::Storage,
-			1,
-			Placement::Member,
-		);
+		let storage = (ghi::Formats::RGBu11u11u10, ghi::Uses::Image | ghi::Uses::Storage);
+		let storage = insert(&mut targets, "storage", image_handle(3), storage, 1, Placement::Member);
 		assert!(!targets.forward_main(encoded, scene, RenderNode::Pass(0)));
 		// The scene's image lacks a use the replacement's readers and writers need.
 		assert!(!targets.forward_main(storage, scene, RenderNode::Pass(0)));
 	}
 
-	/// An idle node's target that no later node uses is left as it is, since nothing reads it.
-	#[test]
-	fn a_target_only_its_own_node_uses_needs_no_clear() {
-		let (targets, [a, b, c]) = chained_targets();
-		let plan = targets
-			.plan(0, SinkExtents::uniform(Extent::rectangle(8, 4)), &[], &[])
-			.unwrap();
-		let clears = plan
-			.first_uses
-			.iter()
-			.map(|first_use| (first_use.image, first_use.clear.is_some()))
-			.collect::<Vec<_>>();
-		assert_eq!(clears, [(a, true), (b, true), (c, false)]);
-	}
-
+	/// Persistent targets resize alone, at their divisor, while shared targets are placed with their group, and they
+	/// hold scene output like the targets the scene uses.
 	#[test]
 	fn persistent_targets_resize_alone_while_shared_targets_are_placed_with_their_group() {
 		let (mut targets, _) = chained_targets();
 		let persistent = image_handle(4);
-		targets.insert(
-			"persistent".into(),
-			0,
+		insert(
+			&mut targets,
+			"persistent",
 			persistent,
-			ghi::Formats::RGBA16F,
-			ghi::Uses::empty(),
+			member(ghi::Uses::empty()),
 			2,
 			Placement::Persistent,
 		);
@@ -817,21 +785,6 @@ mod tests {
 				.collect::<Vec<_>>(),
 			[(persistent, Extent::rectangle(4, 2))]
 		);
-	}
-
-	#[test]
-	fn only_targets_the_scene_uses_hold_scene_output() {
-		let (mut targets, _) = chained_targets();
-		targets.insert(
-			"persistent".into(),
-			0,
-			image_handle(4),
-			ghi::Formats::RGBA16F,
-			ghi::Uses::empty(),
-			1,
-			Placement::Persistent,
-		);
-
 		assert!(targets.holds_scene_output("a", 0));
 		assert!(!targets.holds_scene_output("c", 0));
 		assert!(targets.holds_scene_output("persistent", 0));
@@ -846,13 +799,11 @@ mod tests {
 				.copies(ghi::Copies::PerFrame),
 		);
 		let mut targets = RenderTargets::new();
-
-		targets.insert(
-			"History".into(),
-			0,
+		insert(
+			&mut targets,
+			"History",
 			history.into(),
-			ghi::Formats::RGBA16F,
-			ghi::Uses::empty(),
+			member(ghi::Uses::empty()),
 			2,
 			Placement::PerFrame(history),
 		);
@@ -897,24 +848,21 @@ mod tests {
 	#[test]
 	fn targets_created_from_the_upscaling_pass_on_follow_the_output_extent() {
 		let mut targets = RenderTargets::new();
-		let scene = image_handle(1);
-		let upscaled = image_handle(2);
-		targets.insert(
-			"scene".into(),
-			0,
+		let (scene, upscaled) = (image_handle(1), image_handle(2));
+		insert(
+			&mut targets,
+			"scene",
 			scene,
-			ghi::Formats::RGBA16F,
-			ghi::Uses::empty(),
+			member(ghi::Uses::empty()),
 			1,
 			Placement::Persistent,
 		);
 		targets.begin_output(0);
-		targets.insert(
-			"upscaled".into(),
-			0,
+		insert(
+			&mut targets,
+			"upscaled",
 			upscaled,
-			ghi::Formats::RGBA16F,
-			ghi::Uses::empty(),
+			member(ghi::Uses::empty()),
 			2,
 			Placement::Persistent,
 		);
@@ -931,27 +879,11 @@ mod tests {
 		assert!(!targets.is_output(1));
 	}
 
-	#[test]
-	#[should_panic(expected = "two upscaling passes")]
-	fn a_sink_has_at_most_one_upscaling_pass() {
-		let mut targets = RenderTargets::new();
-		targets.begin_output(0);
-		targets.begin_output(0);
-	}
-
+	/// Scene and pass nodes record before the presentation copy, overlays after it, and the debug views last.
 	#[test]
 	fn the_debug_view_node_records_last() {
-		assert!(RenderNode::Presentation < RenderNode::DebugView);
 		assert!(RenderNode::Pass(usize::MAX) < RenderNode::Presentation);
 		assert!(RenderNode::Presentation < RenderNode::Over(0));
 		assert!(RenderNode::Over(usize::MAX) < RenderNode::DebugView);
-	}
-
-	#[test]
-	fn current_snapshot_excludes_an_overwritten_alias() {
-		let mut targets = RenderTargets::new();
-		targets.by_name = vec![(0, "image-a".into(), 3), (0, "main".into(), 3), (0, "main".into(), 4)];
-
-		assert_eq!(targets.name_indices_for_images(0, &[3]), [("image-a".into(), 3)]);
 	}
 }

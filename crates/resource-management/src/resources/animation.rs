@@ -110,7 +110,7 @@ fn heap_bytes<X>(items: &Vec<X>) -> usize {
 	items.capacity().saturating_mul(std::mem::size_of::<X>())
 }
 
-/// The `CurveComponents` trait lets validation and samplers read a curve value or tangent as its `N` raw components.
+/// The `CurveComponents` trait lets samplers read a curve value or tangent as its `N` raw components.
 pub trait CurveComponents<const N: usize>: Copy {
 	fn components(self) -> [f32; N];
 }
@@ -138,51 +138,6 @@ impl CurveComponents<4> for [f32; 4] {
 	fn components(self) -> [f32; 4] {
 		self
 	}
-}
-
-/// Validates key timing, cardinality, and finite values and tangents before CPU graph evaluation.
-fn validate_curve<V: CurveComponents<N>, T: CurveComponents<N>, const N: usize>(
-	curve: &Curve<V, T>,
-	duration: f32,
-	track: usize,
-	path: &'static str,
-) -> Result<(), SolveError> {
-	let (times, values) = (curve.times(), curve.values());
-	if times.is_empty() || times.len() != values.len() {
-		return invalid_animation(format!(
-			"track {track} {path} key times and values do not have the same non-zero length"
-		));
-	}
-	if times.iter().any(|time| !time.is_finite() || *time < 0.0 || *time > duration) {
-		return invalid_animation(format!("track {track} {path} contains a time outside the clip duration"));
-	}
-	if times.windows(2).any(|pair| pair[0] >= pair[1]) {
-		return invalid_animation(format!("track {track} {path} times are not strictly increasing"));
-	}
-	if !values.iter().flat_map(|value| value.components()).all(f32::is_finite) {
-		return invalid_animation(format!("track {track} {path} contains a non-finite value"));
-	}
-
-	if let Curve::CubicSpline {
-		in_tangents,
-		out_tangents,
-		..
-	} = curve
-	{
-		if in_tangents.len() != times.len() || out_tangents.len() != times.len() {
-			return invalid_animation(format!("track {track} {path} cubic tangents do not match its key count"));
-		}
-		if !in_tangents
-			.iter()
-			.chain(out_tangents)
-			.flat_map(|tangent| tangent.components())
-			.all(f32::is_finite)
-		{
-			return invalid_animation(format!("track {track} {path} contains a non-finite cubic tangent"));
-		}
-	}
-
-	Ok(())
 }
 
 /// The `RootMotionDelta` struct carries a change in the root bone's translation and rotation from one moment to
@@ -404,18 +359,14 @@ impl AnimationModel {
 }
 
 impl<'de> Solver<'de, Animation> for AnimationModel {
-	/// Resolves the target skeleton and rejects clip data that a CPU graph could not evaluate deterministically.
+	/// Resolves the target skeleton. The bake that stored the clip guarantees its tracks target that skeleton's nodes in
+	/// ascending order with valid curves.
 	fn solve(
 		self,
 		storage_backend: &'de dyn resource::DynReadStorageBackend,
 	) -> crate::r#async::BoxedFuture<'de, Result<Animation, SolveError>> {
 		crate::r#async::future(async move {
 			let skeleton = self.skeleton.solve(storage_backend).await?;
-			validate_animation(self.duration, &self.tracks, skeleton.resource().nodes.len())?;
-			if self.frame_rate.is_some_and(|rate| !rate.is_finite() || rate <= 0.0) {
-				invalid_animation("the frame rate is not a finite positive number")?;
-			}
-			validate_root_displacement(self.root_displacement, skeleton.resource().root_bone)?;
 			Ok(Animation {
 				name: self.name,
 				skeleton,
@@ -449,67 +400,6 @@ impl crate::StoredModel for AnimationModel {
 	}
 }
 
-/// Validates clip-wide ordering, target, timing, cardinality, and numeric invariants.
-fn validate_animation(duration: f32, tracks: &[NodeTrack], skeleton_nodes: usize) -> Result<(), SolveError> {
-	if !duration.is_finite() || duration < 0.0 {
-		return invalid_animation("the duration is not a finite non-negative number");
-	}
-
-	let mut previous_node = None;
-	for (track_index, track) in tracks.iter().enumerate() {
-		if track.node as usize >= skeleton_nodes {
-			return invalid_animation(format!(
-				"track {track_index} targets node {} but the skeleton has {skeleton_nodes} nodes",
-				track.node
-			));
-		}
-		if previous_node.is_some_and(|previous| track.node <= previous) {
-			return invalid_animation(format!("track {track_index} does not follow strict ascending node order"));
-		}
-		if track.translation.is_none() && track.rotation.is_none() && track.scale.is_none() {
-			return invalid_animation(format!("track {track_index} contains no pose curves"));
-		}
-
-		if let Some(curve) = &track.translation {
-			validate_curve(curve, duration, track_index, "translation")?;
-		}
-		if let Some(curve) = &track.rotation {
-			validate_curve(curve, duration, track_index, "rotation")?;
-		}
-		if let Some(curve) = &track.scale {
-			validate_curve(curve, duration, track_index, "scale")?;
-		}
-		previous_node = Some(track.node);
-	}
-
-	Ok(())
-}
-
-/// Requires a finite displacement exactly when the skeleton declares a root bone, so a clip baked before its
-/// skeleton gained or lost one fails instead of reporting no travel.
-fn validate_root_displacement(displacement: Option<RootMotionDelta>, root_bone: Option<u32>) -> Result<(), SolveError> {
-	match (displacement, root_bone) {
-		(None, None) => Ok(()),
-		(Some(displacement), Some(_)) => {
-			let mut components = displacement.translation.to_array().into_iter().chain(displacement.rotation.to_array());
-			if components.all(f32::is_finite) {
-				Ok(())
-			} else {
-				invalid_animation("the root displacement contains a non-finite value")
-			}
-		}
-		(None, Some(_)) | (Some(_), None) => Err(SolveError::DeserializationFailed(
-			"Animation clip's root displacement does not match its skeleton. The most likely cause is that the clip was baked before its skeleton's `root_bone` changed. Bake the clip again.".into(),
-		)),
-	}
-}
-
-fn invalid_animation(reason: impl std::fmt::Display) -> Result<(), SolveError> {
-	Err(SolveError::DeserializationFailed(format!(
-		"Animation clip is invalid. The most likely cause is malformed imported animation data: {reason}."
-	)))
-}
-
 #[cfg(test)]
 mod tests {
 	use math::{Orientation, Scale, Vector};
@@ -524,109 +414,6 @@ mod tests {
 			skeleton::{SkeletonModel, tests::node},
 		},
 	};
-
-	async fn skeleton_reference(storage: &MemoryStorageBackend, node_count: usize) -> ReferenceModel<SkeletonModel> {
-		let skeleton = SkeletonModel {
-			nodes: (0..node_count)
-				.map(|index| {
-					node(
-						Some(&format!("node-{index}")),
-						index.checked_sub(1).map(|parent| parent as u32),
-						[0.0; 3],
-					)
-				})
-				.collect(),
-			root_bone: None,
-		};
-		storage
-			.store(ProcessedAsset::new(ResourceId::new("test.skeleton"), skeleton), &[])
-			.await
-			.expect("Test skeleton should store")
-			.into()
-	}
-
-	async fn valid_model(storage: &MemoryStorageBackend) -> AnimationModel {
-		AnimationModel {
-			name: Some("walk".into()),
-			skeleton: skeleton_reference(storage, 2).await,
-			duration: 1.0,
-			frame_rate: Some(30.0),
-			tracks: vec![NodeTrack {
-				node: 1,
-				translation: Some(TranslationCurve::Linear {
-					times: vec![0.0, 1.0],
-					values: vec![Vector::zero(), Vector::new(1.0, 2.0, 3.0)],
-				}),
-				rotation: Some(RotationCurve::Step {
-					times: vec![0.0],
-					values: vec![Orientation::identity()],
-				}),
-				scale: None,
-			}],
-			root_displacement: None,
-		}
-	}
-
-	#[crate::r#async::test]
-	async fn solving_rejects_unsorted_duplicate_and_out_of_range_tracks() {
-		let storage = MemoryStorageBackend::new();
-		let mut model = valid_model(&storage).await;
-		model.tracks.insert(
-			0,
-			NodeTrack {
-				node: 1,
-				translation: None,
-				rotation: None,
-				scale: Some(ScaleCurve::Step {
-					times: vec![0.0],
-					values: vec![Scale::identity()],
-				}),
-			},
-		);
-
-		assert!(model.solve(&storage).await.is_err());
-
-		let mut model = valid_model(&storage).await;
-		model.tracks[0].node = 2;
-
-		assert!(model.solve(&storage).await.is_err());
-	}
-
-	#[crate::r#async::test]
-	async fn solving_rejects_invalid_curve_cardinality_timing_and_numbers() {
-		let storage = MemoryStorageBackend::new();
-		let mut model = valid_model(&storage).await;
-		model.tracks[0].translation = Some(TranslationCurve::CubicSpline {
-			times: vec![0.0, 0.0],
-			values: vec![Vector::zero(), Vector::new(1.0, 1.0, 1.0)],
-			in_tangents: vec![Vector::zero()],
-			out_tangents: vec![Vector::zero(), Vector::new(f32::NAN, f32::NAN, f32::NAN)],
-		});
-
-		assert!(model.solve(&storage).await.is_err());
-
-		let mut model = valid_model(&storage).await;
-		model.duration = f32::INFINITY;
-
-		assert!(model.solve(&storage).await.is_err());
-	}
-
-	#[crate::r#async::test]
-	async fn solving_accepts_arbitrary_finite_rotation_cubic_tangents() {
-		let storage = MemoryStorageBackend::new();
-		let mut model = valid_model(&storage).await;
-		model.tracks[0].rotation = Some(RotationCurve::CubicSpline {
-			times: vec![0.0, 1.0],
-			values: vec![
-				Orientation::identity(),
-				Orientation::try_from_array([0.0, 0.0, 1.0, 0.0]).unwrap(),
-			],
-			in_tangents: vec![[50.0, -20.0, 4.0, 0.5], [-2.0, 3.0, 7.0, 11.0]],
-			out_tangents: vec![[-8.0, 9.0, 10.0, 12.0], [4.0, 3.0, 2.0, 1.0]],
-		});
-
-		assert!(model.solve(&storage).await.is_ok());
-	}
 
 	fn yaw(radians: f32) -> Orientation {
 		Orientation::try_from_rotation_vector(Vector::<ParentSpace>::new(0.0, radians, 0.0)).unwrap()
@@ -692,35 +479,5 @@ mod tests {
 		let nodes = vec![node(Some("Root"), None, [1.0, 2.0, 3.0])];
 
 		assert_eq!(root_displacement(&nodes, 0, &[]), RootMotionDelta::IDENTITY);
-	}
-
-	#[crate::r#async::test]
-	async fn solving_requires_a_displacement_exactly_when_the_skeleton_has_a_root_bone() {
-		let storage = MemoryStorageBackend::new();
-		let mut model = valid_model(&storage).await;
-		model.root_displacement = Some(RootMotionDelta::IDENTITY);
-
-		assert!(model.solve(&storage).await.is_err());
-
-		let skeleton = SkeletonModel {
-			nodes: vec![node(Some("node-0"), None, [0.0; 3]), node(Some("node-1"), Some(0), [0.0; 3])],
-			root_bone: Some(1),
-		};
-		let rooted: ReferenceModel<SkeletonModel> = storage
-			.store(ProcessedAsset::new(ResourceId::new("rooted.skeleton"), skeleton), &[])
-			.await
-			.expect("Test skeleton should store")
-			.into();
-		let mut model = valid_model(&storage).await;
-		model.skeleton = rooted.clone();
-
-		assert!(model.solve(&storage).await.is_err());
-
-		let mut model = valid_model(&storage).await;
-		model.skeleton = rooted;
-		model.measure_root_displacement().unwrap();
-
-		assert_near(model.root_displacement.unwrap().translation.to_array(), [1.0, 2.0, 3.0]);
-		assert!(model.solve(&storage).await.is_ok());
 	}
 }

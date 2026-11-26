@@ -188,17 +188,12 @@ fn a_moving_wall_moves_its_pixels_by_its_projected_step() {
 	assert!(velocity[1].abs() < 1e-3, "{velocity:?}");
 }
 
-/// An instance's first frame, which has no previous model yet, stands where it stands now.
+/// An instance's first frame, which has no previous model yet, stands where it stands now. After a frame that skipped
+/// the stage, the stored models are an older frame's, so a moved wall counts as still.
 #[test]
-fn an_instance_without_a_previous_frame_has_no_velocity() {
-	let velocity = run_velocity(&sink([0.2, 0.3]), camera(), [0.1, 0.0, 0.0], None, [4, 4]);
-	assert!(velocity[0].abs() < 1e-3 && velocity[1].abs() < 1e-3, "{velocity:?}");
-}
-
-/// After a frame that skipped the stage, the stored models are an older frame's, so a moved wall counts as still.
-#[test]
-fn a_frame_after_a_skipped_stage_has_no_object_velocity() {
-	let velocity = run_velocity_after(
+fn an_instance_without_a_previous_model_has_no_velocity() {
+	let first_frame = run_velocity(&sink([0.2, 0.3]), camera(), [0.1, 0.0, 0.0], None, [4, 4]);
+	let after_skip = run_velocity_after(
 		&sink([0.0, 0.0]),
 		camera(),
 		[0.1, 0.0, 0.0],
@@ -207,7 +202,9 @@ fn a_frame_after_a_skipped_stage_has_no_object_velocity() {
 		WALL_Z,
 		[4, 4],
 	);
-	assert!(velocity[0].abs() < 1e-3 && velocity[1].abs() < 1e-3, "{velocity:?}");
+	for velocity in [first_frame, after_skip] {
+		assert!(velocity[0].abs() < 1e-3 && velocity[1].abs() < 1e-3, "{velocity:?}");
+	}
 }
 
 /// A still wall seen from a moving camera moves by its own points' motion, also where a pixel's depth misses the wall's

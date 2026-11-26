@@ -23,7 +23,6 @@ use crate::{
 	inspect::{Base64View, ResourceDocument, inspect_payload, inspect_resource},
 	resource::{
 		MemoryStorageBackend, ReDBStorageBackend, ReadStorageBackend, ResourceGpuCompressionPolicy, ResourceStorageMode,
-		ResourceStorageSettings,
 	},
 };
 
@@ -73,21 +72,13 @@ pub async fn bake(
 	#[cfg(debug_assertions)]
 	let prune_destination = destination_path.clone();
 	let destination_path = std::path::PathBuf::from(destination_path);
-	let resource_storage_backend = offload_file_operation(move || match texture_compression {
-		Some(compression) => ReDBStorageBackend::new_writable_with_settings(
-			destination_path,
-			ResourceStorageSettings::new(storage_mode.unwrap_or_default()).image_compression(compression),
-		),
-		None => match storage_mode {
-			Some(mode) => ReDBStorageBackend::new_writable_with_mode(destination_path, mode),
-			None => ReDBStorageBackend::new_writable(destination_path),
-		},
-	})
-	.await
-	.map_err(|error| {
-		log::error!("Failed to bake resources. {error}");
-		1
-	})?;
+	let resource_storage_backend =
+		offload_file_operation(move || ReDBStorageBackend::new_writable(destination_path, storage_mode, texture_compression))
+			.await
+			.map_err(|error| {
+				log::error!("Failed to bake resources. {error}");
+				1
+			})?;
 
 	let mut asset_manager = get_asset_manager(asset_storage_backend, resource_storage_backend, parameters, configure);
 	// Nothing edits the sources during one run, so a resource many assets use is checked once.

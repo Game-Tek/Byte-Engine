@@ -1,12 +1,34 @@
-// The descriptor set of the directional shadow depth pyramid pass: the cascades it reads and the conservative
-// nearest and farthest cells it writes.
+// The descriptor sets of the directional shadow depth pyramid passes: the cascades they read and the conservative
+// nearest and farthest cells they write, from the first level down to the last.
+
+// The pyramid's first and last levels, as the log2 of their cells' side in shadow-map texels: 3 is 8x8-texel cells, 5
+// is 32x32. Tune them here and in `render_pass/shadows.rs`, which must match. The first level is 3 or 4: the blocker
+// search's 4x4 cells must hold every tap of the widest penumbra filter, and the base pass's workgroup spans 16 texel
+// rows. Levels past the first only speed up proofs, and only the last one is read: one sample of it settles a receiver
+// when the search's 4x4 first-level cells fit in 2x2 of its cells, always from two levels past the first, and for
+// about half the receivers at one past it. At the first level the probes never fit and the search decides alone.
+DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL: const u32 = 3;
+DIRECTIONAL_SHADOW_PYRAMID_LAST_LEVEL: const u32 = 5;
+// The first level's cell side in shadow-map texels, and how many first-level cells span a last-level cell's side.
+DIRECTIONAL_SHADOW_PYRAMID_CELL_SIZE: const u32 = 1 << DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL;
+DIRECTIONAL_SHADOW_PYRAMID_COARSE_SIDE: const u32 = 1 << (DIRECTIONAL_SHADOW_PYRAMID_LAST_LEVEL - DIRECTIONAL_SHADOW_PYRAMID_FIRST_LEVEL);
 
 ShadowDepthPyramid: layer {
-	// Build the 8x8 conservative max-depth and min-depth cells for every directional cascade in one dispatch.
-	// Each thread gathers one 4x4 block of a cell, and the cell's four threads combine their blocks with two subgroup
-	// shuffles, so no thread waits at a barrier.
+	// Build the first level's conservative max-depth and min-depth cells for every directional cascade in one dispatch.
+	// Each thread gathers one 4x4 block of a cell, and the cell's threads combine their blocks with subgroup shuffles,
+	// so no thread waits at a barrier.
 	source_depth: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
 	reduced_max_depth: descriptor<{ type: StorageImage<r16>, binding: 1, access: write }>;
 	// The farthest texel of each cell, which proves a receiver that lies behind every texel of an area fully shadowed.
 	reduced_min_depth: descriptor<{ type: StorageImage<r16>, binding: 2, access: write }>;
+}
+
+ShadowDepthPyramidLevel: layer {
+	// Build one level past the first from the level before it, both pyramids at once: each thread reduces one 2x2 block
+	// of cells. Cascades stay packed one below the other at every level, since the cascade resolution is a multiple of
+	// the last level's cell side.
+	source_max_depth: descriptor<{ type: StorageImage<r16>, binding: 0, access: read }>;
+	source_min_depth: descriptor<{ type: StorageImage<r16>, binding: 1, access: read }>;
+	level_max_depth: descriptor<{ type: StorageImage<r16>, binding: 2, access: write }>;
+	level_min_depth: descriptor<{ type: StorageImage<r16>, binding: 3, access: write }>;
 }

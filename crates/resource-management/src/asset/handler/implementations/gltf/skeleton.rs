@@ -40,8 +40,6 @@ pub(crate) fn import_gltf_node_graph(gltf: &gltf::Gltf) -> Result<GltfNodeGraph,
 		}
 	}
 
-	let mut state = vec![0u8; source_nodes.len()];
-
 	let mut source_to_dense = vec![u32::MAX; source_nodes.len()];
 
 	let mut source_global_transforms = vec![math::Matrix::identity(); source_nodes.len()];
@@ -55,7 +53,6 @@ pub(crate) fn import_gltf_node_graph(gltf: &gltf::Gltf) -> Result<GltfNodeGraph,
 				source_index,
 				&source_nodes,
 				&source_parents,
-				&mut state,
 				&mut source_to_dense,
 				&mut source_global_transforms,
 				&mut nodes,
@@ -63,7 +60,9 @@ pub(crate) fn import_gltf_node_graph(gltf: &gltf::Gltf) -> Result<GltfNodeGraph,
 		}
 	}
 
-	if state.iter().any(|state| *state != 2) {
+	// Every node has at most one parent, so each one is reached once from its root, and only nodes on a cycle, which
+	// has no root, stay unreached.
+	if nodes.len() != source_nodes.len() {
 		return Err(GltfImportError::CyclicNodeHierarchy);
 	}
 
@@ -75,24 +74,16 @@ pub(crate) fn import_gltf_node_graph(gltf: &gltf::Gltf) -> Result<GltfNodeGraph,
 	})
 }
 
-/// Appends one source subtree while computing source-space global transforms used to adjust inverse bind matrices.
-pub(crate) fn append_gltf_skeleton_subtree(
+/// Appends one source subtree, parents before children, while computing source-space global transforms used to adjust
+/// inverse bind matrices.
+fn append_gltf_skeleton_subtree(
 	source_index: usize,
 	source_nodes: &[gltf::Node<'_>],
 	source_parents: &[Option<usize>],
-	state: &mut [u8],
 	source_to_dense: &mut [u32],
 	source_global_transforms: &mut [math::Matrix],
 	nodes: &mut Vec<SkeletonNode>,
 ) -> Result<(), GltfImportError> {
-	match state[source_index] {
-		1 => return Err(GltfImportError::CyclicNodeHierarchy),
-		2 => return Ok(()),
-		_ => {}
-	}
-
-	state[source_index] = 1;
-
 	let source_node = &source_nodes[source_index];
 
 	let source_local = mat4_from_columns(source_node.transform().matrix());
@@ -100,11 +91,6 @@ pub(crate) fn append_gltf_skeleton_subtree(
 	validate_finite_matrix(&source_local, "node transform")?;
 
 	let parent = source_parents[source_index].map(|source_parent| source_to_dense[source_parent]);
-
-	if parent == Some(u32::MAX) {
-		return Err(GltfImportError::CyclicNodeHierarchy);
-	}
-
 	let source_global = source_parents[source_index]
 		.map(|source_parent| source_global_transforms[source_parent] * source_local)
 		.unwrap_or(source_local);
@@ -130,14 +116,11 @@ pub(crate) fn append_gltf_skeleton_subtree(
 			child.index(),
 			source_nodes,
 			source_parents,
-			state,
 			source_to_dense,
 			source_global_transforms,
 			nodes,
 		)?;
 	}
-
-	state[source_index] = 2;
 
 	Ok(())
 }

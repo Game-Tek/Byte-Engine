@@ -9,7 +9,7 @@ impl AssetHandler for PipelineAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (source, format) = context.resolve(id).await.inspect_err(|error| {
+		let source = context.resolve(id).await.inspect_err(|error| {
 			if error.blames_source() {
 				context.error(format_args!(
 					"Pipeline asset '{}' could not be loaded. The most likely cause is that the application's assets/byte_engine link does not expose the engine asset directory. See {}.",
@@ -18,10 +18,6 @@ impl AssetHandler for PipelineAssetHandler {
 				));
 			}
 		})?;
-
-		if format != "pipeline" {
-			return Err(LoadErrors::UnsupportedType);
-		}
 
 		let pipeline: Pipeline = serde_json::from_slice(&source).map_err(|error| {
 			log::error!(

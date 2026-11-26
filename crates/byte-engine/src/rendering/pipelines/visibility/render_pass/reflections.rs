@@ -39,12 +39,7 @@ impl ScreenSpaceReflections {
 		lit: ghi::ImageHandle,
 		depth: ghi::ImageHandle,
 	) -> Self {
-		let parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Reflection Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
+		let parameters = context.build_buffer(super::frame_buffer("Reflection Parameters"));
 		// The layout fixes every image's sampler: `reflection_texel` reads the texel under a coordinate and mirrors the
 		// image past the screen's edge.
 		context.write(&[

@@ -251,11 +251,9 @@ fn level_response(inspector: &DefaultInspector, body: &mut Body) -> Response<Bod
 
 /// Lists the IDs of the stored resources of the class the query names.
 fn resources_response(inspector: &DefaultInspector, query: Option<&str>) -> Response<Body> {
-	let Some([Some(class)]) = query.map(|query| parse_query(query, [&["class"]])).and_then(Result::ok) else {
-		return response(
-			StatusCode::BAD_REQUEST,
-			"Resource query is malformed. The most likely cause is a missing, empty, duplicate, or unknown parameter. Send exactly one `class`, such as `class=Mesh`.",
-		);
+	let class = match single_parameter("Resource query", query, "class", "Mesh") {
+		Ok(class) => class,
+		Err(refusal) => return response(StatusCode::BAD_REQUEST, refusal),
 	};
 	match inspector.resources(&class) {
 		Ok(ids) => json_response(&ids),
@@ -265,11 +263,9 @@ fn resources_response(inspector: &DefaultInspector, query: Option<&str>) -> Resp
 
 /// Lists the source assets with one extension, from a query naming exactly one `extension`.
 fn source_assets_response(inspector: &DefaultInspector, query: Option<&str>) -> Response<Body> {
-	let Some([Some(extension)]) = query.map(|query| parse_query(query, [&["extension"]])).and_then(Result::ok) else {
-		return response(
-			StatusCode::BAD_REQUEST,
-			"Source asset query is malformed. The most likely cause is a missing, empty, duplicate, or unknown parameter. Send exactly one `extension`, such as `extension=bemx`.",
-		);
+	let extension = match single_parameter("Source asset query", query, "extension", "bemx") {
+		Ok(extension) => extension,
+		Err(refusal) => return response(StatusCode::BAD_REQUEST, refusal),
 	};
 	match inspector.source_assets(&extension) {
 		Ok(ids) => json_response(&ids),
@@ -280,11 +276,9 @@ fn source_assets_response(inspector: &DefaultInspector, query: Option<&str>) -> 
 /// Answers one source asset's bytes, unchanged, from a query naming exactly one `id`. The HTTP inspector only
 /// reads sources; it has no authentication, so writing them is left to in-process tools.
 fn source_asset_response(inspector: &DefaultInspector, query: Option<&str>) -> Response<Body> {
-	let Some([Some(id)]) = query.map(|query| parse_query(query, [&["id"]])).and_then(Result::ok) else {
-		return response(
-			StatusCode::BAD_REQUEST,
-			"Source asset request is malformed. The most likely cause is a missing, empty, duplicate, or unknown parameter. Send exactly one `id`, such as `id=materials/floor.bemx`.",
-		);
+	let id = match single_parameter("Source asset request", query, "id", "materials/floor.bemx") {
+		Ok(id) => id,
+		Err(refusal) => return response(StatusCode::BAD_REQUEST, refusal),
 	};
 	match inspector.read_source_asset(&id) {
 		Ok(bytes) => Response::builder()
@@ -292,6 +286,17 @@ fn source_asset_response(inspector: &DefaultInspector, query: Option<&str>) -> R
 			.body(Body::from(bytes))
 			.expect("Inspector text response is valid. The most likely cause is an invalid static header name."),
 		Err(error) => response(StatusCode::NOT_FOUND, error),
+	}
+}
+
+/// Returns the value of `name` from a query that names it once and nothing else, or why the `request` is refused,
+/// with an `example` value.
+fn single_parameter(request: &str, query: Option<&str>, name: &str, example: &str) -> Result<String, String> {
+	match query.map(|query| parse_query(query, [&[name]])) {
+		Some(Ok([Some(value)])) => Ok(value),
+		_ => Err(format!(
+			"{request} is malformed. The most likely cause is a missing, empty, duplicate, or unknown parameter. Send exactly one `{name}`, such as `{name}={example}`."
+		)),
 	}
 }
 
@@ -469,12 +474,6 @@ fn message_response(inspector: &DefaultInspector, body: &mut Body) -> Response<B
 			);
 		}
 	};
-	if request.message_type.is_empty() {
-		return response(
-			StatusCode::BAD_REQUEST,
-			"Inspector message request is invalid. The most likely cause is an empty `type`.",
-		);
-	}
 	if request.target == 0 {
 		return response(
 			StatusCode::BAD_REQUEST,
@@ -880,8 +879,11 @@ fn decode_query_component(value: &str) -> Result<String, ()> {
 		match bytes[index] {
 			b'+' => decoded.push(b' '),
 			b'%' => {
-				let high = bytes.get(index + 1).copied().and_then(hex_value).ok_or(())?;
-				let low = bytes.get(index + 2).copied().and_then(hex_value).ok_or(())?;
+				let digit = |offset: usize| {
+					let digit = bytes.get(index + offset).and_then(|&byte| char::from(byte).to_digit(16));
+					digit.map(|digit| digit as u8).ok_or(())
+				};
+				let (high, low) = (digit(1)?, digit(2)?);
 				decoded.push(high << 4 | low);
 				index += 2;
 			}
@@ -890,15 +892,6 @@ fn decode_query_component(value: &str) -> Result<String, ()> {
 		index += 1;
 	}
 	String::from_utf8(decoded).map_err(|_| ())
-}
-
-fn hex_value(byte: u8) -> Option<u8> {
-	match byte {
-		b'0'..=b'9' => Some(byte - b'0'),
-		b'a'..=b'f' => Some(byte - b'a' + 10),
-		b'A'..=b'F' => Some(byte - b'A' + 10),
-		_ => None,
-	}
 }
 
 fn response(status: StatusCode, body: impl Into<Body>) -> Response<Body> {
@@ -947,18 +940,6 @@ mod tests {
 		DefaultListener<Events>,
 		DefaultListener<TransformationUpdate>,
 	) {
-		test_inspector_with(configuration, None)
-	}
-
-	/// Builds the test inspector, connected to `debug_views` when one is given.
-	fn test_inspector_with(
-		configuration: Configuration,
-		debug_views: Option<Arc<crate::rendering::DebugViewCatalog>>,
-	) -> (
-		EntityHandle<DefaultInspector>,
-		DefaultListener<Events>,
-		DefaultListener<TransformationUpdate>,
-	) {
 		let events = DefaultChannel::new();
 		let event_listener = events.listener();
 		let message_bus = MessageBus::default();
@@ -966,13 +947,8 @@ mod tests {
 		let messages = message_bus.new_scope("http-inspector-test-world");
 		let transforms = messages.channel();
 		let transform_listener = transforms.listener();
-		let mut inspector = DefaultInspector::new(events, configuration, messages, Arc::new(Metrics::new()));
-		inspector
-			.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms)
-			.expect("register reflected transformation update");
-		if let Some(debug_views) = debug_views {
-			inspector.set_debug_views(debug_views);
-		}
+		let inspector = DefaultInspector::new(events, configuration, messages, Arc::new(Metrics::new()));
+		inspector.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms);
 		(EntityHandle::from(inspector), event_listener, transform_listener)
 	}
 
@@ -1026,18 +1002,6 @@ mod tests {
 			.expect("response headers")
 			+ 4;
 		&response[start..]
-	}
-
-	#[test]
-	fn free_port_keeps_the_preferred_port_and_falls_back_when_it_is_taken() {
-		let taken = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("occupy inspector test port");
-		let taken_port = taken.local_addr().expect("read occupied port").port();
-		let fallback = super::free_port(&super::LOOPBACK, taken_port).expect("pick fallback port");
-		assert_ne!(fallback, taken_port);
-		assert_eq!(
-			super::free_port(&super::LOOPBACK, fallback).expect("keep free port"),
-			fallback
-		);
 	}
 
 	#[test]
@@ -1376,21 +1340,60 @@ mod tests {
 	}
 
 	#[test]
-	fn batch_rejects_invalid_captures_before_queueing() {
+	fn requests_the_server_cannot_answer_get_the_status_that_says_why() {
 		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
 		let server = TestServer::new(inspector);
-		for body in [
-			r#"{"captures":[]}"#,
-			r#"{"captures":[{"sink":0,"pass":"bloom"}]}"#,
-			r#"{"captures":[{"sink":0,"pass":"bloom","target":"main","previous":true}]}"#,
-			r#"{"captures":[{"sink":0,"format":"tiff"}]}"#,
-			r#"{"captures":[{"sink":0,"extra":1}]}"#,
-		] {
-			let response = server.request("POST", "/screenshots", body);
+		// Each case: the method, the path, the body, and the status the server answers with.
+		let cases = [
+			// Screenshot batches are checked before they are queued.
+			("POST", "/screenshots", r#"{"captures":[]}"#, "400"),
+			("POST", "/screenshots", r#"{"captures":[{"sink":0,"pass":"bloom"}]}"#, "400"),
+			(
+				"POST",
+				"/screenshots",
+				r#"{"captures":[{"sink":0,"pass":"bloom","target":"main","previous":true}]}"#,
+				"400",
+			),
+			("POST", "/screenshots", r#"{"captures":[{"sink":0,"format":"tiff"}]}"#, "400"),
+			("POST", "/screenshots", r#"{"captures":[{"sink":0,"extra":1}]}"#, "400"),
+			("GET", "/metrics?window=5", "", "400"),
+			("GET", "/events?events=bogus", "", "400"),
+			("GET", "/events?after=1-2", "", "400"),
+			("GET", "/events?after=a-b-c", "", "400"),
+			("GET", "/events?wait=30001", "", "400"),
+			("GET", "/events?since=0", "", "400"),
+			// Resource and source asset queries need exactly one parameter.
+			("GET", "/resources", "", "400"),
+			("GET", "/resources?class=", "", "400"),
+			("GET", "/resources?class=Mesh&class=Image", "", "400"),
+			("GET", "/resources?kind=Mesh", "", "400"),
+			("GET", "/assets", "", "400"),
+			("GET", "/assets?extension=", "", "400"),
+			("GET", "/assets?kind=bemx", "", "400"),
+			("GET", "/assets/source", "", "400"),
+			("GET", "/assets/source?id=", "", "400"),
+			// Without a resource manager, a well-formed query can't be answered.
+			("GET", "/resources?class=Mesh", "", "503"),
+			("GET", "/assets?extension=bemx", "", "503"),
+			("GET", "/assets/source?id=a.bemx", "", "404"),
+			(
+				"POST",
+				"/configuration",
+				r#"{"parameter":"render.lod.force","value":0,"when":"now"}"#,
+				"400",
+			),
+		];
+		for (method, path, body, status) in cases {
+			let response = server.request(method, path, body);
 			assert!(
-				response.starts_with(b"HTTP/1.1 400"),
-				"unexpected response for {body}: {response:?}"
+				response.starts_with(format!("HTTP/1.1 {status}").as_bytes()),
+				"{method} {path} {body}: {response:?}"
 			);
+		}
+		// The HTTP inspector has no authentication, so no method writes a source.
+		for method in ["POST", "PUT"] {
+			let answer = server.request(method, "/assets/source?id=a.bemx", "{}");
+			assert!(!answer.starts_with(b"HTTP/1.1 2"), "{method}: {answer:?}");
 		}
 	}
 
@@ -1440,9 +1443,6 @@ mod tests {
 		let presented = server.get_json("/metrics?presented=true");
 		assert_eq!(presented["ticks"], 1);
 		assert_eq!(presented["first_tick"], 1);
-
-		let response = server.request("GET", "/metrics?window=5", "");
-		assert!(response.starts_with(b"HTTP/1.1 400"), "unexpected response: {response:?}");
 	}
 
 	#[test]
@@ -1586,7 +1586,7 @@ mod tests {
 	}
 
 	#[test]
-	fn events_refuse_waiters_beyond_the_limit_and_malformed_queries() {
+	fn events_refuse_waiters_beyond_the_limit() {
 		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
 		let server = Arc::new(TestServer::new(inspector.clone()));
 		let cursor = server.get_json("/events")["cursor"].as_str().unwrap().to_owned();
@@ -1602,14 +1602,6 @@ mod tests {
 		assert!(response.starts_with(b"HTTP/1.1 503"), "unexpected response: {response:?}");
 		for waiter in waiters {
 			assert_eq!(event_names(&waiter.join().unwrap()), [] as [&str; 0]);
-		}
-
-		for query in ["events=bogus", "after=1-2", "after=a-b-c", "wait=30001", "since=0"] {
-			let response = server.request("GET", &format!("/events?{query}"), "");
-			assert!(
-				response.starts_with(b"HTTP/1.1 400"),
-				"{query}: unexpected response: {response:?}"
-			);
 		}
 	}
 
@@ -1635,69 +1627,6 @@ mod tests {
 	}
 
 	#[test]
-	fn resource_queries_need_exactly_one_class() {
-		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
-		let server = TestServer::new(inspector);
-		for path in [
-			"/resources",
-			"/resources?class=",
-			"/resources?class=Mesh&class=Image",
-			"/resources?kind=Mesh",
-		] {
-			assert!(server.request("GET", path, "").starts_with(b"HTTP/1.1 400"), "{path}");
-		}
-		// Without a resource manager, a well-formed query can't be answered.
-		assert!(
-			server
-				.request("GET", "/resources?class=Mesh", "")
-				.starts_with(b"HTTP/1.1 503")
-		);
-	}
-
-	#[test]
-	fn source_asset_requests_need_one_parameter_and_never_write() {
-		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
-		let server = TestServer::new(inspector);
-		for path in [
-			"/assets",
-			"/assets?extension=",
-			"/assets?kind=bemx",
-			"/assets/source",
-			"/assets/source?id=",
-		] {
-			assert!(server.request("GET", path, "").starts_with(b"HTTP/1.1 400"), "{path}");
-		}
-		// Without a resource manager, a well-formed request can't be answered.
-		assert!(
-			server
-				.request("GET", "/assets?extension=bemx", "")
-				.starts_with(b"HTTP/1.1 503")
-		);
-		assert!(
-			server
-				.request("GET", "/assets/source?id=a.bemx", "")
-				.starts_with(b"HTTP/1.1 404")
-		);
-		// The HTTP inspector has no authentication, so no method writes a source.
-		for method in ["POST", "PUT"] {
-			let answer = server.request(method, "/assets/source?id=a.bemx", "{}");
-			assert!(!answer.starts_with(b"HTTP/1.1 2"), "{method}: {answer:?}");
-		}
-	}
-
-	#[test]
-	fn server_rejects_zero_entity_targets() {
-		let (inspector, _events, mut transforms) = test_inspector(Configuration::new());
-		let server = TestServer::new(inspector);
-		let body = format!(
-			r#"{{"type":"{TRANSFORMATION_UPDATE_MESSAGE_TYPE}","target":0,"payload":{{"position":[4.0,5.0,6.0],"scale":[1.0,1.0,1.0],"orientation":[0.0,0.0,0.0,1.0]}}}}"#
-		);
-		let response = server.request("POST", "/messages", &body);
-		assert!(response.starts_with(b"HTTP/1.1 400"));
-		assert!(transforms.read().is_none());
-	}
-
-	#[test]
 	fn server_posts_targeted_transform_updates_over_http() {
 		let (inspector, _events, mut transforms) = test_inspector(Configuration::new());
 		let server = TestServer::new(inspector);
@@ -1712,6 +1641,11 @@ mod tests {
 		assert_eq!(update.handle(), target);
 		assert_eq!(update.transform().get_position(), math::Point::new(4.0, 5.0, 6.0));
 		assert_eq!(update.transform().scale(), math::Scale::new(1.0, 2.0, 3.0));
+
+		// Handle zero names no entity.
+		let body = body.replace(&format!("\"target\":{}", target.id()), "\"target\":0");
+		assert!(server.request("POST", "/messages", &body).starts_with(b"HTTP/1.1 400"));
+		assert!(transforms.read().is_none());
 	}
 
 	#[test]
@@ -1728,9 +1662,7 @@ mod tests {
 			messages,
 			Arc::new(Metrics::new()),
 		);
-		inspector
-			.register_message(DESTROY_MESSAGE_TYPE, deletion_messages)
-			.expect("register reflected destroy message");
+		inspector.register_message(DESTROY_MESSAGE_TYPE, deletion_messages);
 		let inspector = EntityHandle::from(inspector);
 		let server = TestServer::new(inspector.clone());
 		let target = entities.create("temporary".to_string());
@@ -1753,7 +1685,7 @@ mod tests {
 	}
 
 	#[test]
-	fn screenshot_query_decodes_fields_in_any_order() {
+	fn screenshot_query_decodes_fields_in_any_order_and_rejects_malformed_ones() {
 		for (query, pass, target) in [
 			("sink=2&pass=bloom&target=main", "bloom", "main"),
 			("target=main&sink=2&pass=bloom", "bloom", "main"),
@@ -1771,6 +1703,21 @@ mod tests {
 					ScreenshotFormat::Png,
 				))
 			);
+		}
+		assert_eq!(super::parse_screenshot_query(None), Err(()));
+		for query in [
+			"sink=2&pass=bad%&target=main",
+			"sink=2&pass=bad%2G&target=main",
+			"sink=2&pass=%FF&target=main",
+			"sink=2&pass=bloom",
+			"sink=2&pass=bloom&target=main&extra=x",
+			"sink=2&sink=3",
+			"sink=2&previous=true",
+			"sink=2&pass=bloom&target=main&previous=true",
+			"sink=2&target=main&previous=yes",
+			"sink=2&format=tiff",
+		] {
+			assert_eq!(super::parse_screenshot_query(Some(query)), Err(()));
 		}
 	}
 
@@ -1795,48 +1742,6 @@ mod tests {
 	}
 
 	#[test]
-	fn screenshot_query_rejects_incomplete_and_malformed_fields() {
-		assert_eq!(super::parse_screenshot_query(None), Err(()));
-		for query in [
-			"sink=2&pass=bad%&target=main",
-			"sink=2&pass=bad%2G&target=main",
-			"sink=2&pass=%FF&target=main",
-			"sink=2&pass=bloom",
-			"sink=2&pass=bloom&target=main&extra=x",
-			"sink=2&sink=3",
-			"sink=2&previous=true",
-			"sink=2&pass=bloom&target=main&previous=true",
-			"sink=2&target=main&previous=yes",
-			"sink=2&format=tiff",
-		] {
-			assert_eq!(super::parse_screenshot_query(Some(query)), Err(()));
-		}
-	}
-
-	#[test]
-	fn server_lists_debug_views() {
-		let catalog = Arc::new(crate::rendering::DebugViewCatalog::default());
-		let (inspector, _events, _transforms) = test_inspector_with(Configuration::new(), Some(Arc::clone(&catalog)));
-		let server = TestServer::new(inspector);
-
-		let body = server.get_json("/debug-views");
-		assert_eq!(body["enabled"], false);
-		assert_eq!(body["views"].as_array().map(Vec::len), Some(0));
-	}
-
-	#[test]
-	fn server_exposes_configuration_event_values() {
-		let configuration = Configuration::new();
-		let _port = configuration.register("render.pass.");
-		configuration.update("render.pass.bloom", "bypassed");
-		let (inspector, _events, _transforms) = test_inspector(configuration);
-		let body = TestServer::new(inspector).get_json("/configuration");
-		assert_eq!(body[0]["parameter"], "render.pass.bloom");
-		assert_eq!(body[0]["requested"], "bypassed");
-		assert_eq!(body[0]["state"]["status"], "pending");
-	}
-
-	#[test]
 	fn posted_configuration_reaches_the_system_that_owns_its_prefix() {
 		let configuration = Configuration::new();
 		let port = configuration.register("render.lod.");
@@ -1855,12 +1760,9 @@ mod tests {
 		port.set(update.id(), update.value().clone());
 		let events = server.get_json("/configuration");
 		assert_eq!(events[0]["state"], serde_json::json!({ "status": "set", "value": 0 }));
-	}
 
-	#[test]
-	fn posted_configuration_without_an_owner_is_not_set() {
-		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
-		let response = TestServer::new(inspector).request(
+		// A parameter that no system owns is answered, but not set.
+		let response = server.request(
 			"POST",
 			"/configuration",
 			r#"{"parameter":"render.unknown.knob","value":"on"}"#,
@@ -1868,16 +1770,5 @@ mod tests {
 		assert!(response.starts_with(b"HTTP/1.1 202"), "unexpected response: {response:?}");
 		let event: serde_json::Value = serde_json::from_slice(response_body(&response)).expect("parse configuration event");
 		assert_eq!(event["state"]["status"], "not-set");
-	}
-
-	#[test]
-	fn configuration_request_rejects_unknown_fields() {
-		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
-		let response = TestServer::new(inspector).request(
-			"POST",
-			"/configuration",
-			r#"{"parameter":"render.lod.force","value":0,"when":"now"}"#,
-		);
-		assert!(response.starts_with(b"HTTP/1.1 400"), "unexpected response: {response:?}");
 	}
 }

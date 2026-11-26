@@ -1,23 +1,6 @@
 use super::*;
 
 impl Device {
-	/// Collects the per-frame descriptor set handles chained from the root handle.
-	#[cfg(test)]
-	pub(crate) fn collect_descriptor_set_handles(&self, handle: DescriptorSetHandle) -> SmallVec<[DescriptorSetHandle; 4]> {
-		let mut handles = SmallVec::new();
-		let mut current = Some(handle);
-
-		while let Some(handle) = current {
-			let Some(set) = self.descriptor_sets.get(handle.index() as usize) else {
-				break;
-			};
-			handles.push(handle);
-			current = set.next.map(|handle| DescriptorSetHandle::from_index(handle.index()));
-		}
-
-		handles
-	}
-
 	pub(crate) fn query_window_extent(handles: &window::Handles, fallback_extent: Extent) -> Extent {
 		let mut rect = RECT::default();
 		let ok = unsafe { GetClientRect(handles.hwnd, &mut rect) }.is_ok();
@@ -41,43 +24,21 @@ impl Device {
 		crate::frame_resources::frame_index_with_offset(sequence_index as usize, frame_offset, self.frames as usize) as u8
 	}
 
+	/// Returns the frame copy of a descriptor set that frame sequence `sequence_index` binds, or the set itself when
+	/// its chain has no copy that far.
 	pub(crate) fn descriptor_set_for_sequence(
 		&self,
 		descriptor_set: DescriptorSetHandle,
 		sequence_index: u8,
-	) -> Option<DescriptorSetHandle> {
-		let mut current = Some(descriptor_set);
+	) -> DescriptorSetHandle {
+		let mut current = descriptor_set;
 		for _ in 0..sequence_index {
-			let handle = current?;
-			let set = self.descriptor_sets.get(handle.index() as usize)?;
-			current = set.next.map(|handle| DescriptorSetHandle::from_index(handle.index()));
+			let Some(next) = self.descriptor_sets[current.index() as usize].next else {
+				return descriptor_set;
+			};
+			current = DescriptorSetHandle::from_index(next.index());
 		}
-		current.or(Some(descriptor_set))
-	}
-
-	pub(crate) fn descriptor_set_sequence_index(&self, descriptor_set: DescriptorSetHandle) -> usize {
-		self.descriptor_sets
-			.get(descriptor_set.index() as usize)
-			.map(|set| usize::from(set.sequence_index))
-			.unwrap_or(0)
-	}
-
-	#[cfg(test)]
-	pub(crate) fn descriptor_sequence_index(
-		&self,
-		descriptor_set: DescriptorSetHandle,
-		sequence_index: u8,
-		slot: crate::shader::ResourceSlot,
-	) -> Option<usize> {
-		let descriptor_set =
-			&self.descriptor_sets[self.descriptor_set_for_sequence(descriptor_set, sequence_index)?.index() as usize];
-		let resource_index = descriptor_set.layout.resource_index(slot)?;
-		let base = descriptor_set.layout.element_base(resource_index) as usize;
-		let count = descriptor_set.layout.resources()[resource_index].count() as usize;
-		let retained = descriptor_set.descriptors[base..base + count].iter().flatten().next()?;
-		Some(usize::from(
-			self.frame_index_with_offset(sequence_index, retained.frame_offset),
-		))
+		current
 	}
 
 	/// Selects the shader synchronization scope for the active pipeline and command-list class.
@@ -131,7 +92,7 @@ impl Device {
 		descriptor_set_handle: DescriptorSetHandle,
 		descriptor: WriteData,
 	) {
-		if self.descriptor_set_sequence_index(descriptor_set_handle) != 0 {
+		if self.descriptor_sets[descriptor_set_handle.index() as usize].sequence_index != 0 {
 			return;
 		}
 		let image_handle = match descriptor {
@@ -139,10 +100,7 @@ impl Device {
 			WriteData::CombinedImageSampler { image_handle, .. } => image_handle,
 			_ => return,
 		};
-		let Some(image) = self.images.get(image_handle.index() as usize) else {
-			return;
-		};
-		if image.frame_resources.is_none() {
+		if self.images[image_handle.index() as usize].frame_resources.is_none() {
 			return;
 		}
 		// Per-frame buffers keep sequence zero as the base resource; per-frame images need the same descriptor-visible anchor.
@@ -159,9 +117,7 @@ impl Device {
 		let Some(resource) = self.buffer_resource_for_sequence(handle, sequence_index) else {
 			return;
 		};
-		let Some(buffer) = self.buffer(handle) else {
-			return;
-		};
+		let buffer = self.buffer(handle);
 		let buffer_size = buffer.size;
 		let cpu_handle = self.shader_visible_cpu_handle(false, slot);
 		match descriptor.kind() {
@@ -186,44 +142,19 @@ impl Device {
 				if element_count == 0 {
 					return;
 				}
-				if descriptor.access().intersects(crate::AccessPolicies::WRITE) {
-					let desc = D3D12_UNORDERED_ACCESS_VIEW_DESC {
-						Format: DXGI_FORMAT_UNKNOWN,
-						ViewDimension: D3D12_UAV_DIMENSION_BUFFER,
-						Anonymous: D3D12_UNORDERED_ACCESS_VIEW_DESC_0 {
-							Buffer: D3D12_BUFFER_UAV {
-								FirstElement: 0,
-								NumElements: element_count,
-								StructureByteStride: stride,
-								CounterOffsetInBytes: 0,
-								Flags: D3D12_BUFFER_UAV_FLAG_NONE,
-							},
-						},
-					};
-					unsafe {
+				unsafe {
+					if descriptor.access().intersects(crate::AccessPolicies::WRITE) {
+						let desc = Self::structured_buffer_uav_desc(stride, element_count);
 						self.device
 							.CreateUnorderedAccessView(&resource, None::<&ID3D12Resource>, Some(&desc), cpu_handle);
+					} else {
+						let desc = Self::structured_buffer_srv_desc(stride, element_count);
+						self.device.CreateShaderResourceView(&resource, Some(&desc), cpu_handle);
 					}
-				} else {
-					let desc = D3D12_SHADER_RESOURCE_VIEW_DESC {
-						Format: DXGI_FORMAT_UNKNOWN,
-						ViewDimension: D3D12_SRV_DIMENSION_BUFFER,
-						Shader4ComponentMapping: D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING,
-						Anonymous: D3D12_SHADER_RESOURCE_VIEW_DESC_0 {
-							Buffer: D3D12_BUFFER_SRV {
-								FirstElement: 0,
-								NumElements: element_count,
-								StructureByteStride: stride,
-								Flags: D3D12_BUFFER_SRV_FLAG_NONE,
-							},
-						},
-					};
-					unsafe { self.device.CreateShaderResourceView(&resource, Some(&desc), cpu_handle) };
 				}
 			}
 			_ => return,
 		}
-		self.native_counters.descriptor_write_count += 1;
 	}
 
 	/// Validates and rounds one logical uniform-buffer range for a native CBV.
@@ -272,10 +203,7 @@ impl Device {
 		// An image without memory yet, such as a zero-sized image or an unplaced group member, gets a null view of its
 		// format. Resizing or placing it marks its descriptors stale, so the view is written again when it has memory.
 		let resource = self.ensure_image_resource_for_sequence(image_handle, sequence_index);
-		let image = self
-			.images
-			.get(image_handle.index() as usize)
-			.expect("Invalid DX12 descriptor image handle. The most likely cause is that the retained image handle is stale.");
+		let image = &self.images[image_handle.index() as usize];
 		let format = Self::dxgi_shader_resource_format(image.format).unwrap_or_else(|| {
 			panic!(
 				"Unsupported DX12 descriptor image format. The most likely cause is that {:?} has no exact typed DXGI shader view. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format.",
@@ -303,7 +231,6 @@ impl Device {
 				);
 				self.device
 					.CreateUnorderedAccessView(resource.as_ref(), None::<&ID3D12Resource>, Some(&desc), cpu_handle);
-				self.native_counters.image_uav_descriptor_write_count += 1;
 			} else {
 				let desc = Self::descriptor_texture_srv_desc(
 					format,
@@ -316,10 +243,8 @@ impl Device {
 				);
 				self.device
 					.CreateShaderResourceView(resource.as_ref(), Some(&desc), cpu_handle);
-				self.native_counters.image_srv_descriptor_write_count += 1;
 			}
 		}
-		self.native_counters.descriptor_write_count += 1;
 	}
 
 	/// Writes the native sampler of `sampler_handle` at `slot` of the shader-visible sampler heap.
@@ -351,19 +276,6 @@ impl Device {
 		unsafe {
 			self.device.CreateSampler(&desc, cpu_handle);
 		}
-		#[cfg(test)]
-		{
-			self.native_counters
-				.sampler_descriptor_write_records
-				.push(SamplerDescriptorWriteRecord {
-					filter,
-					address_mode,
-					max_anisotropy,
-					min_lod: sampler.min_lod,
-					max_lod: sampler.max_lod,
-				});
-		}
-		self.native_counters.descriptor_write_count += 1;
 	}
 
 	/// Encodes the D3D12 filter of a sampler, for the sampler heap and for the static samplers of a root signature.

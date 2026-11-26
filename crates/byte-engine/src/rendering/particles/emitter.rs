@@ -1,5 +1,3 @@
-use crate::inspector::Inspectable;
-
 /// The `ParticleEmitter` struct places a source of one particle system in the world, such as a grinder throwing
 /// sparks or a chimney trailing smoke.
 ///
@@ -32,11 +30,5 @@ impl ParticleEmitter {
 			rate: None,
 			burst: None,
 		}
-	}
-}
-
-impl Inspectable for ParticleEmitter {
-	fn as_string(&self) -> String {
-		format!("{:?}", self)
 	}
 }

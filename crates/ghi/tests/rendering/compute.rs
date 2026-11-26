@@ -105,55 +105,30 @@ pub(super) fn unordered_dispatches_write_their_own_rows(
 		Layouts::General,
 	)]);
 
-	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
-	let synchronizer = device.create_synchronizer(None, true);
-	let mut transfer = None;
-	device
-		.queue(queue_handle)
-		.execute(Some(FrameRequest::new(0, synchronizer)), &[], synchronizer, |execution| {
-			execution.record(command_buffer, |recording| {
-				recording.clear_images(&[(image.into(), ghi::ClearValue::Color(RGBA::new(0.0, 0.0, 0.0, 0.0)))]);
-				recording.unordered(|recording| {
-					for row in 0..extent.height() {
-						let recording = recording.bind_compute_pipeline(pipeline);
-						recording.bind_descriptor_sets(&[descriptor_set]);
-						recording.write_push_constant(0, [row]);
-						recording.dispatch(DispatchExtent::new(Extent::line(extent.width()), Extent::square(1)));
-					}
-				});
-				transfer = Some(recording.transfer_texture(image.into()).expect(
-					"Texture transfer failed. The most likely cause is that the test image is not a valid transfer source.",
-				));
-			});
-			[]
+	let transfer = record_frame!(device, Frames::new(device, queue_handle), 0, |recording| {
+		recording.clear_images(&[(image.into(), ghi::ClearValue::Color(RGBA::new(0.0, 0.0, 0.0, 0.0)))]);
+		recording.unordered(|recording| {
+			for row in 0..extent.height() {
+				let recording = recording.bind_compute_pipeline(pipeline);
+				recording.bind_descriptor_sets(&[descriptor_set]);
+				recording.write_push_constant(0, [row]);
+				recording.dispatch(DispatchExtent::new(Extent::line(extent.width()), Extent::square(1)));
+			}
 		});
+		transfer(recording, image)
+	});
 	device.wait();
 	assert!(!device.has_errors());
 
-	let pixels =
-		rgba_pixels(device.get_image_data(transfer.unwrap()).expect(
-			"Texture mapping failed. The most likely cause is that the transfer handle was not recorded by this context.",
-		));
-	let red = RGBAu8 {
-		r: 255,
-		g: 0,
-		b: 0,
-		a: 255,
-	};
-	let green = RGBAu8 {
-		r: 0,
-		g: 255,
-		b: 0,
-		a: 255,
-	};
+	let pixels = read_pixels(device, transfer);
 	let width = extent.width() as usize;
 	assert!(
-		pixels[..width].iter().all(|pixel| *pixel == red),
+		pixels[..width].iter().all(|pixel| *pixel == RED),
 		"row 0: {:?}",
 		&pixels[..width]
 	);
 	assert!(
-		pixels[width..2 * width].iter().all(|pixel| *pixel == green),
+		pixels[width..].iter().all(|pixel| *pixel == GREEN),
 		"row 1: {:?}",
 		&pixels[width..]
 	);
@@ -234,7 +209,7 @@ pub(super) fn bound_buffer_struct_members_read_at_their_offsets(
 			),
 		],
 	);
-	let shader = super::ray_tracing::native_shader(
+	let kernel = super::ray_tracing::native_shader(
 		device,
 		"Bound Buffer Members",
 		ShaderTypes::Compute,
@@ -243,7 +218,7 @@ pub(super) fn bound_buffer_struct_members_read_at_their_offsets(
 	);
 	let pipeline = device.create_compute_pipeline(pipelines::compute::Builder::new(
 		&[],
-		ShaderParameter::new(&shader, ShaderTypes::Compute),
+		ShaderParameter::new(&kernel, ShaderTypes::Compute),
 	));
 	let parameters = device.build_buffer::<[f32]>(
 		ghi::buffer::Builder::new(Uses::Storage)
@@ -266,19 +241,12 @@ pub(super) fn bound_buffer_struct_members_read_at_their_offsets(
 		ghi::DescriptorWrite::buffer(set, ghi::ResourceSlot::new(1), results.into()),
 	]);
 
-	let command_buffer = device.queue(queue_handle).create_command_buffer(None);
-	let synchronizer = device.create_synchronizer(None, true);
-	device
-		.queue(queue_handle)
-		.execute(Some(FrameRequest::new(0, synchronizer)), &[], synchronizer, |execution| {
-			execution.record(command_buffer, |recording| {
-				recording
-					.bind_compute_pipeline(pipeline)
-					.bind_descriptor_sets(&[set])
-					.dispatch(DispatchExtent::new(Extent::line(1), Extent::line(1)));
-			});
-			[]
-		});
+	record_frame!(device, Frames::new(device, queue_handle), 0, |recording| {
+		recording
+			.bind_compute_pipeline(pipeline)
+			.bind_descriptor_sets(&[set])
+			.dispatch(DispatchExtent::new(Extent::line(1), Extent::line(1)));
+	});
 	device.wait();
 	assert!(!device.has_errors());
 

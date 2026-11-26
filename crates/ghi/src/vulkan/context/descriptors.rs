@@ -3,6 +3,14 @@ use crate::descriptors::WriteData;
 use crate::vulkan::descriptor_set::{CopyKey, Reader, RetainedDescriptor, SetConsumption, SetCopy};
 use crate::vulkan::{Completion, FIXED_SAMPLER_COUNT, RESOURCE_DESCRIPTOR_SIZE, holds_samplers};
 
+/// The `ResourceWrite` enum is what one resource heap descriptor is written from.
+enum ResourceWrite {
+	/// A buffer's or an acceleration structure's device address range.
+	Address(vk::DeviceAddressRangeEXT),
+	/// An image view and the layout it is read in. `None` writes a null descriptor, for an image without memory yet.
+	Image(Option<vk::ImageViewCreateInfo<'static>>, vk::ImageLayout),
+}
+
 impl Context {
 	/// Creates one mapped descriptor heap of `size` bytes that counts in descriptors of `unit` bytes.
 	///
@@ -29,29 +37,16 @@ impl Context {
 			units > 0,
 			"Vulkan descriptor heap has no application-owned range. The most likely cause is that the implementation reservation consumes the device's maximum heap size.",
 		);
-		let buffer_size = size
-			.checked_add(heap_alignment)
-			.expect("Vulkan descriptor heap size overflowed. The most likely cause is invalid descriptor-heap properties.");
-		let creation = self.create_vulkan_buffer(
+		// The buffer holds an alignment more than the heap, so the heap can start at an aligned address in it.
+		// Mapped memory prefers device-local host-visible memory and falls back to plain host memory without it.
+		let (creation, _, device_address, pointer) = self.create_dedicated_buffer(
 			Some(name),
-			usize::try_from(buffer_size).expect(
-				"Vulkan descriptor heap exceeds addressable host memory. The most likely cause is invalid device limits.",
-			),
+			(size + heap_alignment) as usize,
 			vk::BufferUsageFlags::DESCRIPTOR_HEAP_EXT | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+			crate::HostAccess::Write,
 		);
-		// Prefers device-local host-visible memory and falls back to plain host memory when the device has none.
-		let host_access = crate::HostAccess::Write;
-		let (allocation, _) = self.create_allocation_internal(
-			creation.size,
-			creation.memory_flags.into(),
-			host_access,
-			creation.dedicated_resource(),
-		);
-		let (device_address, pointer) = self.bind_vulkan_buffer_memory(&creation, allocation, 0);
 		let aligned_address = device_address.next_multiple_of(heap_alignment);
 		let base_offset = aligned_address - device_address;
-
-		assert!(base_offset + size <= buffer_size);
 
 		DescriptorHeapArena {
 			buffer: creation.resource,
@@ -108,7 +103,7 @@ impl Context {
 		let fixed = sampler.allocate(FIXED_SAMPLER_COUNT);
 		assert_eq!(fixed, 0, "The fixed samplers must start the sampler heap.");
 		let samplers = std::array::from_fn::<_, { FIXED_SAMPLER_COUNT as usize }, _>(|index| {
-			Sampler::fixed(crate::vulkan::fixed_sampler(index as u32))
+			Sampler::fixed(crate::sampler::StaticSampler::fixed(index as u32))
 		});
 		let reductions = samplers
 			.each_ref()
@@ -223,8 +218,7 @@ impl Context {
 	///
 	/// # Panics
 	///
-	/// Panics when a write names a slot the set's layout doesn't declare, an array element past the resource's count,
-	/// or a resource of another kind than the layout declares.
+	/// Panics when a write doesn't fit its set's layout; see [`crate::descriptors::DescriptorWrite::target`].
 	pub(crate) fn write_descriptors(&mut self, descriptor_set_writes: &[crate::descriptors::DescriptorWrite]) {
 		for &descriptor_write in descriptor_set_writes {
 			let retained = RetainedDescriptor {
@@ -232,35 +226,8 @@ impl Context {
 				frame_offset: descriptor_write.frame_offset.unwrap_or(0),
 			};
 			let set_index = descriptor_write.descriptor_set.index();
-			let set = self.descriptor_sets.get_mut(set_index as usize).expect(
-				"Invalid Vulkan descriptor set. The most likely cause is that the write used a handle from another context. Write sets the context created.",
-			);
-			let layout = &set.layout;
-			let slot = descriptor_write.slot;
-			let resource_index = layout.resource_index(slot).unwrap_or_else(|| {
-				panic!(
-					"Descriptor set layout `{}` declares no resource at slot {}. The most likely cause is that the write names a resource of another descriptor set, or an array element by its flat slot instead of its array element. Write the slot the set's layout declares, and pick array elements with `with_array_element`.",
-					layout.name(),
-					slot.index(),
-				)
-			});
-			let resource = layout.resources()[resource_index];
-			assert!(
-				descriptor_write.array_element < resource.count(),
-				"Descriptor array element {} is out of range at slot {} of layout `{}`. The most likely cause is that a write exceeded the resource count the layout declares. Write elements below {}.",
-				descriptor_write.array_element,
-				slot.index(),
-				layout.name(),
-				resource.count(),
-			);
-			assert!(
-				retained.descriptor.matches_kind(resource.kind()),
-				"Descriptor kind mismatch at slot {} of layout `{}`. The most likely cause is that an image, sampler, or buffer was written where the layout declares a {:?}. Write the kind of resource the layout declares.",
-				slot.index(),
-				layout.name(),
-				resource.kind(),
-			);
-			let element = layout.element_base(resource_index) + descriptor_write.array_element;
+			let set = &mut self.descriptor_sets[set_index as usize];
+			let (_, element) = descriptor_write.target(&set.layout);
 			let previous = set.descriptors[element as usize].replace(retained);
 			if previous == Some(retained) {
 				continue;
@@ -423,21 +390,6 @@ impl Context {
 		}
 	}
 
-	/// Returns the heap ranges a moved set copy held. [`Self::run_destruction_task`] calls it once the frames that read
-	/// them complete.
-	pub(crate) fn free_descriptor_ranges(
-		&mut self,
-		resource_index: u32,
-		resource_count: u32,
-		sampler_index: u32,
-		sampler_count: u32,
-	) {
-		if let Some(heaps) = &mut self.descriptor_heaps {
-			heaps.resource.release(resource_index, resource_count);
-			heaps.sampler.release(sampler_index, sampler_count);
-		}
-	}
-
 	/// Writes `elements` of the copy `key` names into the heaps, each resolved to the resources of the copy's frame
 	/// sequence. `elements` holds each element once.
 	fn write_set_elements(&self, set_index: usize, key: CopyKey, elements: &[u32]) {
@@ -447,17 +399,7 @@ impl Context {
 		let sequence_index = key.sequence();
 
 		// Each list stays on the stack for the few elements a change usually rewrites.
-		let mut address_writes = SmallVec::<[(vk::DescriptorType, vk::DeviceAddressRangeEXT, u32, u64); 8]>::new();
-		let mut image_writes = SmallVec::<
-			[(
-				vk::DescriptorType,
-				// `None` writes a null descriptor, for an image that has no memory yet.
-				Option<vk::ImageViewCreateInfo<'static>>,
-				vk::ImageLayout,
-				u32,
-				u64,
-			); 8],
-		>::new();
+		let mut resource_writes = SmallVec::<[(vk::DescriptorType, ResourceWrite, u32, u64); 8]>::new();
 		let mut sampler_writes = SmallVec::<[(graphics_hardware_interface::SamplerHandle, u32); 8]>::new();
 		for &element in elements {
 			let Some(retained) = set.descriptors[element as usize] else {
@@ -475,9 +417,9 @@ impl Context {
 						size > 0,
 						"Invalid Vulkan buffer descriptor. The most likely cause is that an empty buffer was written to a shader resource. Create the buffer with a non-zero size."
 					);
-					address_writes.push((
+					resource_writes.push((
 						crate::vulkan::descriptor_type(resource.kind()).unwrap(),
-						vk::DeviceAddressRangeEXT::default().address(buffer.device_address).size(size),
+						ResourceWrite::Address(vk::DeviceAddressRangeEXT::default().address(buffer.device_address).size(size)),
 						slot,
 						properties.buffer_descriptor_size,
 					));
@@ -499,10 +441,18 @@ impl Context {
 						None if descriptor_type == vk::DescriptorType::SAMPLED_IMAGE => (0, image.mip_levels),
 						None => (0, 1),
 					};
-					image_writes.push((
+					resource_writes.push((
 						descriptor_type,
-						self.descriptor_image_view(image, resource.texture_view(), base_mip_level, level_count, array_layer),
-						texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None),
+						ResourceWrite::Image(
+							Self::descriptor_image_view(
+								image,
+								resource.texture_view(),
+								base_mip_level,
+								level_count,
+								array_layer,
+							),
+							texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None),
+						),
 						slot,
 						properties.image_descriptor_size,
 					));
@@ -514,10 +464,12 @@ impl Context {
 				} => {
 					self.assert_sampleable(image);
 					let image = &self.images[image.index() as usize];
-					image_writes.push((
+					resource_writes.push((
 						vk::DescriptorType::SAMPLED_IMAGE,
-						self.descriptor_image_view(image, resource.texture_view(), 0, image.mip_levels, None),
-						texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None),
+						ResourceWrite::Image(
+							Self::descriptor_image_view(image, resource.texture_view(), 0, image.mip_levels, None),
+							texture_format_and_resource_use_to_image_layout(image.format_, image_layout, None),
+						),
 						slot,
 						properties.image_descriptor_size,
 					));
@@ -530,11 +482,13 @@ impl Context {
 						"The top-level acceleration structure has no copy for this frame. The most likely cause is that the frames in flight grew after the structure was created. Create top-level structures after you set the frames in flight.",
 					);
 					// Descriptors name a structure by its address; the range's size only has to be valid.
-					address_writes.push((
+					resource_writes.push((
 						vk::DescriptorType::ACCELERATION_STRUCTURE_KHR,
-						vk::DeviceAddressRangeEXT::default()
-							.address(copy.address)
-							.size(copy.storage.size),
+						ResourceWrite::Address(
+							vk::DeviceAddressRangeEXT::default()
+								.address(copy.address)
+								.size(copy.storage.size),
+						),
 						slot,
 						properties.buffer_descriptor_size,
 					));
@@ -543,58 +497,43 @@ impl Context {
 		}
 
 		let heaps = self.descriptor_heaps.as_ref().unwrap();
-		if !address_writes.is_empty() {
-			let infos = address_writes
+		if !resource_writes.is_empty() {
+			let images = resource_writes
 				.iter()
-				.map(|(ty, range, ..)| {
-					vk::ResourceDescriptorInfoEXT::default()
-						.ty(*ty)
-						.data(vk::ResourceDescriptorDataEXT { p_address_range: range })
+				.map(|(_, write, ..)| match write {
+					ResourceWrite::Image(Some(view), layout) => {
+						Some(vk::ImageDescriptorInfoEXT::default().view(view).layout(*layout))
+					}
+					_ => None,
 				})
 				.collect::<SmallVec<[_; 8]>>();
-			let destinations = address_writes
+			let infos = resource_writes
+				.iter()
+				.zip(&images)
+				.map(|((ty, write, ..), image)| {
+					let data = match write {
+						ResourceWrite::Address(range) => vk::ResourceDescriptorDataEXT { p_address_range: range },
+						// A null data pointer writes a null descriptor, which the `nullDescriptor` feature allows.
+						ResourceWrite::Image(..) => vk::ResourceDescriptorDataEXT {
+							p_image: image.as_ref().map_or(std::ptr::null(), |image| image as *const _),
+						},
+					};
+					vk::ResourceDescriptorInfoEXT::default().ty(*ty).data(data)
+				})
+				.collect::<SmallVec<[_; 8]>>();
+			let destinations = resource_writes
 				.iter()
 				.map(|(_, _, slot, size)| heaps.resource.host_range(*slot, *size))
 				.collect::<SmallVec<[_; 8]>>();
-			// SAFETY: The infos point at ranges that live until the call returns, and no command that may still execute
-			// reads the destinations: the copy was last bound by a completed frame, or moved to new ranges.
-			unsafe {
-				self.device
-					.descriptor_heap
-					.write_resource_descriptors(&infos, &destinations)
-					.expect("Vulkan buffer descriptor write failed. The most likely cause is an invalid device address range.");
-			}
-		}
-		if !image_writes.is_empty() {
-			let images = image_writes
-				.iter()
-				.map(|(_, view, layout, ..)| {
-					view.as_ref()
-						.map(|view| vk::ImageDescriptorInfoEXT::default().view(view).layout(*layout))
-				})
-				.collect::<SmallVec<[_; 8]>>();
-			let infos = image_writes
-				.iter()
-				.zip(&images)
-				.map(|((ty, ..), image)| {
-					// A null data pointer writes a null descriptor, which the `nullDescriptor` feature allows.
-					let p_image = image.as_ref().map_or(std::ptr::null(), |image| image as *const _);
-					vk::ResourceDescriptorInfoEXT::default()
-						.ty(*ty)
-						.data(vk::ResourceDescriptorDataEXT { p_image })
-				})
-				.collect::<SmallVec<[_; 8]>>();
-			let destinations = image_writes
-				.iter()
-				.map(|(_, _, _, slot, size)| heaps.resource.host_range(*slot, *size))
-				.collect::<SmallVec<[_; 8]>>();
-			// SAFETY: As above, and the view descriptions live until the call returns.
+			// SAFETY: The infos point at ranges and view descriptions that live until the call returns, and no command
+			// that may still execute reads the destinations: the copy was last bound by a completed frame, or moved to new
+			// ranges.
 			unsafe {
 				self.device
 					.descriptor_heap
 					.write_resource_descriptors(&infos, &destinations)
 					.expect(
-						"Vulkan image descriptor write failed. The most likely cause is an invalid image view description or layout.",
+						"Vulkan resource descriptor write failed. The most likely cause is an invalid device address range, image view description, or layout.",
 					);
 			}
 		}
@@ -726,9 +665,7 @@ impl Context {
 		};
 		match retained.descriptor {
 			WriteData::Buffer { handle } => Descriptor::Buffer {
-				buffer: self.buffers.nth_handle(handle, resource_sequence).expect(
-					"Missing Vulkan buffer copy. The most likely cause is that the buffer has fewer frame-local copies than the frames in flight. Create dynamic buffers after you set the frames in flight.",
-				),
+				buffer: self.buffers.nth_handle(handle, resource_sequence),
 			},
 			WriteData::Image {
 				handle,
@@ -768,14 +705,18 @@ impl Context {
 		}
 	}
 
-	pub(crate) fn descriptor_image_view_create_info(
-		&self,
+	/// Describes the view a descriptor of `image` reads, or `None` while the image has no native image: it gets one
+	/// once it has an extent and, in an image group, a placement, and those rewrite the descriptors that name it.
+	fn descriptor_image_view(
 		image: &Image,
 		view_type: crate::TextureViewTypes,
 		base_mip_level: u32,
 		level_count: u32,
 		array_layer: Option<u32>,
-	) -> vk::ImageViewCreateInfo<'static> {
+	) -> Option<vk::ImageViewCreateInfo<'static>> {
+		if image.image.is_null() {
+			return None;
+		}
 		assert!(
 			base_mip_level < image.mip_levels,
 			"Vulkan image descriptor mip level is out of range. The most likely cause is that the selected mip exceeds the image mip count. mip_level={base_mip_level}, mip_levels={}",
@@ -831,7 +772,7 @@ impl Context {
 				(vk::ImageViewType::TYPE_3D, 0, 1)
 			}
 		};
-		vk::ImageViewCreateInfo::default()
+		let view = vk::ImageViewCreateInfo::default()
 			.image(image.image)
 			.view_type(vk_view_type)
 			.format(image.format)
@@ -845,7 +786,8 @@ impl Context {
 				level_count,
 				base_array_layer,
 				layer_count,
-			})
+			});
+		Some(view)
 	}
 
 	#[inline]
@@ -868,20 +810,6 @@ impl Context {
 			"Vulkan image `{}` is sampled but was not created for sampling. The most likely cause is that a shader samples an image whose builder lacks `Uses::Image`. Add `Uses::Image` to the image's uses.",
 			name.unwrap_or_default(),
 		);
-	}
-
-	/// Describes the view a descriptor of `image` reads, or `None` while the image has no native image: it gets one
-	/// once it has an extent and, in an image group, a placement, and those rewrite the descriptors that name it.
-	fn descriptor_image_view(
-		&self,
-		image: &Image,
-		view_type: crate::TextureViewTypes,
-		base_mip_level: u32,
-		level_count: u32,
-		array_layer: Option<u32>,
-	) -> Option<vk::ImageViewCreateInfo<'static>> {
-		(!image.image.is_null())
-			.then(|| self.descriptor_image_view_create_info(image, view_type, base_mip_level, level_count, array_layer))
 	}
 
 	#[inline]

@@ -280,3 +280,17 @@ pub(super) fn write_json(output: &mut impl std::io::Write, value: &impl serde::S
 		1
 	})
 }
+
+/// Returns `text` cut to `width` characters by replacing its middle with `…`, keeping its first and last characters.
+pub(super) fn shorten(text: &str, width: usize) -> std::borrow::Cow<'_, str> {
+	let length = text.chars().count();
+	if length <= width || width == 0 {
+		return std::borrow::Cow::Borrowed(text);
+	}
+	// The ellipsis takes one column; the end keeps the smaller half of the rest.
+	let tail = (width - 1) / 2;
+	let head = width - 1 - tail;
+	let head_end = text.char_indices().nth(head).map_or(text.len(), |(index, _)| index);
+	let tail_start = text.char_indices().nth(length - tail).map_or(text.len(), |(index, _)| index);
+	std::borrow::Cow::Owned(format!("{}…{}", &text[..head_end], &text[tail_start..]))
+}

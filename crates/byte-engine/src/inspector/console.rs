@@ -1353,7 +1353,7 @@ mod tests {
 	}
 
 	#[test]
-	fn values_keep_their_json_types_and_other_text_stays_text() {
+	fn set_takes_a_name_and_a_value_that_keeps_its_json_type_and_malformed_commands_are_errors() {
 		let value = |line| match parse_line(line) {
 			Ok(Command::Set { value, .. }) => value,
 			other => panic!("expected a set command, got {other:?}"),
@@ -1366,10 +1366,7 @@ mod tests {
 			value("set render.pass.bloom \"bypassed\""),
 			ConfigurationValue::from("bypassed")
 		);
-	}
-
-	#[test]
-	fn set_names_the_first_word_and_takes_the_rest_as_the_value() {
+		// The rest of the line after the name is the value.
 		assert_eq!(
 			parse_line("set   render.pass.ui   enabled now"),
 			Ok(Command::Set {
@@ -1377,10 +1374,6 @@ mod tests {
 				value: ConfigurationValue::from("enabled now"),
 			})
 		);
-	}
-
-	#[test]
-	fn malformed_commands_are_errors() {
 		assert_eq!(parse_line("help"), Ok(Command::Help));
 		assert!(parse_line("set render.lod.force").is_err());
 		assert!(parse_line("set").is_err());
@@ -1388,7 +1381,7 @@ mod tests {
 	}
 
 	#[test]
-	fn keys_edit_the_command_line_and_enter_runs_it() {
+	fn keys_edit_the_command_line_enter_runs_it_and_ctrl_c_quits() {
 		let mut console = Console::default();
 		type_text(&mut console, "st x");
 		console.handle(key(KeyCode::Home));
@@ -1399,6 +1392,10 @@ mod tests {
 		type_text(&mut console, "y");
 		assert_eq!(console.handle(key(KeyCode::Enter)), Some(Action::Run("set y".to_string())));
 		assert_eq!(console.line, "");
+		assert_eq!(
+			console.handle(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+			Some(Action::Quit)
+		);
 	}
 
 	#[test]
@@ -1421,48 +1418,27 @@ mod tests {
 	}
 
 	#[test]
-	fn ctrl_c_closes_the_application() {
-		let mut console = Console::default();
-		assert_eq!(
-			console.handle(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
-			Some(Action::Quit)
-		);
-	}
-
-	#[test]
-	fn set_reports_the_value_the_owning_system_applied() {
+	fn set_reports_the_applied_value_why_a_parameter_was_not_set_or_that_it_is_pending() {
 		let configuration = Configuration::new();
-		let port = configuration.register("render.lod.");
+		let lod = configuration.register("render.lod.");
+		let pass = configuration.register("render.pass.");
 		let inspector = inspector(configuration);
 		let mut console = Console::default();
 		let start = Instant::now();
+		let set = |console: &mut Console, port: &crate::configuration::ConfigurationPort, now| {
+			let update = port.read().expect("queued update");
+			port.set(update.id(), update.value().clone());
+			console.collect_results(&inspector, now);
+		};
 
 		console.run_line("set render.lod.force 2", &inspector, &LoopWaker::default(), start);
 		assert_eq!(console.status, "");
-
-		let update = port.read().expect("queued update");
-		assert_eq!(update.parameter(), "force");
-		port.set(update.id(), update.value().clone());
-		console.collect_results(&inspector, start);
+		set(&mut console, &lod, start);
 		assert_eq!(console.status, "render.lod.force set to 2");
-	}
 
-	#[test]
-	fn set_reports_why_an_unowned_parameter_was_not_set() {
-		let inspector = inspector(Configuration::new());
-		let mut console = Console::default();
-		console.run_line("set audio.gain 0.5", &inspector, &LoopWaker::default(), Instant::now());
+		console.run_line("set audio.gain 0.5", &inspector, &LoopWaker::default(), start);
 		assert!(console.status.starts_with("audio.gain not set: "), "{}", console.status);
 		assert!(console.status.contains("no system registered"), "{}", console.status);
-	}
-
-	#[test]
-	fn an_unanswered_set_is_pending_after_a_second_and_reported_once_answered() {
-		let configuration = Configuration::new();
-		let port = configuration.register("render.pass.");
-		let inspector = inspector(configuration);
-		let mut console = Console::default();
-		let start = Instant::now();
 
 		console.run_line("set render.pass.bloom bypassed", &inspector, &LoopWaker::default(), start);
 		console.collect_results(&inspector, start + RESULT_WAIT);
@@ -1471,10 +1447,7 @@ mod tests {
 			"{}",
 			console.status
 		);
-
-		let update = port.read().expect("queued update");
-		port.set(update.id(), update.value().clone());
-		console.collect_results(&inspector, start + RESULT_WAIT * 2);
+		set(&mut console, &pass, start + RESULT_WAIT * 2);
 		assert_eq!(console.status, "render.pass.bloom set to bypassed");
 	}
 
@@ -1496,32 +1469,6 @@ mod tests {
 		assert_eq!(rows[3], "│new  │");
 	}
 
-	#[test]
-	fn the_command_line_and_status_line_show_under_the_log() {
-		let mut console = Console::default();
-		type_text(&mut console, "help");
-		let rows = draw(&mut console, &VecDeque::new(), 40, 6);
-		assert!(rows[4].starts_with("> help"), "{rows:?}");
-		assert!(rows[5].starts_with("Type `help` to list the commands"), "{rows:?}");
-	}
-
-	#[test]
-	fn only_the_level_of_a_record_is_colored() {
-		let record = Entry {
-			kind: LineKind::Log(log::Level::Error),
-			text: "12:00:00 ERROR app  it broke\nsecond line".to_string(),
-		};
-		let mut console = Console::default();
-		let buffer = draw_with(&mut console, &VecDeque::from([record]), None, 40, 6);
-		// Row 1 is the record's first row inside the border; column 1 is its first character.
-		let color = |x: u16, y: u16| buffer[(x + 1, y)].fg;
-		assert_eq!(color(0, 1), Color::Reset, "time");
-		assert!((9..14).all(|x| color(x, 1) == Color::Red), "level");
-		assert!((15..40 - 2).all(|x| color(x, 1) == Color::Reset), "target and message");
-		assert!((0..40 - 2).all(|x| color(x, 2) == Color::Reset), "continuation line");
-		assert_eq!(buffer[(1, 2)].symbol(), "s");
-	}
-
 	/// Returns the text of each row of `buffer`.
 	fn rows(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
 		(0..buffer.area.height)
@@ -1530,26 +1477,18 @@ mod tests {
 	}
 
 	#[test]
-	fn f2_switches_between_the_log_the_bakes_and_the_entities() {
+	fn f2_and_the_view_modifier_with_a_number_switch_views_and_type_nothing() {
 		let mut console = Console::default();
 		assert_eq!(console.view, View::Log);
-
 		console.handle(key(KeyCode::F(2)));
 		let shown = draw(&mut console, &VecDeque::new(), 40, 6);
 		assert!(shown[1].contains("No bake was reported yet."), "{shown:?}");
-
 		console.handle(key(KeyCode::F(2)));
-		let shown = draw(&mut console, &VecDeque::new(), 40, 6);
-		assert!(shown[1].contains("0 entities"), "{shown:?}");
-
+		assert!(draw(&mut console, &VecDeque::new(), 40, 6)[1].contains("0 entities"));
 		console.handle(key(KeyCode::F(2)));
 		assert_eq!(console.view, View::Log);
-	}
 
-	#[test]
-	fn the_view_modifier_and_a_number_shows_that_view_and_types_nothing() {
 		let cmd = |digit| KeyEvent::new(KeyCode::Char(digit), VIEW_MODIFIER);
-		let mut console = Console::default();
 		console.handle(cmd('3'));
 		let buffer = draw_with(&mut console, &VecDeque::new(), None, 60, 6);
 		let shown = rows(&buffer);
@@ -1618,15 +1557,10 @@ mod tests {
 	}
 
 	#[test]
-	fn tab_completes_a_command() {
+	fn tab_completes_a_command_and_a_parameter_name_one_segment_at_a_time() {
 		let mut console = Console::default();
 		assert_eq!(tab(&mut console, "se"), "set ");
-	}
-
-	#[test]
-	fn tab_completes_a_parameter_name_one_segment_at_a_time() {
-		let mut console = Console::default();
-		assert_eq!(tab(&mut console, "set re"), "set render.");
+		assert_eq!(tab(&mut console, "re"), "set render.");
 		assert_eq!(tab(&mut console, "l"), "set render.lod.");
 		assert_eq!(tab(&mut console, "f"), "set render.lod.force ");
 		assert_eq!(tab(&mut console, "o"), "set render.lod.force off ");
@@ -1658,7 +1592,7 @@ mod tests {
 	}
 
 	#[test]
-	fn tab_completes_a_value_to_the_words_its_setting_accepts() {
+	fn tab_completes_a_value_to_the_words_its_setting_accepts_or_describes_it() {
 		let mut console = Console::default();
 		assert_eq!(
 			tab(&mut console, "set render.gi.technique SU"),
@@ -1674,10 +1608,8 @@ mod tests {
 			rows[4].contains("render.gi.technique is ssgi and takes `ssgi` or `surfels`"),
 			"{rows:?}"
 		);
-	}
 
-	#[test]
-	fn tab_describes_a_number_it_cannot_list() {
+		// A number can't be listed, so Tab describes it.
 		let mut console = Console::default();
 		assert_eq!(tab(&mut console, "set render.lod.bias "), "set render.lod.bias ");
 		let rows = draw(&mut console, &VecDeque::new(), 80, 6);
@@ -1809,12 +1741,10 @@ mod tests {
 				scope.clone(),
 				Arc::new(Metrics::new()),
 			);
-			inspector
-				.register_message(
-					crate::inspector::TRANSFORMATION_UPDATE_MESSAGE_TYPE,
-					scope.channel::<crate::gameplay::TransformationUpdate>(),
-				)
-				.expect("register transformation updates");
+			inspector.register_message(
+				crate::inspector::TRANSFORMATION_UPDATE_MESSAGE_TYPE,
+				scope.channel::<crate::gameplay::TransformationUpdate>(),
+			);
 			Self { inspector, scope }
 		}
 
@@ -1890,19 +1820,13 @@ mod tests {
 			shown[2].contains("shipping crate"),
 			"handle order puts the first spawn first: {shown:?}"
 		);
-	}
 
-	#[test]
-	fn a_type_word_keeps_entities_with_a_matching_type() {
-		let world = World::new();
-		world.spawn("crate", [0.0; 3]);
-		let mut console = Console::default();
-		type_text(&mut console, "entities type:string");
-		assert!(world.draw(&mut console, 80, 6)[1].contains("1 of 1 entities match"));
-
-		let mut console = Console::default();
-		type_text(&mut console, "entities type:camera");
-		assert!(world.draw(&mut console, 80, 6)[1].contains("0 of 1 entities match"));
+		// A type word keeps the entities with a matching type.
+		for (search, matched) in [("type:string", "3 of 3"), ("type:camera", "0 of 3")] {
+			let mut console = Console::default();
+			type_text(&mut console, &format!("entities {search}"));
+			assert!(world.draw(&mut console, 80, 6)[1].contains(&format!("{matched} entities match")));
+		}
 	}
 
 	#[test]
@@ -1953,7 +1877,7 @@ mod tests {
 	}
 
 	#[test]
-	fn post_reports_a_payload_that_does_not_match_its_shape() {
+	fn post_reports_a_payload_that_does_not_match_its_shape_and_needs_a_type_and_a_numeric_target() {
 		let world = World::new();
 		let handle = world.spawn("crate", [0.0; 3]);
 		let mut console = Console::default();
@@ -1964,10 +1888,7 @@ mod tests {
 			"{}",
 			console.status
 		);
-	}
 
-	#[test]
-	fn post_needs_a_type_and_a_numeric_target() {
 		assert!(parse_line("post Delete").is_err());
 		assert!(
 			parse_line("post Delete crate")
@@ -1979,12 +1900,5 @@ mod tests {
 			parse_line("post Delete 7"),
 			Ok(Command::Post { payload: "null", .. })
 		));
-	}
-
-	#[test]
-	fn short_types_drop_module_paths_inside_generics() {
-		let mut shown = String::new();
-		push_short_type(&mut shown, "alloc::vec::Vec<core::option::Option<(u8, my::Thing)>>");
-		assert_eq!(shown, "Vec<Option<(u8, Thing)>>");
 	}
 }

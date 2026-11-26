@@ -76,27 +76,22 @@ pub(super) struct Properties {
 
 impl Properties {
 	/// Adds the property `name`, and returns the function that records an entity's new value of it.
+	///
+	/// Panics when `name` is empty or already registered, because a client could not tell the properties apart.
 	pub(super) fn add<T: Serialize + Send + Sync + 'static>(
 		&self,
 		name: &'static str,
-	) -> Result<impl Fn(Handle, T) + Send + Sync + 'static, String> {
+	) -> impl Fn(Handle, T) + Send + Sync + 'static {
 		let mut tables = self.tables.write();
-		if name.is_empty() {
-			return Err(
-				"Inspector property could not be registered. The most likely cause is that its name is empty. Give it the name clients read it by."
-					.to_string(),
-			);
-		}
-		if tables.iter().any(|(registered, _)| *registered == name) {
-			return Err(format!(
-				"Inspector property could not be registered. The most likely cause is that '{name}' is already registered. Give it another name."
-			));
-		}
+		assert!(
+			!name.is_empty() && !tables.iter().any(|(registered, _)| *registered == name),
+			"Inspector property '{name}' could not be registered. The most likely cause is that its name is empty or already registered. Give each property the name clients read it by."
+		);
 		let table = Arc::new(Typed::<T>(Mutex::new(HashMap::new())));
 		tables.push((name, Arc::clone(&table) as Arc<dyn Table>));
-		Ok(move |handle, value| {
+		move |handle, value| {
 			table.0.lock().insert(handle, value);
-		})
+		}
 	}
 
 	/// Appends properties in registration order, locking each table once for the whole handle-sorted snapshot.

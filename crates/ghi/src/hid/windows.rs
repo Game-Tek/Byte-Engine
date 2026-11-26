@@ -319,11 +319,17 @@ impl Device {
 	pub(super) fn open(path: &PathData) -> Result<Self, String> {
 		let terminated = path.iter().copied().chain([0]).collect::<Vec<u16>>();
 		// Writing output reports needs write access, but reading does not, and some devices refuse write access.
-		let (interface, write_access) =
-			match Interface::open(PCWSTR(terminated.as_ptr()), GENERIC_READ.0 | GENERIC_WRITE.0, FILE_FLAG_OVERLAPPED) {
-				Some(interface) => (Some(interface), true),
-				None => (Interface::open(PCWSTR(terminated.as_ptr()), GENERIC_READ.0, FILE_FLAG_OVERLAPPED), false),
-			};
+		let (interface, write_access) = match Interface::open(
+			PCWSTR(terminated.as_ptr()),
+			GENERIC_READ.0 | GENERIC_WRITE.0,
+			FILE_FLAG_OVERLAPPED,
+		) {
+			Some(interface) => (Some(interface), true),
+			None => (
+				Interface::open(PCWSTR(terminated.as_ptr()), GENERIC_READ.0, FILE_FLAG_OVERLAPPED),
+				false,
+			),
+		};
 		let interface = interface.ok_or_else(|| {
 			format!(
 				"Failed to open HID device {}. The most likely cause is that another application holds it exclusively.",

@@ -1,29 +1,27 @@
-use std::alloc::{Allocator, Global};
-
 use objc2_metal::MTLDevice;
 
 use super::*;
 
 pub struct Instance {
 	devices: Vec<Retained<ProtocolObject<dyn mtl::MTLDevice>>>,
-	settings: crate::device::Features,
 }
 
 // SAFETY: The instance owns retained Metal device objects, which Metal documents as safe to transfer between threads.
 unsafe impl Send for Instance {}
 
 impl Instance {
-	pub fn new(settings: crate::device::Features) -> Result<Instance, &'static str> {
+	/// Lists the Metal devices. Metal needs no instance-wide setup, so only [`Self::create_device`] reads the features.
+	pub fn new(_features: crate::device::Features) -> Result<Instance, &'static str> {
 		let devices = mtl::MTLCopyAllDevices().to_vec();
 
 		if devices.is_empty() {
 			return Err("No Metal devices available. The most likely cause is that the system does not support Metal.");
 		}
 
-		Ok(Instance { devices, settings })
+		Ok(Instance { devices })
 	}
 
-	/// Creates a Metal device that uses the global allocator.
+	/// Creates a Metal device on the GPU `settings` names, or on the system default GPU.
 	pub fn create_device(
 		&mut self,
 		settings: crate::device::Features,
@@ -32,52 +30,22 @@ impl Instance {
 			&mut Option<graphics_hardware_interface::QueueHandle>,
 		)],
 	) -> Result<super::Device, &'static str> {
-		self.create_device_in(settings, queues, Global)
-	}
-
-	/// Creates a Metal device that uses `allocator` for device-owned host memory.
-	pub fn create_device_in<A: Allocator>(
-		&mut self,
-		settings: crate::device::Features,
-		queues: &mut [(
-			graphics_hardware_interface::QueueSelection,
-			&mut Option<graphics_hardware_interface::QueueHandle>,
-		)],
-		allocator: A,
-	) -> Result<super::Device<A>, &'static str> {
-		let device = if let Some(preferred_name) = settings.gpu {
-			let selected = self.devices.iter().find(|device| device.name().to_string() == preferred_name);
-
-			match selected {
-				Some(device) => device.clone(),
-				None => {
-					return Err(
-						"Requested Metal device not found. The most likely cause is that the device name does not match any available GPU.",
-					);
-				}
-			}
-		} else {
-			mtl::MTLCreateSystemDefaultDevice()
+		let device = match settings.gpu {
+			Some(preferred_name) => self
+				.devices
+				.iter()
+				.find(|device| device.name().to_string() == preferred_name)
+				.cloned()
+				.ok_or(
+					"Requested Metal device not found. The most likely cause is that the device name does not match any available GPU.",
+				)?,
+			None => mtl::MTLCreateSystemDefaultDevice()
 				.or_else(|| self.devices.first().cloned())
-				.ok_or("Metal device creation failed. The most likely cause is that no compatible Metal device is available.")?
+				.ok_or(
+					"Metal device creation failed. The most likely cause is that no compatible Metal device is available.",
+				)?,
 		};
 
-		let merged_settings = crate::device::Features {
-			validation: settings.validation || self.settings.validation,
-			gpu_validation: settings.gpu_validation || self.settings.gpu_validation,
-			api_dump: settings.api_dump || self.settings.api_dump,
-			ray_tracing: settings.ray_tracing || self.settings.ray_tracing,
-			debug_labels: settings.debug_labels || self.settings.debug_labels,
-			counters: settings.counters || self.settings.counters,
-			debug_log_function: settings.debug_log_function.or(self.settings.debug_log_function),
-			gpu: settings.gpu.or(self.settings.gpu),
-			sparse: settings.sparse || self.settings.sparse,
-			geometry_shader: settings.geometry_shader || self.settings.geometry_shader,
-			mesh_shading: settings.mesh_shading || self.settings.mesh_shading,
-			pipeline_cache: settings.pipeline_cache || self.settings.pipeline_cache,
-			display_link: settings.display_link || self.settings.display_link,
-		};
-
-		super::Device::new_in(merged_settings, device, queues, allocator)
+		super::Device::new(settings, device, queues)
 	}
 }

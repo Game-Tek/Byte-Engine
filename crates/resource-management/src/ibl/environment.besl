@@ -1,0 +1,260 @@
+// Bakes one cubemap of an environment map, one output texel per invocation: the unfiltered base level, a GGX
+// prefiltered specular level, or the diffuse irradiance map.
+//
+// The kernel follows the CPU baker in `cpu.rs`. Tangent frames use Duff et al.'s "Building an Orthonormal Basis,
+// Revisited" (https://jcgt.org/published/0006/01/01/), as the CPU baker does.
+
+// The source lat-long image and its downsampled levels, stacked vertically. The kernel only fetches texels.
+source_atlas: descriptor<{ type: Texture2D, binding: 0, access: read }>;
+// Every cubemap of the bake, stacked vertically, each one six faces tall.
+output_atlas: descriptor<{ type: StorageImage<rgba16f>, binding: 1, access: write }>;
+
+// Mirrors `GPUIBLPushConstants` in `gpu.rs`.
+push_constant: push_constant {
+	source_width: u32,
+	source_height: u32,
+	source_level_count: u32,
+	output_face_size: u32,
+	output_y_offset: u32,
+	// 0 copies the base level, 1 prefilters a specular level, and 2 convolves the diffuse irradiance.
+	mode: u32,
+	roughness: f32,
+	source_row_angle_step: f32,
+	source_solid_angle_scale: f32,
+	// The padding starts the offsets on a 16-byte boundary, where every backend places a vector array.
+	_padding0: u32,
+	_padding1: u32,
+	_padding2: u32,
+	// The atlas row each source level starts at, four levels per vector.
+	source_level_y_offsets0: vec4u,
+	source_level_y_offsets1: vec4u,
+	source_level_y_offsets2: vec4u,
+	source_level_y_offsets3: vec4u,
+}
+
+PI: const f32 = 3.14159265358979323846;
+TAU: const f32 = 6.28318530717958647692;
+// The smallest positive normal `f32`, 1.17549435e-38, which keeps densities and products away from zero.
+MIN_POSITIVE: const f32 = 0.0000000000000000000000000000000000000117549435;
+SAMPLE_COUNT: const u32 = 1024;
+
+// The two tangents that complete a unit normal into an orthonormal basis.
+Basis: struct {
+	tangent: vec3f,
+	bitangent: vec3f,
+}
+
+normalize_direction: fn (vector: vec3f) -> vec3f {
+	let length_squared: f32 = dot(vector, vector);
+	if (length_squared > 0.0 && !is_nan(length_squared) && !is_infinite(length_squared)) {
+		return vector * inversesqrt(length_squared);
+	}
+	return vec3f(1.0, 0.0, 0.0);
+}
+
+orthonormal_basis: fn (normal: vec3f) -> Basis {
+	let sign_value: f32 = if (normal.z >= 0.0) { 1.0 } else { -1.0 };
+	let a: f32 = -1.0 / (sign_value + normal.z);
+	let b: f32 = normal.x * normal.y * a;
+	return Basis(
+		vec3f(1.0 + sign_value * normal.x * normal.x * a, sign_value * b, -sign_value * normal.x),
+		vec3f(b, sign_value + normal.y * normal.y * a, -normal.y)
+	);
+}
+
+tangent_to_world: fn (local_direction: vec3f, basis: Basis, normal: vec3f) -> vec3f {
+	return basis.tangent * local_direction.x + basis.bitangent * local_direction.y + normal * local_direction.z;
+}
+
+// The API face order and signs must stay aligned with the native cubemap upload layout.
+cubemap_texel_direction: fn (face: u32, x: u32, y: u32, face_size: u32) -> vec3f {
+	let u: f32 = 2.0 * (f32(x) + 0.5) / f32(face_size) - 1.0;
+	let v: f32 = 2.0 * (f32(y) + 0.5) / f32(face_size) - 1.0;
+	let direction: vec3f = match face {
+		0 => vec3f(1.0, -v, -u),
+		1 => vec3f(-1.0, -v, u),
+		2 => vec3f(u, 1.0, v),
+		3 => vec3f(u, -1.0, -v),
+		4 => vec3f(u, -v, 1.0),
+		_ => vec3f(-u, -v, -1.0),
+	};
+	return normalize_direction(direction);
+}
+
+source_level_dimension: fn (base_dimension: u32, level: u32) -> u32 {
+	return max(base_dimension >> level, 1);
+}
+
+source_level_y_offset: fn (level: u32) -> u32 {
+	let offsets: vec4u = match level >> 2 {
+		0 => push_constant.source_level_y_offsets0,
+		1 => push_constant.source_level_y_offsets1,
+		2 => push_constant.source_level_y_offsets2,
+		_ => push_constant.source_level_y_offsets3,
+	};
+	return offsets[level & 3];
+}
+
+lerp_radiance: fn (a: vec3f, b: vec3f, amount: f32) -> vec3f {
+	return a + (b - a) * amount;
+}
+
+// Every caller passes a unit direction. Longitude is undefined at an exact pole, so the pole takes the seam's middle.
+project_lat_long: fn (direction: vec3f) -> vec2f {
+	let u: f32 = 0.5;
+	if (direction.x != 0.0 || direction.z != 0.0) {
+		u = atan2(direction.z, direction.x) / TAU + 0.5;
+	}
+	let v: f32 = 0.5 - asin(clamp(direction.y, -1.0, 1.0)) / PI;
+	return vec2f(u, v);
+}
+
+source_texel: fn (x: u32, y: u32) -> vec3f {
+	let texel: vec4f = fetch(source_atlas, vec2u(x, y));
+	return vec3f(texel.x, texel.y, texel.z);
+}
+
+// Reads one source level bilinearly, wrapping around the longitude seam and clamping at the poles.
+sample_lat_long_level: fn (level: u32, uv: vec2f) -> vec3f {
+	let level_width: u32 = source_level_dimension(push_constant.source_width, level);
+	let level_height: u32 = source_level_dimension(push_constant.source_height, level);
+	let level_y_offset: u32 = source_level_y_offset(level);
+	let source_x: f32 = uv.x * f32(level_width) - 0.5;
+	let x_floor: f32 = floor(source_x);
+	let x_fraction: f32 = source_x - x_floor;
+	let x0: u32 = if (x_floor < 0.0) { level_width - 1 } else { u32(x_floor) };
+	let x1: u32 = if (x0 + 1 == level_width) { 0 } else { x0 + 1 };
+
+	let source_y: f32 = clamp(uv.y * f32(level_height) - 0.5, 0.0, f32(level_height - 1));
+	let y0: u32 = u32(floor(source_y));
+	let y1: u32 = min(y0 + 1, level_height - 1);
+	let y_fraction: f32 = source_y - f32(y0);
+
+	let top: vec3f = source_texel(x0, level_y_offset + y0);
+	if (x0 != x1) {
+		top = lerp_radiance(top, source_texel(x1, level_y_offset + y0), x_fraction);
+	}
+	if (y0 == y1) {
+		return top;
+	}
+	let bottom: vec3f = source_texel(x0, level_y_offset + y1);
+	if (x0 != x1) {
+		bottom = lerp_radiance(bottom, source_texel(x1, level_y_offset + y1), x_fraction);
+	}
+	return lerp_radiance(top, bottom, y_fraction);
+}
+
+// The exact spherical area of the base-level texel row that holds the projected direction.
+direction_texel_solid_angle: fn (v: f32) -> f32 {
+	let row: u32 = u32(clamp(floor(v * f32(push_constant.source_height)), 0.0, f32(push_constant.source_height - 1)));
+	return push_constant.source_solid_angle_scale * sin((f32(row) + 0.5) * push_constant.source_row_angle_step);
+}
+
+// Reverses the 32 bits of `value`, swapping ever smaller halves.
+reverse_bits: fn (value: u32) -> u32 {
+	let bits: u32 = (value << 16) | (value >> 16);
+	bits = ((bits & 16711935) << 8) | ((bits >> 8) & 16711935);
+	bits = ((bits & 252645135) << 4) | ((bits >> 4) & 252645135);
+	bits = ((bits & 858993459) << 2) | ((bits >> 2) & 858993459);
+	return ((bits & 1431655765) << 1) | ((bits >> 1) & 1431655765);
+}
+
+// The `index`-th point of the Hammersley set; the second coordinate is the reversed index over 2^32.
+hammersley: fn (index: u32) -> vec2f {
+	return vec2f(f32(index) / f32(SAMPLE_COUNT), f32(reverse_bits(index)) * 0.00000000023283064);
+}
+
+// GGX half-vector density converted to light-direction density, for source level selection.
+ggx_light_pdf: fn (cos_theta_squared: f32, alpha_squared: f32) -> f32 {
+	let denominator_term: f32 = cos_theta_squared * (alpha_squared - 1.0) + 1.0;
+	return max(alpha_squared / max(4.0 * PI * denominator_term * denominator_term, MIN_POSITIVE), MIN_POSITIVE);
+}
+
+// Picks the source level whose texels cover the solid angle of one sample of density `pdf`, blending adjacent levels.
+sample_filtered_direction: fn (direction: vec3f, pdf: f32) -> vec3f {
+	let uv: vec2f = project_lat_long(direction);
+	let solid_angle_product: f32 = max(f32(SAMPLE_COUNT) * max(pdf, MIN_POSITIVE) * direction_texel_solid_angle(uv.y), MIN_POSITIVE);
+	let last_level: u32 = max(push_constant.source_level_count, 1) - 1;
+	let lod: f32 = clamp(-0.5 * log2(solid_angle_product), 0.0, f32(last_level));
+	let lower_level: u32 = u32(floor(lod));
+	let upper_level: u32 = min(lower_level + 1, last_level);
+	let blend: f32 = lod - f32(lower_level);
+	let lower: vec3f = sample_lat_long_level(lower_level, uv);
+	if (blend <= 0.0 || lower_level == upper_level) {
+		return lower;
+	}
+	return lerp_radiance(lower, sample_lat_long_level(upper_level, uv), blend);
+}
+
+// The split-sum prefilter takes the view as the normal and weights each accepted sample by its cosine to the light.
+prefilter_specular: fn (normal: vec3f) -> vec3f {
+	let basis: Basis = orthonormal_basis(normal);
+	let sum: vec3f = vec3f(0.0, 0.0, 0.0);
+	let total_weight: f32 = 0.0;
+	let alpha: f32 = push_constant.roughness * push_constant.roughness;
+	let alpha_squared: f32 = alpha * alpha;
+	for (let index: u32 = 0; index < SAMPLE_COUNT; index = index + 1) {
+		let sample_point: vec2f = hammersley(index);
+		let cos_theta_squared: f32 = max((1.0 - sample_point.y) / (1.0 + (alpha_squared - 1.0) * sample_point.y), 0.0);
+		let normal_dot_light: f32 = 2.0 * cos_theta_squared - 1.0;
+		if (normal_dot_light <= 0.0) {
+			continue;
+		}
+		let cos_theta: f32 = sqrt(cos_theta_squared);
+		let sin_theta: f32 = sqrt(max(1.0 - cos_theta_squared, 0.0));
+		let angle: f32 = TAU * sample_point.x;
+		let radial: f32 = 2.0 * cos_theta * sin_theta;
+		let light: vec3f = tangent_to_world(vec3f(radial * cos(angle), radial * sin(angle), normal_dot_light), basis, normal);
+		let pdf: f32 = ggx_light_pdf(cos_theta_squared, alpha_squared);
+		sum = sum + sample_filtered_direction(light, pdf) * normal_dot_light;
+		total_weight = total_weight + normal_dot_light;
+	}
+	if (total_weight > 0.0) {
+		return sum / total_weight;
+	}
+	return sample_lat_long_level(0, project_lat_long(normal));
+}
+
+// Cosine-weighted sampling reduces the irradiance divided by pi to an arithmetic mean.
+convolve_diffuse_irradiance: fn (normal: vec3f) -> vec3f {
+	let basis: Basis = orthonormal_basis(normal);
+	let sum: vec3f = vec3f(0.0, 0.0, 0.0);
+	for (let index: u32 = 0; index < SAMPLE_COUNT; index = index + 1) {
+		let sample_point: vec2f = hammersley(index);
+		let radius: f32 = sqrt(sample_point.x);
+		let angle: f32 = TAU * sample_point.y;
+		let local_direction: vec3f = vec3f(radius * cos(angle), radius * sin(angle), sqrt(max(1.0 - sample_point.x, 0.0)));
+		let direction: vec3f = tangent_to_world(local_direction, basis, normal);
+		sum = sum + sample_filtered_direction(direction, local_direction.z / PI);
+	}
+	return sum / f32(SAMPLE_COUNT);
+}
+
+finite_or_zero: fn (value: f32) -> f32 {
+	return if (is_nan(value) || is_infinite(value)) { 0.0 } else { value };
+}
+
+main: fn (input: StageInput) -> void {
+	let output_index: u32 = input.thread_id.x;
+	let face_size: u32 = push_constant.output_face_size;
+	let face_pixel_count: u32 = face_size * face_size;
+	if (output_index >= face_pixel_count * 6) {
+		return;
+	}
+	let face: u32 = output_index / face_pixel_count;
+	let face_pixel: u32 = output_index - face * face_pixel_count;
+	let y: u32 = face_pixel / face_size;
+	let x: u32 = face_pixel - y * face_size;
+
+	let normal: vec3f = cubemap_texel_direction(face, x, y, face_size);
+	let radiance: vec3f = vec3f(0.0, 0.0, 0.0);
+	if (push_constant.mode == 0) {
+		radiance = sample_lat_long_level(0, project_lat_long(normal));
+	} else if (push_constant.mode == 1) {
+		radiance = prefilter_specular(normal);
+	} else if (push_constant.mode == 2) {
+		radiance = convolve_diffuse_irradiance(normal);
+	}
+	let sanitized: vec4f = vec4f(finite_or_zero(radiance.x), finite_or_zero(radiance.y), finite_or_zero(radiance.z), 1.0);
+	write(output_atlas, vec2u(x, push_constant.output_y_offset + face * face_size + y), sanitized);
+}

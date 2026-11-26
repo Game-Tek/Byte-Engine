@@ -178,269 +178,191 @@ fn surface(nodes: &str) -> String {
 	format!(r#"{{ nodes: [{nodes} {{ name: "surface", node: "surface", base_color: "base", roughness: "rough" }}] }}"#)
 }
 
-#[track_caller]
-fn assert_close(actual: ([f32; 3], f32), expected: ([f32; 3], f32)) {
+/// Verifies each lowered graph computes, in the VM, the base colour and roughness MaterialX specifies for its nodes at
+/// the [`FixedPoint`].
+#[test]
+fn lowered_graphs_compute_what_materialx_specifies() {
+	let cases: &[(&str, ([f32; 3], f32))] = &[
+		// A float applies to every component.
+		(
+			r#"{ name: "base", node: "multiply", in1: [0.5, 1.0, 2.0], in2: 2.0 },
+			{ name: "rough", node: "subtract", in1: 1.0, in2: 0.25 },"#,
+			([1.0, 2.0, 4.0], 0.75),
+		),
+		// Modulo keeps the sign of the divisor.
+		(
+			r#"{ name: "base", node: "modulo", in1: [5.5, -0.5, 2.0], in2: 2.0 },
+			{ name: "rough", node: "modulo", in1: -1.5, in2: 1.0 },"#,
+			([1.5, 1.5, 0.0], 0.5),
+		),
+		// Images sample their texture once and keep their channels.
+		(
+			r#"{ name: "base", node: "image", texture: "albedo", type: "color3" },
+			{ name: "rgba", node: "image", texture: "albedo" },
+			{ name: "rough", node: "extract", in: "rgba", index: 3 },"#,
+			([ALBEDO[0], ALBEDO[1], ALBEDO[2]], ALBEDO[3]),
+		),
+		// Channel nodes pick, join, and replace components.
+		(
+			r#"{ name: "base", node: "swizzle", in: [1.0, 2.0, 3.0], channels: "z1x" },
+			{ name: "joined", node: "combine", in1: [0.1, 0.2], in2: 0.3 },
+			{ name: "rough", node: "extract", in: "joined", index: 2 },"#,
+			([3.0, 1.0, 1.0], 0.3),
+		),
+		// Conversions fill and drop components.
+		(
+			r#"{ name: "base", node: "convert", in: 0.5, type: "vector3" },
+			{ name: "opened", node: "convert", in: [0.1, 0.2], type: "vector4" },
+			{ name: "rough", node: "extract", in: "opened", index: 3 },"#,
+			([0.5, 0.5, 0.5], 1.0),
+		),
+		// Comparisons and switches pick one value.
+		(
+			r#"{ name: "base", node: "switch", which: 1.0, in1: [1.0, 0.0, 0.0], in2: [0.0, 1.0, 0.0], in3: [0.0, 0.0, 1.0] },
+			{ name: "rough", node: "ifgreater", value1: 0.6, value2: 0.5, in1: 0.9, in2: 0.1 },"#,
+			([0.0, 1.0, 0.0], 0.9),
+		),
+		(
+			r#"{ name: "base", node: "ifequal", value1: 0.5, value2: 0.5, in1: [1.0, 1.0, 1.0], in2: [0.0, 0.0, 0.0] },
+			{ name: "rough", node: "ifgreatereq", value1: 0.4, value2: 0.5, in1: 0.9, in2: 0.1 },"#,
+			([1.0, 1.0, 1.0], 0.1),
+		),
+		// Blends and ranges follow MaterialX.
+		(
+			r#"{ name: "base", node: "mix", bg: [0.0, 0.0, 0.0], fg: [1.0, 1.0, 1.0], mix: 0.25 },
+			{ name: "rough", node: "remap", in: 0.5, outlow: 0.2, outhigh: 0.4 },"#,
+			([0.25, 0.25, 0.25], 0.3),
+		),
+		(
+			r#"{ name: "base", node: "clamp", in: [-1.0, 0.5, 2.0] },
+			{ name: "rough", node: "smoothstep", in: 0.5 },"#,
+			([0.0, 0.5, 1.0], 0.5),
+		),
+		// Scalar functions apply to every component.
+		(
+			r#"{ name: "floor", node: "floor", in: 1.5 },
+			{ name: "ceil", node: "ceil", in: 1.2 },
+			{ name: "sign", node: "sign", in: -3.0 },
+			{ name: "base", node: "combine", in1: "floor", in2: "ceil", in3: "sign" },
+			{ name: "rough", node: "acos", in: 0.0 },"#,
+			([1.0, 2.0, -1.0], std::f32::consts::FRAC_PI_2),
+		),
+		// Vector functions measure and scale.
+		(
+			r#"{ name: "base", node: "normalize", in: [3.0, 0.0, 4.0] },
+			{ name: "rough", node: "magnitude", in: [3.0, 4.0] },"#,
+			([0.6, 0.0, 0.8], 5.0),
+		),
+		(
+			r#"{ name: "base", node: "crossproduct", in1: [1.0, 0.0, 0.0], in2: [0.0, 1.0, 0.0] },
+			{ name: "rough", node: "dotproduct", in1: [1.0, 2.0, 3.0], in2: [1.0, 1.0, 1.0] },"#,
+			([0.0, 0.0, 1.0], 6.0),
+		),
+		// Colour adjustments keep alpha apart.
+		(
+			r#"{ name: "premultiplied", node: "premult", in: [0.5, 1.0, 1.0, 0.5] },
+			{ name: "base", node: "swizzle", in: "premultiplied", channels: "rgb" },
+			{ name: "grey", node: "luminance", in: [1.0, 1.0, 1.0] },
+			{ name: "rough", node: "extract", in: "grey", index: 0 },"#,
+			(
+				[0.25, 0.5, 0.5],
+				bemx::DEFAULT_LUMINANCE_WEIGHTS[0] + bemx::DEFAULT_LUMINANCE_WEIGHTS[1] + bemx::DEFAULT_LUMINANCE_WEIGHTS[2],
+			),
+		),
+		// A normal map rebuilds its height from the first two channels, here (0.5, 0) and sqrt(1 - 0.25), and turns the
+		// result out of the tangent frame.
+		(
+			r#"{ name: "base", node: "normalmap", in: [0.75, 0.5, 0.0] },
+			{ name: "rough", node: "magnitude", in: "base" },"#,
+			([0.5, 0.0, 0.866_025_4], 1.0),
+		),
+		// The texel points straight along the bitangent, which this frame lays along negative z.
+		(
+			r#"{ name: "base", node: "normalmap", in: [0.5, 1.0, 1.0], tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 0.0, -1.0], normal: [0.0, 1.0, 0.0] },
+			{ name: "rough", node: "extract", in: "base", index: 2 },"#,
+			([0.0, 0.0, -1.0], -1.0),
+		),
+		// The position (1, 2, 3) maps to (2, 6). Along x the position moves by (0.1, 0, 0.2), so x changes by 0.2;
+		// along y it moves by (0, 0.3, 0.4), so y changes by 0.8.
+		(
+			r#"{ name: "position", node: "position" },
+			{ name: "ground", node: "swizzle", in: "position", channels: "xz" },
+			{ name: "tiled", node: "multiply", in1: "ground", in2: 2.0 },
+			{ name: "image", node: "image", texture: "probe", texcoord: "tiled" },
+			{ name: "base", node: "swizzle", in: "image", channels: "xyz" },
+			{ name: "rough", node: "extract", in: "image", index: 3 },"#,
+			([2.0, 6.0, 0.2], 0.8),
+		),
+		// (0.25, 0.75) × 4 + 0.5 + the texel's (0.2, 0.4). The texel and the parameter hold still, so only the texture
+		// coordinates' change of (0.01, 0.02) counts, four times over.
+		(
+			r#"{ name: "flow", node: "image", texture: "albedo", type: "vector2" },
+			{ name: "uv", node: "texcoord" },
+			{ name: "half", node: "parameter", parameter: "half", type: "float" },
+			{ name: "scaled", node: "multiply", in1: "uv", in2: 4.0 },
+			{ name: "offset", node: "add", in1: "scaled", in2: "half" },
+			{ name: "flowed", node: "add", in1: "offset", in2: "flow" },
+			{ name: "image", node: "image", texture: "probe", texcoord: "flowed" },
+			{ name: "base", node: "swizzle", in: "image", channels: "xyz" },
+			{ name: "rough", node: "extract", in: "image", index: 3 },"#,
+			([1.7, 3.9, 0.04], 0.08),
+		),
+		(
+			r#"{ name: "half", node: "parameter", parameter: "half", type: "float" },
+			{ name: "at", node: "combine", in1: "half", in2: 0.25 },
+			{ name: "image", node: "image", texture: "probe", texcoord: "at" },
+			{ name: "base", node: "swizzle", in: "image", channels: "xyz" },
+			{ name: "rough", node: "extract", in: "image", index: 3 },"#,
+			([0.5, 0.25, 0.0], 0.0),
+		),
+		// (0.25, 0.75) scrolled by 4 seconds, and only the texture coordinates change across the pixel.
+		(
+			r#"{ name: "time", node: "time" },
+			{ name: "uv", node: "texcoord" },
+			{ name: "scrolled", node: "add", in1: "uv", in2: "time" },
+			{ name: "image", node: "image", texture: "probe", texcoord: "scrolled" },
+			{ name: "base", node: "swizzle", in: "image", channels: "xyz" },
+			{ name: "rough", node: "extract", in: "image", index: 3 },"#,
+			([4.25, 4.75, 0.01], 0.02),
+		),
+		// The backdrop colour reads at the shaded point's (0.4, 0.6); the position at (0.5, 0.6), whose x it keeps.
+		(
+			r#"{ name: "behind", node: "scenecolor" },
+			{ name: "base", node: "swizzle", in: "behind", channels: "xyz" },
+			{ name: "screen", node: "screenposition" },
+			{ name: "shifted", node: "add", in1: "screen", in2: [0.1, 0.0] },
+			{ name: "floor", node: "sceneposition", texcoord: "shifted" },
+			{ name: "rough", node: "extract", in: "floor", index: 0 },"#,
+			([0.4, 0.6, 0.5], 0.5),
+		),
+		// (0.4, 0.6) × 3, changing by three pixels' 0.001 along x and 0.002 along y.
+		(
+			r#"{ name: "screen", node: "screenposition" },
+			{ name: "tiled", node: "multiply", in1: "screen", in2: 3.0 },
+			{ name: "image", node: "image", texture: "probe", texcoord: "tiled" },
+			{ name: "base", node: "swizzle", in: "image", channels: "xyz" },
+			{ name: "rough", node: "extract", in: "image", index: 3 },"#,
+			([1.2, 1.8, 0.003], 0.006),
+		),
+		// MaterialX's view direction points from the viewer toward the surface, against the stage's view vector.
+		(
+			r#"{ name: "base", node: "viewdirection" },
+			{ name: "half", node: "parameter", parameter: "half", type: "float" },
+			{ name: "uv", node: "texcoord" },
+			{ name: "uv_sum", node: "dotproduct", in1: "uv", in2: [1.0, 1.0] },
+			{ name: "rough", node: "add", in1: "half", in2: "uv_sum" },"#,
+			([0.0, 0.0, -1.0], 1.5),
+		),
+	];
+
 	let close = |left: f32, right: f32| (left - right).abs() < 1.0e-4;
-
-	assert!(
-		actual.0.iter().zip(expected.0).all(|(left, right)| close(*left, right)) && close(actual.1, expected.1),
-		"evaluated {actual:?}, expected {expected:?}"
-	);
-}
-
-#[test]
-fn arithmetic_applies_a_float_to_every_component() {
-	let values = evaluate(&surface(
-		r#"{ name: "base", node: "multiply", in1: [0.5, 1.0, 2.0], in2: 2.0 },
-		{ name: "rough", node: "subtract", in1: 1.0, in2: 0.25 },"#,
-	));
-
-	assert_close(values, ([1.0, 2.0, 4.0], 0.75));
-}
-
-#[test]
-fn modulo_keeps_the_sign_of_the_divisor() {
-	let values = evaluate(&surface(
-		r#"{ name: "base", node: "modulo", in1: [5.5, -0.5, 2.0], in2: 2.0 },
-		{ name: "rough", node: "modulo", in1: -1.5, in2: 1.0 },"#,
-	));
-
-	assert_close(values, ([1.5, 1.5, 0.0], 0.5));
-}
-
-#[test]
-fn images_sample_their_texture_once_and_keep_their_channels() {
-	let values = evaluate(&surface(
-		r#"{ name: "base", node: "image", texture: "albedo", type: "color3" },
-		{ name: "rgba", node: "image", texture: "albedo" },
-		{ name: "rough", node: "extract", in: "rgba", index: 3 },"#,
-	));
-
-	assert_close(values, ([ALBEDO[0], ALBEDO[1], ALBEDO[2]], ALBEDO[3]));
-}
-
-#[test]
-fn channel_nodes_pick_join_and_replace_components() {
-	let values = evaluate(&surface(
-		r#"{ name: "base", node: "swizzle", in: [1.0, 2.0, 3.0], channels: "z1x" },
-		{ name: "joined", node: "combine", in1: [0.1, 0.2], in2: 0.3 },
-		{ name: "rough", node: "extract", in: "joined", index: 2 },"#,
-	));
-
-	assert_close(values, ([3.0, 1.0, 1.0], 0.3));
-}
-
-#[test]
-fn conversions_fill_and_drop_components() {
-	let values = evaluate(&surface(
-		r#"{ name: "base", node: "convert", in: 0.5, type: "vector3" },
-		{ name: "opened", node: "convert", in: [0.1, 0.2], type: "vector4" },
-		{ name: "rough", node: "extract", in: "opened", index: 3 },"#,
-	));
-
-	assert_close(values, ([0.5, 0.5, 0.5], 1.0));
-}
-
-#[test]
-fn comparisons_and_switches_pick_one_value() {
-	let values = evaluate(&surface(
-		r#"{ name: "base", node: "switch", which: 1.0, in1: [1.0, 0.0, 0.0], in2: [0.0, 1.0, 0.0], in3: [0.0, 0.0, 1.0] },
-		{ name: "rough", node: "ifgreater", value1: 0.6, value2: 0.5, in1: 0.9, in2: 0.1 },"#,
-	));
-
-	assert_close(values, ([0.0, 1.0, 0.0], 0.9));
-
-	let values = evaluate(&surface(
-		r#"{ name: "base", node: "ifequal", value1: 0.5, value2: 0.5, in1: [1.0, 1.0, 1.0], in2: [0.0, 0.0, 0.0] },
-		{ name: "rough", node: "ifgreatereq", value1: 0.4, value2: 0.5, in1: 0.9, in2: 0.1 },"#,
-	));
-
-	assert_close(values, ([1.0, 1.0, 1.0], 0.1));
-}
-
-#[test]
-fn blends_and_ranges_follow_materialx() {
-	let values = evaluate(&surface(
-		r#"{ name: "base", node: "mix", bg: [0.0, 0.0, 0.0], fg: [1.0, 1.0, 1.0], mix: 0.25 },
-		{ name: "rough", node: "remap", in: 0.5, outlow: 0.2, outhigh: 0.4 },"#,
-	));
-
-	assert_close(values, ([0.25, 0.25, 0.25], 0.3));
-
-	let values = evaluate(&surface(
-		r#"{ name: "base", node: "clamp", in: [-1.0, 0.5, 2.0] },
-		{ name: "rough", node: "smoothstep", in: 0.5 },"#,
-	));
-
-	assert_close(values, ([0.0, 0.5, 1.0], 0.5));
-}
-
-#[test]
-fn scalar_functions_apply_to_every_component() {
-	let values = evaluate(&surface(
-		r#"{ name: "floor", node: "floor", in: 1.5 },
-		{ name: "ceil", node: "ceil", in: 1.2 },
-		{ name: "sign", node: "sign", in: -3.0 },
-		{ name: "base", node: "combine", in1: "floor", in2: "ceil", in3: "sign" },
-		{ name: "rough", node: "acos", in: 0.0 },"#,
-	));
-
-	assert_close(values, ([1.0, 2.0, -1.0], std::f32::consts::FRAC_PI_2));
-}
-
-#[test]
-fn vector_functions_measure_and_scale() {
-	let values = evaluate(&surface(
-		r#"{ name: "base", node: "normalize", in: [3.0, 0.0, 4.0] },
-		{ name: "rough", node: "magnitude", in: [3.0, 4.0] },"#,
-	));
-
-	assert_close(values, ([0.6, 0.0, 0.8], 5.0));
-
-	let values = evaluate(&surface(
-		r#"{ name: "base", node: "crossproduct", in1: [1.0, 0.0, 0.0], in2: [0.0, 1.0, 0.0] },
-		{ name: "rough", node: "dotproduct", in1: [1.0, 2.0, 3.0], in2: [1.0, 1.0, 1.0] },"#,
-	));
-
-	assert_close(values, ([0.0, 0.0, 1.0], 6.0));
-}
-
-#[test]
-fn colour_adjustments_keep_alpha_apart() {
-	let values = evaluate(&surface(
-		r#"{ name: "premultiplied", node: "premult", in: [0.5, 1.0, 1.0, 0.5] },
-		{ name: "base", node: "swizzle", in: "premultiplied", channels: "rgb" },
-		{ name: "grey", node: "luminance", in: [1.0, 1.0, 1.0] },
-		{ name: "rough", node: "extract", in: "grey", index: 0 },"#,
-	));
-
-	assert_close(values, ([0.25, 0.5, 0.5], bemx::DEFAULT_LUMINANCE_WEIGHTS.iter().sum()));
-}
-
-/// A normal map rebuilds its height from the first two channels and turns the result out of the tangent frame.
-#[test]
-fn normal_maps_decode_into_world_space() {
-	let values = evaluate(&surface(
-		r#"{ name: "base", node: "normalmap", in: [0.75, 0.5, 0.0] },
-		{ name: "rough", node: "magnitude", in: "base" },"#,
-	));
-
-	// The tangent-plane components decode to (0.5, 0); the height is rebuilt as sqrt(1 - 0.25).
-	assert_close(values, ([0.5, 0.0, 0.75f32.sqrt()], 1.0));
-}
-
-#[test]
-fn normal_maps_turn_out_of_the_frame_they_are_given() {
-	let values = evaluate(&surface(
-		r#"{ name: "base", node: "normalmap", in: [0.5, 1.0, 1.0], tangent: [1.0, 0.0, 0.0], bitangent: [0.0, 0.0, -1.0], normal: [0.0, 1.0, 0.0] },
-		{ name: "rough", node: "extract", in: "base", index: 2 },"#,
-	));
-
-	// The texel points straight along the bitangent, which this frame lays along negative z.
-	assert_close(values, ([0.0, 0.0, -1.0], -1.0));
-}
-
-#[test]
-fn images_sample_at_computed_coordinates_with_how_they_change_across_the_pixel() {
-	let values = evaluate(&surface(
-		r#"{ name: "position", node: "position" },
-		{ name: "ground", node: "swizzle", in: "position", channels: "xz" },
-		{ name: "tiled", node: "multiply", in1: "ground", in2: 2.0 },
-		{ name: "image", node: "image", texture: "probe", texcoord: "tiled" },
-		{ name: "base", node: "swizzle", in: "image", channels: "xyz" },
-		{ name: "rough", node: "extract", in: "image", index: 3 },"#,
-	));
-
-	// The position (1, 2, 3) maps to (2, 6). Along x the position moves by (0.1, 0, 0.2), so x changes by 0.2; along y it
-	// moves by (0, 0.3, 0.4), so y changes by 0.8.
-	assert_close(values, ([2.0, 6.0, 0.2], 0.8));
-}
-
-#[test]
-fn texels_and_parameters_hold_still_across_the_pixel() {
-	let flowed = evaluate(&surface(
-		r#"{ name: "flow", node: "image", texture: "albedo", type: "vector2" },
-		{ name: "uv", node: "texcoord" },
-		{ name: "half", node: "parameter", parameter: "half", type: "float" },
-		{ name: "scaled", node: "multiply", in1: "uv", in2: 4.0 },
-		{ name: "offset", node: "add", in1: "scaled", in2: "half" },
-		{ name: "flowed", node: "add", in1: "offset", in2: "flow" },
-		{ name: "image", node: "image", texture: "probe", texcoord: "flowed" },
-		{ name: "base", node: "swizzle", in: "image", channels: "xyz" },
-		{ name: "rough", node: "extract", in: "image", index: 3 },"#,
-	));
-
-	// (0.25, 0.75) × 4 + 0.5 + the texel's (0.2, 0.4). The texel and the parameter hold still, so only the texture
-	// coordinates' change of (0.01, 0.02) counts, four times over.
-	assert_close(flowed, ([1.7, 3.9, 0.04], 0.08));
-
-	let still = evaluate(&surface(
-		r#"{ name: "half", node: "parameter", parameter: "half", type: "float" },
-		{ name: "at", node: "combine", in1: "half", in2: 0.25 },
-		{ name: "image", node: "image", texture: "probe", texcoord: "at" },
-		{ name: "base", node: "swizzle", in: "image", channels: "xyz" },
-		{ name: "rough", node: "extract", in: "image", index: 3 },"#,
-	));
-
-	assert_close(still, ([0.5, 0.25, 0.0], 0.0));
-}
-
-#[test]
-fn time_comes_from_the_stage_and_holds_still_across_the_pixel() {
-	let values = evaluate(&surface(
-		r#"{ name: "time", node: "time" },
-		{ name: "uv", node: "texcoord" },
-		{ name: "scrolled", node: "add", in1: "uv", in2: "time" },
-		{ name: "image", node: "image", texture: "probe", texcoord: "scrolled" },
-		{ name: "base", node: "swizzle", in: "image", channels: "xyz" },
-		{ name: "rough", node: "extract", in: "image", index: 3 },"#,
-	));
-
-	// (0.25, 0.75) scrolled by 4 seconds, and only the texture coordinates change across the pixel.
-	assert_close(values, ([4.25, 4.75, 0.01], 0.02));
-}
-
-#[test]
-fn the_backdrop_reads_at_the_shaded_point_or_where_the_graph_asks() {
-	let values = evaluate(&surface(
-		r#"{ name: "behind", node: "scenecolor" },
-		{ name: "base", node: "swizzle", in: "behind", channels: "xyz" },
-		{ name: "screen", node: "screenposition" },
-		{ name: "shifted", node: "add", in1: "screen", in2: [0.1, 0.0] },
-		{ name: "floor", node: "sceneposition", texcoord: "shifted" },
-		{ name: "rough", node: "extract", in: "floor", index: 0 },"#,
-	));
-
-	// The colour reads at the shaded point's (0.4, 0.6); the position at (0.5, 0.6), whose x it keeps.
-	assert_close(values, ([0.4, 0.6, 0.5], 0.5));
-}
-
-#[test]
-fn screen_positions_change_by_a_pixel_across_the_pixel() {
-	let values = evaluate(&surface(
-		r#"{ name: "screen", node: "screenposition" },
-		{ name: "tiled", node: "multiply", in1: "screen", in2: 3.0 },
-		{ name: "image", node: "image", texture: "probe", texcoord: "tiled" },
-		{ name: "base", node: "swizzle", in: "image", channels: "xyz" },
-		{ name: "rough", node: "extract", in: "image", index: 3 },"#,
-	));
-
-	// (0.4, 0.6) × 3, changing by three pixels' 0.001 along x and 0.002 along y.
-	assert_close(values, ([1.2, 1.8, 0.003], 0.006));
-}
-
-#[test]
-fn geometry_and_parameters_come_from_the_stage() {
-	let values = evaluate(&surface(
-		r#"{ name: "base", node: "viewdirection" },
-		{ name: "half", node: "parameter", parameter: "half", type: "float" },
-		{ name: "uv", node: "texcoord" },
-		{ name: "uv_sum", node: "dotproduct", in1: "uv", in2: [1.0, 1.0] },
-		{ name: "rough", node: "add", in1: "half", in2: "uv_sum" },"#,
-	));
-
-	// MaterialX's view direction points from the viewer toward the surface, against the stage's view vector.
-	assert_close(values, ([0.0, 0.0, -1.0], 1.5));
+	for (nodes, expected) in cases {
+		let actual = evaluate(&surface(nodes));
+		assert!(
+			actual.0.iter().zip(expected.0).all(|(left, right)| close(*left, right)) && close(actual.1, expected.1),
+			"{nodes}: evaluated {actual:?}, expected {expected:?}"
+		);
+	}
 }
 
 /// Lowers `node` of the surface the graph `source` describes and returns the failure.

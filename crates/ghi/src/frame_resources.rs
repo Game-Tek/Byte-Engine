@@ -160,21 +160,13 @@ impl<T, MH: MasterHandle, PH: PrivateHandle> ResourceCollection<T, MH, PH> {
 	/// If the chain is shorter than the requested offset, this method returns its
 	/// last private handle. A single-entry resource therefore resolves to the same
 	/// representation for every frame.
-	pub(crate) fn nth_handle(&self, handle: MH, frame_offset: usize) -> Option<PH> {
+	pub(crate) fn nth_handle(&self, handle: MH, frame_offset: usize) -> PH {
 		let mut current = PH::new(handle.index());
-
-		let mut i = 0;
-		while i < frame_offset {
-			if let Some(next) = self.entry(current).next {
-				current = next;
-			} else {
-				break;
-			}
-
-			i += 1;
+		for _ in 0..frame_offset {
+			let Some(next) = self.entry(current).next else { break };
+			current = next;
 		}
-
-		Some(current)
+		current
 	}
 
 	/// Returns every private handle of a master's chain, in frame order, walking the chain once.
@@ -243,10 +235,10 @@ mod tests {
 		let (_, second) = resources.add("frame 1");
 		resources.set_next(first, Some(second));
 
-		let nth = |offset| resources.nth_handle(master, offset).map(|handle| *resources.resource(handle));
-		assert_eq!(nth(0), Some("frame 0"));
-		assert_eq!(nth(1), Some("frame 1"));
-		assert_eq!(nth(3), Some("frame 1"));
+		let nth = |offset| *resources.resource(resources.nth_handle(master, offset));
+		assert_eq!(nth(0), "frame 0");
+		assert_eq!(nth(1), "frame 1");
+		assert_eq!(nth(3), "frame 1");
 	}
 
 	#[test]
@@ -255,12 +247,12 @@ mod tests {
 		let first = resources.add_chain(["first 0", "first 1", "first 2"]);
 		let second = resources.add_chain(["second 0", "second 1"]);
 
-		let nth = |master, offset| resources.nth_handle(master, offset).map(|handle| *resources.resource(handle));
-		assert_eq!(nth(first, 0), Some("first 0"));
-		assert_eq!(nth(first, 1), Some("first 1"));
-		assert_eq!(nth(first, 2), Some("first 2"));
-		assert_eq!(nth(second, 0), Some("second 0"));
-		assert_eq!(nth(second, 1), Some("second 1"));
+		let nth = |master, offset| *resources.resource(resources.nth_handle(master, offset));
+		assert_eq!(nth(first, 0), "first 0");
+		assert_eq!(nth(first, 1), "first 1");
+		assert_eq!(nth(first, 2), "first 2");
+		assert_eq!(nth(second, 0), "second 0");
+		assert_eq!(nth(second, 1), "second 1");
 		assert_eq!(resources.chain(first).count(), 3);
 		assert_eq!(resources.chain(second).count(), 2);
 	}

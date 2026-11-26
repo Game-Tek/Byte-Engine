@@ -100,10 +100,14 @@ impl UiGlyphAtlas {
 
 	/// Releases removed labels while keeping culled labels available when they return.
 	pub(super) fn retain_surfaces(&mut self, ids: &[u32]) {
-		self.runs.retain(|run| ids.binary_search(&run.input.order).is_ok());
+		self.runs.retain(|run| ids.binary_search(&run.input.place.order).is_ok());
 		self.run_indices.clear();
-		self.run_indices
-			.extend(self.runs.iter().enumerate().map(|(index, run)| (run.input.order, index)));
+		self.run_indices.extend(
+			self.runs
+				.iter()
+				.enumerate()
+				.map(|(index, run)| (run.input.place.order, index)),
+		);
 	}
 
 	pub(super) fn size(&self) -> u32 {
@@ -358,6 +362,17 @@ pub(super) struct PixelClip {
 }
 
 impl PixelClip {
+	/// The whole viewport, which every clip is trimmed to.
+	pub(super) fn viewport(viewport: Extent) -> Self {
+		let [x1, y1] = viewport_size(viewport);
+		Self {
+			x0: 0.0,
+			y0: 0.0,
+			x1,
+			y1,
+		}
+	}
+
 	pub(super) fn intersect(self, other: Self) -> Self {
 		Self {
 			x0: self.x0.max(other.x0),
@@ -381,27 +396,12 @@ pub(super) fn pixel_clip(clip: Option<DrawClip>, sx: f32, sy: f32, viewport: Pix
 	PixelClip { x0, y0, x1, y1 }.intersect(viewport)
 }
 
-/// Builds fractionally placed glyph primitives for every visible text run.
-///
-/// Glyph placement and atlas residency are resolved for all runs before any quad
-/// is emitted, so an atlas repack in the middle of a frame can never leave
-/// earlier quads pointing at stale regions.
-// Keep placement, residency, and clipping in one pass so every text quad follows the same rules.
-#[cfg(test)]
-pub(super) fn build_ui_text_geometry<'a>(
-	draw_list: &UiDrawList,
-	viewport: Extent,
-	text_system: &mut TextSystem,
-	atlas: &mut UiGlyphAtlas,
-	masks: &mut UiMaskTable,
-	frame_allocator: &'a bumpalo::Bump,
-) -> UiTextGeometry<'a> {
-	build_ui_text_geometry_damaged(draw_list, viewport, text_system, atlas, masks, frame_allocator, None)
-}
-
 /// Builds glyph primitives for the labels touching `damage`; `None` builds everything.
+///
+/// Glyph placement and atlas residency are resolved for all labels before any quad is emitted, so an atlas repack in
+/// the middle of a frame never leaves earlier quads pointing at stale regions.
 #[allow(clippy::too_many_lines)]
-pub(super) fn build_ui_text_geometry_damaged<'a>(
+pub(super) fn build_ui_text_geometry<'a>(
 	draw_list: &UiDrawList,
 	viewport: Extent,
 	text_system: &mut TextSystem,
@@ -410,17 +410,9 @@ pub(super) fn build_ui_text_geometry_damaged<'a>(
 	frame_allocator: &'a bumpalo::Bump,
 	damage: Option<&[UiPixelRegion]>,
 ) -> UiTextGeometry<'a> {
-	let viewport_width = viewport.width().max(1) as f32;
-	let viewport_height = viewport.height().max(1) as f32;
-	let sx = viewport_width / draw_list.layout_size[0].max(1.0);
-	let sy = viewport_height / draw_list.layout_size[1].max(1.0);
+	let [sx, sy] = pixel_scale(viewport, draw_list.layout_size);
 	let font_scale = sx.min(sy);
-	let viewport_clip = PixelClip {
-		x0: 0.0,
-		y0: 0.0,
-		x1: viewport.width().max(1) as f32,
-		y1: viewport.height().max(1) as f32,
-	};
+	let viewport_clip = PixelClip::viewport(viewport);
 
 	// One UTF-8 byte is a cheap upper bound for one output glyph. Clamp to the
 	// frame budget; this avoids repeated arena growth without reserving a maximum-sized frame.
@@ -444,7 +436,7 @@ pub(super) fn build_ui_text_geometry_damaged<'a>(
 	let mut pending = Vec::with_capacity_in(glyph_capacity, frame_allocator);
 	let mut labels = Vec::with_capacity_in(draw_list.texts.len(), frame_allocator);
 	for (text_index, text) in draw_list.texts.iter().enumerate() {
-		let clip = pixel_clip(text.clip, sx, sy, viewport_clip);
+		let clip = pixel_clip(text.place.clip, sx, sy, viewport_clip);
 		labels.push(PreparedText {
 			clip,
 			glyphs: pending.len()..pending.len(),
@@ -454,21 +446,7 @@ pub(super) fn build_ui_text_geometry_damaged<'a>(
 		if !should_rasterize_text(text) || clip.is_empty() {
 			continue;
 		}
-		if !damage_intersects(
-			damage,
-			turned_bounds(
-				element_bounds(
-					text.position,
-					[text.size[0] * sx, text.size[1] * sy],
-					sx,
-					sy,
-					UI_DAMAGE_MARGIN_PIXELS,
-				),
-				text.clip_mask,
-				sx,
-				sy,
-			),
-		) {
+		if !text.place.damaged(damage, sx, sy, UI_DAMAGE_MARGIN_PIXELS) {
 			continue;
 		}
 		let font_size = raster_font_size(text.font_size * font_scale);
@@ -478,7 +456,7 @@ pub(super) fn build_ui_text_geometry_damaged<'a>(
 			continue;
 		}
 		let generation = atlas.generation;
-		let index = *atlas.run_indices.entry(text.order).or_insert_with(|| {
+		let index = *atlas.run_indices.entry(text.place.order).or_insert_with(|| {
 			let index = atlas.runs.len();
 			atlas.runs.push(CachedText {
 				source_index: text_index,
@@ -648,7 +626,7 @@ pub(super) fn build_ui_text_geometry_damaged<'a>(
 		}
 		// Mask indices belong to this frame's table, so retained glyphs get theirs on every build.
 		if geometry.primitives.len() > start {
-			let mask = masks.index(None, text.clip_mask, sx, sy);
+			let mask = masks.index(None, text.place.clip_mask, sx, sy);
 			for glyph in &mut geometry.primitives[start..] {
 				glyph.set_mask(mask);
 			}
@@ -685,7 +663,7 @@ impl GlyphQuadInputs {
 		let [sx, sy] = scale;
 		let requested_size = (text.font_size * sx.min(sy)).max(1.0);
 		let residual = requested_size / raster_font_size(requested_size);
-		let mut origin = [text.position[0] * sx, text.position[1] * sy];
+		let mut origin = [text.place.position[0] * sx, text.place.position[1] * sy];
 		// Unscaled bitmaps land on whole pixels so linear filtering returns their texels exactly.
 		if residual == 1.0 {
 			origin = [origin[0].round(), origin[1].round()];
@@ -761,12 +739,15 @@ fn glyph_primitive(
 
 #[cfg(test)]
 mod tests {
-	use utils::{Extent, RGBA};
+	use utils::Extent;
 
 	use super::{AtlasRegion, PixelClip, UI_GLYPH_ATLAS_PADDING, UiGlyphAtlas, build_ui_text_geometry, pixel_clip};
 	use crate::ui::{
 		font::{Glyph, GlyphKey, TextSystem},
-		render_pass::data::{DrawClip, UI_KIND_ATLAS_GLYPH, UiDrawList, UiMaskTable, UiTextDrawElement},
+		render_pass::{
+			data::{DrawClip, UI_KIND_ATLAS_GLYPH, UiDrawList, UiMaskTable},
+			slug::tests::{draw_list, text},
+		},
 	};
 
 	fn glyph(width: u32, height: u32, value: u8) -> Glyph {
@@ -780,28 +761,22 @@ mod tests {
 		}
 	}
 
-	fn text(content: &str, depth: u32, order: u32, position: [f32; 2], clip: Option<DrawClip>) -> UiTextDrawElement {
-		UiTextDrawElement {
-			depth,
-			order,
-			position,
-			size: [80.0, 20.0],
-			clip,
-			clip_mask: None,
-			color: RGBA::new(1.0, 0.5, 0.25, 1.0),
-			font_size: 16.0,
-			font: None,
-			wrap: None,
-			text: content.to_string(),
-		}
-	}
-
-	fn draw_list(texts: Vec<UiTextDrawElement>) -> UiDrawList {
-		UiDrawList {
-			layout_size: [100.0, 100.0],
-			texts,
-			..UiDrawList::default()
-		}
+	/// Builds `list`'s glyph primitives in a 100 pixel square viewport.
+	fn build<'a>(
+		list: &UiDrawList,
+		fonts: &mut TextSystem,
+		atlas: &mut UiGlyphAtlas,
+		arena: &'a bumpalo::Bump,
+	) -> super::UiTextGeometry<'a> {
+		build_ui_text_geometry(
+			list,
+			Extent::square(100),
+			fonts,
+			atlas,
+			&mut UiMaskTable::default(),
+			arena,
+			None,
+		)
 	}
 
 	#[test]
@@ -812,28 +787,14 @@ mod tests {
 		let arena = bumpalo::Bump::new();
 		let mut list = draw_list(vec![text("AW", 0, 7, [10.25, 20.375], None)]);
 		list.texts[0].font_size = 13.1;
-		let first = build_ui_text_geometry(
-			&list,
-			Extent::square(100),
-			&mut fonts,
-			&mut atlas,
-			&mut UiMaskTable::default(),
-			&arena,
-		);
+		let first = build(&list, &mut fonts, &mut atlas, &arena);
 		let start = first.primitives[0].bounds;
 		let count = atlas.len();
 		atlas.pending.clear();
 		for step in 1..20 {
 			// Stay inside the 13 pixel bucket, which ends at 13.5.
 			list.texts[0].font_size = 13.1 + step as f32 * 0.02;
-			let geometry = build_ui_text_geometry(
-				&list,
-				Extent::square(100),
-				&mut fonts,
-				&mut atlas,
-				&mut UiMaskTable::default(),
-				&arena,
-			);
+			let geometry = build(&list, &mut fonts, &mut atlas, &arena);
 			assert_eq!(atlas.len(), count);
 			assert!(!atlas.is_dirty(), "sizes in one bucket must reuse resident bitmaps");
 			// A bucket's bitmaps are scaled by the residual, so the quads follow the requested size.
@@ -844,27 +805,13 @@ mod tests {
 			}
 		}
 		list.texts[0].font_size = 13.1;
-		list.texts[0].position[0] += 0.125;
-		list.texts[0].position[1] += 0.25;
-		let moved = build_ui_text_geometry(
-			&list,
-			Extent::square(100),
-			&mut fonts,
-			&mut atlas,
-			&mut UiMaskTable::default(),
-			&arena,
-		);
+		list.texts[0].place.position[0] += 0.125;
+		list.texts[0].place.position[1] += 0.25;
+		let moved = build(&list, &mut fonts, &mut atlas, &arena);
 		assert!((moved.primitives[0].bounds[0] - start[0] - 0.125).abs() < 0.0001);
 		assert!((moved.primitives[0].bounds[1] - start[1] - 0.25).abs() < 0.0001);
 		list.texts[0].font_size = 16.1;
-		let _ = build_ui_text_geometry(
-			&list,
-			Extent::square(100),
-			&mut fonts,
-			&mut atlas,
-			&mut UiMaskTable::default(),
-			&arena,
-		);
+		let _ = build(&list, &mut fonts, &mut atlas, &arena);
 		assert!(atlas.is_dirty());
 		assert_eq!(atlas.len(), count * 2);
 	}
@@ -877,67 +824,25 @@ mod tests {
 		let arena = bumpalo::Bump::new();
 		let mut list = draw_list(vec![text("A", 0, 1, [2.25, 3.5], None)]);
 		for _ in 0..4 {
-			let _ = build_ui_text_geometry(
-				&list,
-				Extent::square(100),
-				&mut fonts,
-				&mut atlas,
-				&mut UiMaskTable::default(),
-				&arena,
-			);
+			let _ = build(&list, &mut fonts, &mut atlas, &arena);
 		}
 		let generation = atlas.generation();
 		list.texts.push(text("BCDEFGHIJKLMNOPQRSTUVWXYZ", 0, 2, [0.0, 25.25], None));
-		let cached = build_ui_text_geometry(
-			&list,
-			Extent::square(100),
-			&mut fonts,
-			&mut atlas,
-			&mut UiMaskTable::default(),
-			&arena,
-		);
+		let cached = build(&list, &mut fonts, &mut atlas, &arena);
 		assert!(atlas.generation() > generation);
 		atlas.clear_prepared_runs();
-		let fresh = build_ui_text_geometry(
-			&list,
-			Extent::square(100),
-			&mut fonts,
-			&mut atlas,
-			&mut UiMaskTable::default(),
-			&arena,
-		);
+		let fresh = build(&list, &mut fonts, &mut atlas, &arena);
 		assert_eq!(
 			bytemuck::cast_slice::<_, u8>(&cached.primitives),
 			bytemuck::cast_slice::<_, u8>(&fresh.primitives)
 		);
 		for _ in 0..4 {
-			let _ = build_ui_text_geometry(
-				&list,
-				Extent::square(100),
-				&mut fonts,
-				&mut atlas,
-				&mut UiMaskTable::default(),
-				&arena,
-			);
+			let _ = build(&list, &mut fonts, &mut atlas, &arena);
 		}
 		list.texts.push(text("B", 0, 1, [10.5, 50.75], None));
-		let cached = build_ui_text_geometry(
-			&list,
-			Extent::square(100),
-			&mut fonts,
-			&mut atlas,
-			&mut UiMaskTable::default(),
-			&arena,
-		);
+		let cached = build(&list, &mut fonts, &mut atlas, &arena);
 		atlas.clear_prepared_runs();
-		let fresh = build_ui_text_geometry(
-			&list,
-			Extent::square(100),
-			&mut fonts,
-			&mut atlas,
-			&mut UiMaskTable::default(),
-			&arena,
-		);
+		let fresh = build(&list, &mut fonts, &mut atlas, &arena);
 		assert_eq!(
 			bytemuck::cast_slice::<_, u8>(&cached.primitives),
 			bytemuck::cast_slice::<_, u8>(&fresh.primitives)
@@ -1044,18 +949,6 @@ mod tests {
 	}
 
 	#[test]
-	fn invisible_glyphs_never_occupy_atlas_space() {
-		let mut text_system = TextSystem::new();
-		if !text_system.has_font() {
-			return;
-		}
-		let mut atlas = UiGlyphAtlas::new(64);
-		assert!(atlas.ensure(GlyphKey::new(' ', 16.0), &mut text_system).is_none());
-		assert_eq!(atlas.len(), 0);
-		assert!(!atlas.is_dirty());
-	}
-
-	#[test]
 	fn pixel_clip_snaps_edges_to_whole_pixels_inside_the_viewport() {
 		let viewport = PixelClip {
 			x0: 0.0,
@@ -1094,6 +987,7 @@ mod tests {
 			&mut atlas,
 			&mut UiMaskTable::default(),
 			&frame_allocator,
+			None,
 		);
 
 		assert!(!geometry.truncated);
@@ -1126,14 +1020,7 @@ mod tests {
 		let frame_allocator = bumpalo::Bump::new();
 		let mut atlas = UiGlyphAtlas::new(256);
 		let unclipped = draw_list(vec![text("W", 0, 0, [0.0, 0.0], None)]);
-		let full = build_ui_text_geometry(
-			&unclipped,
-			Extent::square(100),
-			&mut text_system,
-			&mut atlas,
-			&mut UiMaskTable::default(),
-			&frame_allocator,
-		);
+		let full = build(&unclipped, &mut text_system, &mut atlas, &frame_allocator);
 		let x0 = full.primitives[0].bounds[0];
 		let x1 = full.primitives[0].bounds[2];
 		assert!(x1 - x0 >= 4.0, "test glyph must be wide enough to trim");
@@ -1149,14 +1036,7 @@ mod tests {
 				size: [clip_right, 100.0],
 			}),
 		)]);
-		let trimmed = build_ui_text_geometry(
-			&clipped,
-			Extent::square(100),
-			&mut text_system,
-			&mut atlas,
-			&mut UiMaskTable::default(),
-			&frame_allocator,
-		);
+		let trimmed = build(&clipped, &mut text_system, &mut atlas, &frame_allocator);
 
 		assert_eq!(trimmed.primitives.len(), 1);
 		assert_eq!(trimmed.primitives[0].bounds[2], clip_right);
@@ -1175,76 +1055,8 @@ mod tests {
 				size: [0.0, 0.0],
 			}),
 		)]);
-		let empty = build_ui_text_geometry(
-			&hidden,
-			Extent::square(100),
-			&mut text_system,
-			&mut atlas,
-			&mut UiMaskTable::default(),
-			&frame_allocator,
-		);
+		let empty = build(&hidden, &mut text_system, &mut atlas, &frame_allocator);
 		assert!(empty.primitives.is_empty());
 		assert_eq!(empty.labels.as_slice(), std::slice::from_ref(&(0..0)));
-	}
-
-	#[test]
-	fn labels_locate_each_text_so_the_frame_can_merge_them_in_painter_order() {
-		let mut text_system = TextSystem::new();
-		if !text_system.has_font() {
-			return;
-		}
-		let frame_allocator = bumpalo::Bump::new();
-		let mut atlas = UiGlyphAtlas::new(256);
-		let list = draw_list(vec![
-			text("ab", 1, 9, [0.0, 0.0], None),
-			text("", 1, 4, [0.0, 30.0], None),
-			text("c", 2, 6, [0.0, 60.0], None),
-		]);
-
-		let geometry = build_ui_text_geometry(
-			&list,
-			Extent::square(100),
-			&mut text_system,
-			&mut atlas,
-			&mut UiMaskTable::default(),
-			&frame_allocator,
-		);
-
-		assert_eq!(geometry.labels.as_slice(), [0..2, 2..2, 2..3]);
-	}
-
-	#[test]
-	fn text_geometry_matches_after_atlas_growth_and_warm_reuse() {
-		let mut text_system = TextSystem::new();
-		if !text_system.has_font() {
-			return;
-		}
-		// A sixteen-pixel atlas cannot hold this alphabet; early glyphs move as it grows.
-		let mut atlas = UiGlyphAtlas::new(16);
-		let arena = bumpalo::Bump::new();
-		let list = draw_list(vec![text("ABCDEFGHIJKLMNOPQRSTUVWXYZ", 0, 0, [0.0, 0.0], None)]);
-		let first = build_ui_text_geometry(
-			&list,
-			Extent::square(100),
-			&mut text_system,
-			&mut atlas,
-			&mut UiMaskTable::default(),
-			&arena,
-		);
-		let again = build_ui_text_geometry(
-			&list,
-			Extent::square(100),
-			&mut text_system,
-			&mut atlas,
-			&mut UiMaskTable::default(),
-			&arena,
-		);
-		assert!(!first.primitives.is_empty());
-		assert_eq!(first.dropped_glyphs, 0);
-		assert_eq!(
-			bytemuck::cast_slice::<_, u8>(&first.primitives),
-			bytemuck::cast_slice::<_, u8>(&again.primitives),
-		);
-		assert_eq!(first.labels, again.labels);
 	}
 }

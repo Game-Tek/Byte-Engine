@@ -11,6 +11,6 @@
 pub(crate) mod texture;
 mod upload_staging;
 
-pub use texture::{TextureTransferError, load_texture};
+pub use texture::load_texture;
 pub(crate) use upload_staging::UploadStagingWorker;
 pub use upload_staging::{StagingLease, UploadStagingArena};

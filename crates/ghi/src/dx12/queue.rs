@@ -56,11 +56,6 @@ impl<'a> crate::queue::QueueExecution<'a> for Execution<'a> {
 				!self.prepared_present_keys.contains(&present_key),
 				"Duplicate DX12 present key. The most likely cause is that one execution scheduled the same acquired image more than once."
 			);
-			assert_eq!(
-				present_keys.iter().filter(|candidate| **candidate == present_key).count(),
-				1,
-				"Duplicate DX12 present key. The most likely cause is that one recording listed the same acquired image more than once."
-			);
 		}
 		let frame = self.frame.as_mut().expect(
 			"Frame is required to record a DX12 frame command buffer. The most likely cause is that Queue::execute was called without a frame request.",

@@ -488,6 +488,11 @@ fn a_key_repeat_reaches_only_the_actions_that_ask_for_repeats() {
 	let once = game.button("Keyboard.Down", TickPolicy::OnChange);
 	let stepping = game.button("Keyboard.Down", TickPolicy::OnChangeAndRepeat);
 
+	// A repeat of a key that isn't down, such as of a press the seat lost when it was reset, starts nothing.
+	fixture.repeat("Keyboard.Down");
+	assert!(fixture.pull(&mut game, pass).is_empty());
+	assert_eq!(fixture.value("Keyboard.Down"), Value::Bool(false));
+
 	fixture.record("Keyboard.Down", true);
 	assert_eq!(fixture.pull(&mut game, pass).len(), 2, "the press reaches both");
 	game.published();
@@ -524,18 +529,6 @@ fn a_key_repeat_stays_with_the_sink_that_captured_the_press() {
 	fixture.repeat("Keyboard.Down");
 	assert_eq!(fixture.pull(&mut ui, handles(list)).len(), 1);
 	assert!(fixture.pull(&mut game, pass).is_empty(), "the press's sink keeps its repeats");
-}
-
-#[test]
-fn a_repeat_of_a_key_that_isnt_down_starts_nothing() {
-	let mut fixture = Fixture::new();
-	let mut game = fixture.sink();
-	game.button("Keyboard.Down", TickPolicy::OnChangeAndRepeat);
-
-	// A repeat of a press the seat lost when it was reset, such as on focus loss.
-	fixture.repeat("Keyboard.Down");
-	assert!(fixture.pull(&mut game, pass).is_empty());
-	assert_eq!(fixture.value("Keyboard.Down"), Value::Bool(false));
 }
 
 #[test]
@@ -1187,31 +1180,23 @@ fn tap(fixture: &mut Fixture, sink: &mut Sink, trigger: &'static str, action: Ha
 }
 
 #[test]
-fn applied_bindings_replace_an_actions_defaults() {
-	let mut fixture = Fixture::new();
-	let mut game = fixture.sink();
-	let jump = game.named("Jump", "Keyboard.Space");
-	fixture.pull(&mut game, pass);
+fn applied_bindings_replace_an_actions_defaults_whether_it_was_declared_before_or_after() {
+	for declared_first in [true, false] {
+		let mut fixture = Fixture::new();
+		let mut game = fixture.sink();
+		let document = Bindings::from_json(r#"{ "actions": { "Jump": ["Keyboard.W"] } }"#).unwrap();
+		if !declared_first {
+			game.sink.apply(&fixture.collector, &document).unwrap();
+		}
+		let jump = game.named("Jump", "Keyboard.Space");
+		fixture.pull(&mut game, pass);
+		if declared_first {
+			game.sink.apply(&fixture.collector, &document).unwrap();
+		}
 
-	let document = Bindings::from_json(r#"{ "actions": { "Jump": ["Keyboard.W"] } }"#).unwrap();
-	game.sink.apply(&fixture.collector, &document).unwrap();
-
-	assert!(tap(&mut fixture, &mut game, "Keyboard.Space", jump).is_empty());
-	assert_eq!(tap(&mut fixture, &mut game, "Keyboard.W", jump).len(), 2);
-}
-
-#[test]
-fn bindings_applied_before_an_action_is_declared_replace_its_defaults() {
-	let mut fixture = Fixture::new();
-	let mut game = fixture.sink();
-	let document = Bindings::from_json(r#"{ "actions": { "Jump": ["Keyboard.W"] } }"#).unwrap();
-	game.sink.apply(&fixture.collector, &document).unwrap();
-
-	let jump = game.named("Jump", "Keyboard.Space");
-	fixture.pull(&mut game, pass);
-
-	assert!(tap(&mut fixture, &mut game, "Keyboard.Space", jump).is_empty());
-	assert_eq!(tap(&mut fixture, &mut game, "Keyboard.W", jump).len(), 2);
+		assert!(tap(&mut fixture, &mut game, "Keyboard.Space", jump).is_empty());
+		assert_eq!(tap(&mut fixture, &mut game, "Keyboard.W", jump).len(), 2);
+	}
 }
 
 #[test]
@@ -1474,43 +1459,6 @@ fn a_dead_zone_zeroes_small_values_and_rescales_the_rest_to_full() {
 	);
 }
 
-#[test]
-fn a_device_class_dead_zone_applies_where_a_binding_sets_none() {
-	let mut fixture = Fixture::new();
-	let gamepad_class = register_gamepad_device_class(&mut fixture.collector);
-	let gamepad = fixture.collector.create_device(&gamepad_class);
-	fixture
-		.collector
-		.set_dead_zone(gamepad_class, Some(DeadZone::new(0.3, 1.0).unwrap()));
-	let mut sink = fixture.sink();
-	sink.actions.create(Action::new(
-		"Move",
-		&[ActionBindingDescription::new("Gamepad.LeftStick")],
-		Types::Vector2,
-	));
-	sink.actions.create(Action::new(
-		"Look",
-		&[ActionBindingDescription::new("Gamepad.RightStick")
-			.mapped(ValueMapping::from(Axis2::zero()).dead_zone(DeadZone::OFF))],
-		Types::Vector2,
-	));
-	for stick in ["Gamepad.LeftStick", "Gamepad.RightStick"] {
-		fixture.collector.record(
-			SeatHandle::stub(),
-			gamepad,
-			TriggerReference::Name(stick),
-			Axis2::new(0.2, 0.0).into(),
-			None,
-		);
-	}
-
-	assert_eq!(
-		values(&mut fixture, &mut sink),
-		[Axis2::zero().into(), Axis2::new(0.2, 0.0).into()],
-		"the class's zone stops the left stick; the right stick's own zone, which is off, lets it through"
-	);
-}
-
 /// Records `value` on a gamepad trigger and returns what `sink` resolved from it.
 fn gamepad(fixture: &mut Fixture, sink: &mut Sink, device: DeviceHandle, trigger: &'static str, value: Value) -> Vec<Value> {
 	fixture
@@ -1561,42 +1509,35 @@ fn a_response_curve_raises_the_magnitude_after_the_dead_zone_and_inversion_flips
 }
 
 #[test]
-fn a_device_class_curve_applies_where_a_binding_sets_none() {
+fn a_device_class_dead_zone_and_curve_apply_where_a_binding_sets_none() {
 	let mut fixture = Fixture::new();
 	let gamepad_class = register_gamepad_device_class(&mut fixture.collector);
 	let device = fixture.collector.create_device(&gamepad_class);
+	fixture
+		.collector
+		.set_dead_zone(gamepad_class, Some(DeadZone::new(0.3, 1.0).unwrap()));
 	fixture.collector.set_response_curve(gamepad_class, Some(2.0));
 	let mut sink = fixture.sink();
-	sink.actions.create(Action::new(
-		"Move",
-		&[ActionBindingDescription::new("Gamepad.LeftStick")],
-		Types::Vector2,
-	));
-	sink.actions.create(Action::new(
-		"Look",
-		&[ActionBindingDescription::new("Gamepad.RightStick").mapped(ValueMapping::from(Axis2::zero()).response_curve(1.0))],
-		Types::Vector2,
-	));
+	let own = ValueMapping::from(Axis2::zero()).dead_zone(DeadZone::OFF).response_curve(1.0);
+	for (name, binding) in [
+		("Move", ActionBindingDescription::new("Gamepad.LeftStick")),
+		("Look", ActionBindingDescription::new("Gamepad.RightStick").mapped(own)),
+	] {
+		sink.actions.create(Action::new(name, &[binding], Types::Vector2));
+	}
 
-	assert_eq!(
-		gamepad(
-			&mut fixture,
-			&mut sink,
-			device,
-			"Gamepad.LeftStick",
-			Axis2::new(0.5, 0.0).into()
-		),
-		[Axis2::new(0.25, 0.0).into()]
-	);
-	assert_eq!(
-		gamepad(
-			&mut fixture,
-			&mut sink,
-			device,
-			"Gamepad.RightStick",
-			Axis2::new(0.5, 0.0).into()
-		),
-		[Axis2::new(0.5, 0.0).into()],
-		"the binding's own straight curve wins"
-	);
+	// The class's zone stops the left stick at 0.2, and 0.65 is halfway through it, which its curve squares. The right
+	// stick's own zone and curve, which are off, let both through as they are.
+	for (stick, class_shaped) in [("Gamepad.LeftStick", [0.0, 0.25]), ("Gamepad.RightStick", [0.2, 0.65])] {
+		for (value, expected) in [0.2, 0.65].into_iter().zip(class_shaped) {
+			let resolved = gamepad(&mut fixture, &mut sink, device, stick, Axis2::new(value, 0.0).into());
+			let [Value::Vector2(resolved)] = resolved[..] else {
+				panic!("{stick}: {resolved:?}");
+			};
+			assert!(
+				(resolved.x - expected).abs() < 1e-6 && resolved.y == 0.0,
+				"{stick} at {value}: {resolved:?}"
+			);
+		}
+	}
 }

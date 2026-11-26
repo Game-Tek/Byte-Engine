@@ -68,13 +68,7 @@ impl WriteData {
 	}
 
 	/// Returns whether this write can fill a slot that a layout declares as a resource of `kind`.
-	///
-	/// Backends check retained writes against the layout of the pipeline that binds them.
-	#[cfg_attr(
-		target_os = "macos",
-		allow(dead_code, reason = "Metal checks its resolved descriptors instead.")
-	)]
-	pub(crate) fn matches_kind(self, kind: ResourceKind) -> bool {
+	fn matches_kind(self, kind: ResourceKind) -> bool {
 		match self {
 			Self::Buffer { .. } => matches!(kind, ResourceKind::UniformBuffer | ResourceKind::StorageBuffer),
 			Self::Image { .. } | Self::Swapchain(_) => matches!(
@@ -188,6 +182,40 @@ impl DescriptorWrite {
 		self
 	}
 
+	/// Checks this write against `layout`, the layout of the set it names, and returns the index of the resource it
+	/// writes in [`DescriptorSetLayout::resources`] and the flat element it writes.
+	///
+	/// Every backend calls this once per write in [`crate::context::Context::write`], so set copies trust the result.
+	///
+	/// # Panics
+	///
+	/// Panics when the layout declares no resource at the write's slot, when the array element is past the resource's
+	/// count, or when the write names another kind of resource than the layout declares.
+	pub(crate) fn target(&self, layout: &DescriptorSetLayout) -> (usize, u32) {
+		let slot = self.slot.index();
+		let resource_index = layout.resource_index(self.slot).unwrap_or_else(|| {
+			panic!(
+				"Descriptor set layout `{}` declares no resource at slot {slot}. The most likely cause is that the write names a resource of another descriptor set, or an array element by its flat slot instead of its array element. Write the slot the set's layout declares, and pick array elements with `with_array_element`.",
+				layout.name(),
+			)
+		});
+		let resource = layout.resources()[resource_index];
+		assert!(
+			self.array_element < resource.count(),
+			"Descriptor array element {} is out of range at slot {slot} of layout `{}`. The most likely cause is that a write exceeded the resource count the layout declares. Write elements below {}.",
+			self.array_element,
+			layout.name(),
+			resource.count(),
+		);
+		assert!(
+			self.descriptor.matches_kind(resource.kind()),
+			"Descriptor kind mismatch at slot {slot} of layout `{}`. The most likely cause is that an image, sampler, or buffer was written where the layout declares a {:?}. Write the kind of resource the layout declares.",
+			layout.name(),
+			resource.kind(),
+		);
+		(resource_index, layout.element_base(resource_index) + self.array_element)
+	}
+
 	/// Names, in each frame, the copy of the frame `frame_offset` frames away. Use `-1` for the previous frame.
 	///
 	/// Use it to read history, such as the image the previous frame rendered, from a resource with
@@ -251,7 +279,7 @@ impl HandleLike for DescriptorSetHandle {
 use crate::{
 	BaseBufferHandle, BaseImageHandle, DescriptorSetHandle as PublicDescriptorSetHandle, Layouts, SamplerHandle,
 	SwapchainHandle, TopLevelAccelerationStructureHandle,
-	shader::{ResourceKind, ResourceSlot},
+	shader::{DescriptorSetLayout, ResourceKind, ResourceSlot},
 };
 #[cfg(not(target_os = "macos"))]
 use crate::{DescriptorSet, HandleLike, Next};

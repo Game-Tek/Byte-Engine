@@ -229,20 +229,15 @@ pub(super) struct StagedUpload {
 	pub(super) reply: kanal::Sender<SmallVec<[ghi::implementation::DetachedImage; 2]>>,
 }
 
-/// The `NativeRead` struct keeps one native image upload until its reads finish.
+/// The `NativeRead` struct keeps what one submitted native image upload owns until its ticket is terminal.
 struct NativeRead {
-	submission: NativeSubmission,
-	reply: kanal::Sender<Result<ghi::implementation::DetachedImage, String>>,
-}
-
-/// The `NativeSubmission` struct keeps what one submitted native image read owns until its ticket is terminal.
-struct NativeSubmission {
 	image: ghi::ImageHandle,
 	/// The file the reads come from, closed once they finish so open files don't pile up past the process's limit.
 	file: ghi::io::ResourceIoFileHandle,
 	ticket: ghi::implementation::ResourceIoTicket,
 	/// The image's name, which reports name the texture by.
 	name: String,
+	reply: kanal::Sender<Result<ghi::implementation::DetachedImage, String>>,
 }
 
 /// The `Batcher` struct is the running half of a [`Loader`]: it collects uploads, submits them in batches, and
@@ -332,12 +327,11 @@ impl Batcher {
 	fn accept(&mut self, request: UploadRequest) {
 		match request {
 			UploadRequest::Staged(upload) => self.pending.push(upload),
-			UploadRequest::NativeImage { upload, reply } => match self.submit_native(upload) {
-				Ok(submission) => self.reads.push(NativeRead { submission, reply }),
-				Err(error) => {
+			UploadRequest::NativeImage { upload, reply } => {
+				if let Err(error) = self.submit_native(upload, reply.clone()) {
 					let _ = reply.send(Err(error));
 				}
-			},
+			}
 		}
 	}
 
@@ -404,17 +398,15 @@ impl Batcher {
 	fn finish_reads(&mut self) {
 		let mut index = 0;
 		while index < self.reads.len() {
-			if self.reads[index].submission.ticket.status() == ghi::io::ResourceIoStatus::Pending {
+			if self.reads[index].ticket.status() == ghi::io::ResourceIoStatus::Pending {
 				index += 1;
 				continue;
 			}
 			let NativeRead {
-				submission: NativeSubmission {
-					image,
-					file,
-					ticket,
-					name,
-				},
+				image,
+				file,
+				ticket,
+				name,
 				reply,
 			} = self.reads.swap_remove(index);
 			let image = self.context.export_image(image);
@@ -435,9 +427,13 @@ impl Batcher {
 		}
 	}
 
-	/// Creates the image for a native upload, opens its file, and submits one read per mip on the native I/O queue.
-	/// Close the returned file once the ticket is terminal.
-	fn submit_native(&mut self, upload: NativeImageUpload) -> Result<NativeSubmission, String> {
+	/// Creates the image for a native upload, opens its file, and submits one read per mip on the native I/O queue,
+	/// which [`Self::finish_reads`] answers on `reply` once they finish.
+	fn submit_native(
+		&mut self,
+		upload: NativeImageUpload,
+		reply: kanal::Sender<Result<ghi::implementation::DetachedImage, String>>,
+	) -> Result<(), String> {
 		let name = upload.description.name.as_str();
 		let queue = self.io_queue.as_mut().ok_or_else(|| {
 			format!(
@@ -482,12 +478,16 @@ impl Batcher {
 			.collect::<Result<SmallVec<[ghi::io::ResourceIoRequest; 16]>, ghi::io::ResourceIoError>>();
 		let submission = requests.and_then(|requests| queue.submit(&self.context, Some(name), &requests));
 		match submission {
-			Ok(ticket) => Ok(NativeSubmission {
-				image,
-				file,
-				ticket,
-				name: upload.description.name,
-			}),
+			Ok(ticket) => {
+				self.reads.push(NativeRead {
+					image,
+					file,
+					ticket,
+					name: upload.description.name,
+					reply,
+				});
+				Ok(())
+			}
 			Err(error) => {
 				// Nothing will fill the image or read the file, so free both.
 				queue.close_file(file);

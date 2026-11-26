@@ -1,4 +1,5 @@
-//! Creates, destroys, builds, and compacts a DX12 context's acceleration structures.
+//! Builds and compacts a DX12 context's acceleration structures. The `ContextCreate` impl in `context.rs` creates and
+//! destroys them.
 //!
 //! The structures live in `dx12/acceleration_structures.rs`. A destroyed structure lives on until the frames recorded
 //! before its destruction complete, and every recording that builds or reads one keeps it alive until the recording
@@ -12,8 +13,8 @@ use windows::Win32::Graphics::Direct3D12 as d3d12;
 
 use super::*;
 use crate::dx12::acceleration_structures::{
-	BottomLevel, BuildState, CompactionCopy, Completion, INSTANCE_SIZE, PendingCompaction, STRUCTURE_ALIGNMENT, ScratchArena,
-	SizeQuery, TopLevel, TopLevelCopy, build_inputs, instance_record, triangle_geometry,
+	BuildState, CompactionCopy, Completion, PendingCompaction, STRUCTURE_ALIGNMENT, ScratchArena, SizeQuery, build_inputs,
+	instance_record, triangle_geometry,
 };
 use crate::rt;
 
@@ -117,7 +118,7 @@ impl Device {
 	}
 
 	/// Creates `size` bytes of acceleration structure storage and returns it with its address.
-	fn create_structure_storage(&self, name: Option<&str>, size: u64) -> (ID3D12Resource, u64) {
+	pub(crate) fn create_structure_storage(&self, name: Option<&str>, size: u64) -> (ID3D12Resource, u64) {
 		let resource = self.create_ray_tracing_buffer(
 			name,
 			size.next_multiple_of(STRUCTURE_ALIGNMENT),
@@ -130,7 +131,7 @@ impl Device {
 	}
 
 	/// Returns the storage and scratch sizes the build `inputs` describes needs.
-	fn prebuild_info(
+	pub(crate) fn prebuild_info(
 		&self,
 		inputs: &d3d12::D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS,
 	) -> d3d12::D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO {
@@ -143,8 +144,8 @@ impl Device {
 
 	/// Checks that `size` bytes from `buffer` lie in a buffer that geometry may be built from, at a multiple of
 	/// `alignment`.
-	fn check_geometry_range(&self, buffer: &BufferDescriptor, size: usize, alignment: usize) {
-		let resource = self.buffer(buffer.buffer);
+	pub(crate) fn check_geometry_range(&self, buffer: &BufferDescriptor, size: usize, alignment: usize) {
+		let resource = self.buffers.get(buffer.buffer.index() as usize);
 		rt::check_geometry_range(
 			"DX12",
 			buffer,
@@ -154,112 +155,11 @@ impl Device {
 		);
 	}
 
-	/// Creates a bottom-level structure over `geometries`, sized for their build, after validating each geometry.
-	pub(crate) fn create_bottom_level(
-		&mut self,
-		name: Option<&str>,
-		geometries: &[rt::TriangleGeometry],
-	) -> BottomLevelAccelerationStructureHandle {
-		self.require_ray_tracing("create a bottom-level acceleration structure");
-		rt::check_bottom_level_geometries("DX12", geometries);
-		for geometry in geometries {
-			// Builds resolve the same ranges later, so only creation checks them.
-			self.check_geometry_range(&geometry.positions.buffer_offset, geometry.positions.size, 4);
-			self.check_geometry_range(
-				&geometry.indices,
-				rt::index_bytes(geometry),
-				rt::index_size(geometry.index_format),
-			);
-		}
-		// Sizing ignores addresses, so the descriptions name none.
-		let descriptions = geometries
-			.iter()
-			.map(|geometry| triangle_geometry(geometry, 0, 0))
-			.collect::<SmallVec<[_; 8]>>();
-		let info = self.prebuild_info(&build_inputs(&descriptions, 0, 0));
-		let (resource, address) = self.create_structure_storage(name, info.ResultDataMaxSizeInBytes);
-		let handle = self.acceleration_structures.bottom_levels.insert(BottomLevel {
-			resource,
-			address,
-			size: info.ResultDataMaxSizeInBytes,
-			geometries: geometries.into(),
-			build_scratch_size: info.ScratchDataSizeInBytes,
-			build_state: BuildState::Unbuilt,
-		});
-		BottomLevelAccelerationStructureHandle::from_bits(handle)
-	}
-
-	/// Creates a top-level structure with one copy for each frame in flight, each sized for `max_instance_count`
-	/// instances and with instance records of its own.
-	pub(crate) fn create_top_level(
-		&mut self,
-		name: Option<&str>,
-		max_instance_count: u32,
-	) -> TopLevelAccelerationStructureHandle {
-		self.require_ray_tracing("create a top-level acceleration structure");
-		rt::check_max_instance_count("DX12", max_instance_count);
-		// Sizing ignores the address of the instance records; builds name their own.
-		let info = self.prebuild_info(&build_inputs(&[], 0, max_instance_count));
-		let mut copies = SmallVec::new();
-		for _ in 0..self.frames {
-			let (resource, address) = self.create_structure_storage(name, info.ResultDataMaxSizeInBytes);
-			let instances = self.create_ray_tracing_buffer(
-				name,
-				u64::from(max_instance_count) * INSTANCE_SIZE,
-				D3D12_HEAP_TYPE_UPLOAD,
-				D3D12_RESOURCE_FLAG_NONE,
-			);
-			let mut mapped = std::ptr::null_mut();
-			// SAFETY: Upload buffers map for writing, and the empty read range says the CPU reads nothing.
-			unsafe { instances.Map(0, Some(&D3D12_RANGE { Begin: 0, End: 0 }), Some(&mut mapped)) }.expect(
-				"DX12 instance buffer mapping failed. The most likely cause is that the device was removed. Check the device removed reason.",
-			);
-			copies.push(TopLevelCopy {
-				resource,
-				address,
-				instances,
-				instance_records: mapped.cast(),
-				recorded_frame: None,
-				built_epoch: None,
-			});
-		}
-		let handle = self.acceleration_structures.top_levels.insert(TopLevel {
-			copies,
-			max_instance_count,
-			build_scratch_size: info.ScratchDataSizeInBytes,
-		});
-		TopLevelAccelerationStructureHandle::from_bits(handle)
-	}
-
 	/// Releases `resource` once every frame sequence starts again, when the frames recorded before this call have
 	/// completed.
-	fn retire_after_recorded_frames(&mut self, resource: ID3D12Resource) {
+	pub(crate) fn retire_after_recorded_frames(&mut self, resource: ID3D12Resource) {
 		for sequence_index in 0..self.frames {
 			self.defer_task(sequence_index, DeferredTask::RetireResource(resource.clone()));
-		}
-	}
-
-	/// Destroys the bottom-level structure `handle` names once the frames recorded before this call complete.
-	pub(crate) fn destroy_bottom_level(&mut self, handle: BottomLevelAccelerationStructureHandle) {
-		let bottom_level = self.acceleration_structures.bottom_levels.remove(handle.bits()).unwrap_or_else(|| {
-			panic!(
-				"The bottom-level acceleration structure handle is stale. The most likely cause is that the structure was destroyed twice. Destroy each structure once."
-			)
-		});
-		self.retire_after_recorded_frames(bottom_level.resource);
-	}
-
-	/// Destroys the top-level structure `handle` names, and every copy, once the frames recorded before this call
-	/// complete.
-	pub(crate) fn destroy_top_level(&mut self, handle: TopLevelAccelerationStructureHandle) {
-		let top_level = self.acceleration_structures.top_levels.remove(handle.bits()).unwrap_or_else(|| {
-			panic!(
-				"The top-level acceleration structure handle is stale. The most likely cause is that the structure was destroyed twice. Destroy each structure once."
-			)
-		});
-		for copy in top_level.copies {
-			self.retire_after_recorded_frames(copy.resource);
-			self.retire_after_recorded_frames(copy.instances);
 		}
 	}
 
@@ -354,9 +254,7 @@ impl Device {
 			return;
 		}
 		self.require_ray_tracing("build an acceleration structure");
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		let mut geometries = SmallVec::<[rt::TriangleGeometry; 16]>::new();
 		let mut scratch_sizes = SmallVec::<[u64; 8]>::new();
 		for &handle in handles {
@@ -442,9 +340,7 @@ impl Device {
 		instances: &[rt::Instance],
 	) {
 		self.require_ray_tracing("build an acceleration structure");
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		// The mutable step claims the frame's copy; everything after it only reads the structures.
 		let copy_index = frame_key.sequence_index;
 		let top_level = self.acceleration_structures.top_level_mut(structure);
@@ -533,9 +429,7 @@ impl Device {
 		if self.acceleration_structures.ready_compactions.is_empty() {
 			return;
 		}
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		let copies = std::mem::take(&mut self.acceleration_structures.ready_compactions);
 		for copy in copies {
 			let Some(source) = self.acceleration_structures.bottom_levels.get(copy.handle) else {
@@ -600,9 +494,7 @@ impl Device {
 	///
 	/// Top-level copies keep what their last executed build wrote, so they need nothing else.
 	pub(crate) fn abandon_recorded_builds(&mut self, command_buffer_handle: CommandBufferHandle) {
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
-			return;
-		};
+		let command_buffer = &mut self.command_buffers[command_buffer_handle.index() as usize];
 		let builds = std::mem::take(&mut command_buffer.recorded_builds);
 		let structures = &mut self.acceleration_structures;
 		for bits in builds.bottom_levels {
@@ -669,11 +561,6 @@ impl Device {
 				size,
 			});
 		}
-	}
-
-	/// Returns the bytes the bottom-level structure `handle` occupies.
-	pub(crate) fn bottom_level_size(&self, handle: BottomLevelAccelerationStructureHandle) -> usize {
-		self.acceleration_structures.bottom_level(handle).size as usize
 	}
 
 	/// Writes the view of the copy of `handle` that sequence `sequence_index` builds into resource heap slot `slot`.

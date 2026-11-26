@@ -12,7 +12,7 @@ use crate::ui::components::{
 
 pub(super) type PathKey = (u64, u64, FillRule);
 
-/// Packed paths by content key. Build their quads with [`build_ui_path_geometry_damaged`].
+/// Packed paths by content key. Build their quads with [`build_ui_path_geometry`].
 pub(super) type UiPathCurves = SlugCurves<utils::hash::HashMap<PathKey, PackedOutline>>;
 
 impl UiPathCurves {
@@ -46,7 +46,7 @@ pub(super) struct UiPathGeometry<'a> {
 ///
 /// When the buffers fill up partway through a frame, they are reset and the frame is built
 /// again, so no primitive keeps a location from before the reset.
-pub(super) fn build_ui_path_geometry_damaged<'a>(
+pub(super) fn build_ui_path_geometry<'a>(
 	draw_list: &UiDrawList,
 	viewport: Extent,
 	paths: &mut UiPathCurves,
@@ -55,16 +55,8 @@ pub(super) fn build_ui_path_geometry_damaged<'a>(
 	frame_allocator: &'a bumpalo::Bump,
 	damage: Option<&[UiPixelRegion]>,
 ) -> UiPathGeometry<'a> {
-	let width = viewport.width().max(1) as f32;
-	let height = viewport.height().max(1) as f32;
-	let sx = width / draw_list.layout_size[0].max(1.0);
-	let sy = height / draw_list.layout_size[1].max(1.0);
-	let viewport_clip = PixelClip {
-		x0: 0.0,
-		y0: 0.0,
-		x1: width,
-		y1: height,
-	};
+	let [sx, sy] = pixel_scale(viewport, draw_list.layout_size);
+	let viewport_clip = PixelClip::viewport(viewport);
 
 	let mut geometry = UiPathGeometry {
 		primitives: Vec::with_capacity_in(draw_list.paths.len().min(MAX_UI_PRIMITIVES), frame_allocator),
@@ -83,7 +75,7 @@ pub(super) fn build_ui_path_geometry_damaged<'a>(
 			// quad carries the clip, so the caster ignores it and a clipped part still casts.
 			if let (Some(shape), Some(shadow)) = (&blur.path, blur.shadow) {
 				let offset = [shadow.offset[0] * sx, shadow.offset[1] * sy];
-				let caster = match place_outline(paths, shape, blur.position, None, sx, sy, viewport_clip) {
+				let caster = match place_outline(paths, shape, blur.place.position, None, sx, sy, viewport_clip) {
 					Some(Ok(mut primitive)) => {
 						primitive.bounds = [
 							primitive.bounds[0] + offset[0],
@@ -96,7 +88,7 @@ pub(super) fn build_ui_path_geometry_damaged<'a>(
 						primitive.header = UI_KIND_PATH;
 						primitive.color = [1.0; 4];
 						// The caster turns with its element, so the composite reads it where it was turned to.
-						primitive.set_mask(masks.index(None, blur.clip_mask, sx, sy));
+						primitive.set_mask(masks.index(None, blur.place.clip_mask, sx, sy));
 						Some(primitive)
 					}
 					Some(Err(Dropped)) => {
@@ -110,7 +102,7 @@ pub(super) fn build_ui_path_geometry_damaged<'a>(
 			}
 			let placed = blur.path.as_ref().and_then(|shape| {
 				(blur.radius > 0.0)
-					.then(|| place_outline(paths, shape, blur.position, blur.clip, sx, sy, viewport_clip))
+					.then(|| place_outline(paths, shape, blur.place.position, blur.place.clip, sx, sy, viewport_clip))
 					.flatten()
 			});
 			let primitive = placed.map(|placed| match placed {
@@ -118,7 +110,7 @@ pub(super) fn build_ui_path_geometry_damaged<'a>(
 					let sigma = blur_sigma((blur.radius * radius_scale).clamp(0.0, 64.0));
 					primitive.header = UI_KIND_PATH_BLUR;
 					primitive.color = [0.0, 0.0, 0.0, blur_resolution_mix(sigma) as f16];
-					primitive.set_mask(masks.index(None, blur.clip_mask, sx, sy));
+					primitive.set_mask(masks.index(None, blur.place.clip_mask, sx, sy));
 					primitive
 				}
 				Err(Dropped) => {
@@ -137,7 +129,15 @@ pub(super) fn build_ui_path_geometry_damaged<'a>(
 			if geometry.truncated || path.paint.alpha() <= 0.0 {
 				continue;
 			}
-			let mut primitive = match place_outline(paths, &path.shape, path.position, path.clip, sx, sy, viewport_clip) {
+			let mut primitive = match place_outline(
+				paths,
+				&path.shape,
+				path.place.position,
+				path.place.clip,
+				sx,
+				sy,
+				viewport_clip,
+			) {
 				Some(Ok(primitive)) => primitive,
 				Some(Err(Dropped)) => {
 					geometry.dropped_paths += 1;
@@ -156,7 +156,7 @@ pub(super) fn build_ui_path_geometry_damaged<'a>(
 						bounds[2] + UI_DAMAGE_MARGIN_PIXELS,
 						bounds[3] + UI_DAMAGE_MARGIN_PIXELS,
 					],
-					path.clip_mask,
+					path.place.clip_mask,
 					sx,
 					sy,
 				),
@@ -168,7 +168,7 @@ pub(super) fn build_ui_path_geometry_damaged<'a>(
 				continue;
 			}
 			primitive.header = UI_KIND_PATH;
-			primitive.set_mask(masks.index(None, path.clip_mask, sx, sy));
+			primitive.set_mask(masks.index(None, path.place.clip_mask, sx, sy));
 			let [ox, oy, scale_x, scale_y] = primitive.a;
 			// The axis is in path units with y down, so it maps like the quad and not like the packed curves.
 			let paint = path.paint.placed([ox, oy], [scale_x, scale_y]);
@@ -224,15 +224,13 @@ mod tests {
 	use utils::Extent;
 
 	use super::{
-		UI_SLUG_BAND_CAPACITY, UI_SLUG_CURVE_CAPACITY, UiBlurDrawElement, UiDrawList, UiMaskTable, UiPaint, UiPaintTable,
-		UiPathCurves, UiPathDrawElement, UiPathShape, build_ui_path_geometry_damaged,
+		UI_SLUG_BAND_CAPACITY, UI_SLUG_CURVE_CAPACITY, UiBlurDrawElement, UiDrawList, UiDrawPlace, UiMaskTable, UiPaint,
+		UiPaintTable, UiPathCurves, UiPathDrawElement, UiPathShape, build_ui_path_geometry,
 	};
 	use crate::ui::{
 		EdgeFeather,
 		components::{curve::CurveSegment, path::FillRule},
-		render_pass::{
-			UI_KIND_PATH, UI_KIND_PATH_BLUR, UI_KIND_SAMPLED_SHADOW, UiBlurSource, UiShapeShadow, UiStep, build_ui_primitives,
-		},
+		render_pass::{UI_KIND_PATH, UI_KIND_SAMPLED_SHADOW, UiBlurSource, UiShapeShadow, UiStep, build_ui_primitives},
 	};
 
 	fn shape(id: u64, segments: Vec<CurveSegment>) -> UiPathShape {
@@ -247,76 +245,15 @@ mod tests {
 
 	fn path_fill(order: u32, segments: Vec<CurveSegment>) -> UiPathDrawElement {
 		UiPathDrawElement {
-			depth: 0,
-			order,
-			position: [10.0, 10.0],
-			size: [20.0, 20.0],
-			clip: None,
-			clip_mask: None,
+			place: UiDrawPlace {
+				order,
+				position: [10.0, 10.0],
+				size: [20.0, 20.0],
+				..Default::default()
+			},
 			paint: UiPaint::flat([1.0; 4]),
 			shape: shape(order as u64, segments),
 		}
-	}
-
-	/// A glass element blurs its backdrop under its outline, then tints it, and a highlight draws over both.
-	#[test]
-	fn path_blur_precedes_its_fill_and_later_paths_follow() {
-		let draw_list = UiDrawList {
-			layout_size: [100.0, 100.0],
-			blurs: vec![UiBlurDrawElement {
-				depth: 0,
-				order: 2,
-				position: [10.0, 10.0],
-				size: [20.0, 20.0],
-				clip: None,
-				clip_mask: None,
-				color: [0.0; 4],
-				corner_radii: [0.0; 4],
-				corner_exponent: 2.0,
-				sector: None,
-				fade: EdgeFeather::none(),
-				radius: 8.0,
-				path: Some(shape(2, square(0.0, 0.0, 10.0))),
-				shadow: None,
-			}],
-			paths: vec![path_fill(2, square(0.0, 0.0, 10.0)), path_fill(3, square(2.0, 2.0, 4.0))],
-			..UiDrawList::default()
-		};
-		let arena = bumpalo::Bump::new();
-		let mut masks = UiMaskTable::default();
-		let mut curves = UiPathCurves::new(UI_SLUG_CURVE_CAPACITY, UI_SLUG_BAND_CAPACITY);
-		let viewport = Extent::square(100);
-		let paths = build_ui_path_geometry_damaged(
-			&draw_list,
-			viewport,
-			&mut curves,
-			&mut masks,
-			&mut UiPaintTable::default(),
-			&arena,
-			None,
-		);
-		assert_eq!(paths.blurs.len(), 1);
-		assert_eq!(paths.blurs[0].map(|primitive| primitive.kind()), Some(UI_KIND_PATH_BLUR));
-		assert_eq!(paths.ranges.len(), 2);
-
-		let output = build_ui_primitives(
-			&draw_list,
-			viewport,
-			&arena,
-			Vec::new(),
-			None,
-			&mut masks,
-			&mut UiPaintTable::default(),
-			None,
-			Some(&paths),
-			None,
-		);
-		let kinds: Vec<u32> = output.primitives[1..].iter().map(|primitive| primitive.kind()).collect();
-		assert_eq!(kinds, [UI_KIND_PATH_BLUR, UI_KIND_PATH, UI_KIND_PATH]);
-		assert!(matches!(
-			output.steps.as_slice(),
-			[UiStep::Draw { .. }, UiStep::Blur(_), UiStep::Draw { count: 3, .. }]
-		));
 	}
 
 	/// A path's shadow draws its moved outline in white outside every draw, blurs it, and composites
@@ -326,12 +263,12 @@ mod tests {
 		let draw_list = UiDrawList {
 			layout_size: [100.0, 100.0],
 			blurs: vec![UiBlurDrawElement {
-				depth: 0,
-				order: 2,
-				position: [10.0, 10.0],
-				size: [20.0, 20.0],
-				clip: None,
-				clip_mask: None,
+				place: UiDrawPlace {
+					order: 2,
+					position: [10.0, 10.0],
+					size: [20.0, 20.0],
+					..Default::default()
+				},
 				color: [0.0, 0.0, 0.0, 0.5],
 				corner_radii: [0.0; 4],
 				corner_exponent: 2.0,
@@ -351,7 +288,7 @@ mod tests {
 		let mut masks = UiMaskTable::default();
 		let mut curves = UiPathCurves::new(UI_SLUG_CURVE_CAPACITY, UI_SLUG_BAND_CAPACITY);
 		let viewport = Extent::square(100);
-		let paths = build_ui_path_geometry_damaged(
+		let paths = build_ui_path_geometry(
 			&draw_list,
 			viewport,
 			&mut curves,

@@ -5,19 +5,13 @@
 #[derive(Default)]
 pub struct ImageAssetHandler;
 
-impl ImageAssetHandler {
-	pub fn new() -> ImageAssetHandler {
-		ImageAssetHandler
-	}
-}
-
 impl AssetHandler for ImageAssetHandler {
 	fn can_handle(&self, r#type: &str) -> bool {
 		matches!(r#type, "png" | "jpg" | "jpeg" | "Image" | "image/png" | "image/jpeg")
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (data, dt) = context.resolve(url).await?;
+		let data = context.resolve(url).await?;
 
 		let allocator = context.allocator();
 
@@ -26,7 +20,7 @@ impl AssetHandler for ImageAssetHandler {
 		let spec = context.load_sidecar(url).await?;
 		let settings = image_settings(&context, url, spec.as_ref(), IMAGE_SETTINGS_KEY, semantic)?;
 
-		let (decoder, header) = SourceDecoder::open(&dt, &data, semantic).inspect_err(|_| {
+		let (decoder, header) = SourceDecoder::open(url.get_asset_type(), &data, semantic).inspect_err(|_| {
 			context.error(format_args!(
 				"Image '{}' could not be decoded. The most likely cause is malformed data or a file extension that doesn't match its contents. Re-export the image as PNG or JPEG with the matching extension.",
 				url.as_ref()
@@ -289,7 +283,7 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 
-		asset_manager.add_asset_handler(ImageAssetHandler::new());
+		asset_manager.add_asset_handler(ImageAssetHandler);
 
 		for (id, _, expected_gamma, expected_format) in cases {
 			asset_manager.bake(id).await.expect("generated 8-bit PNG should bake");
@@ -338,7 +332,7 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 
-		asset_manager.add_asset_handler(ImageAssetHandler::new());
+		asset_manager.add_asset_handler(ImageAssetHandler);
 
 		for (id, expected_gamma, expected_format, expected_mips) in cases {
 			asset_manager.bake(id).await.expect("generated JPEG should bake");
@@ -375,7 +369,7 @@ mod tests {
 
 		let mut asset_manager = AssetManager::new(asset_storage_backend, resource_storage_backend);
 
-		asset_manager.add_asset_handler(ImageAssetHandler::new());
+		asset_manager.add_asset_handler(ImageAssetHandler);
 
 		// An albedo without a BEAD file keeps the semantic's BC7 mip chain; the BEAD file turns both steps off.
 		for (id, expected_format, expected_mips) in [

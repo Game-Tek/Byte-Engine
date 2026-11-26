@@ -1,6 +1,9 @@
 //! Concise functions for authoring an [`super::AudioGraph`].
 
-use super::{AudioGraph, AudioGraphTime};
+use smallbox::SmallBox;
+use smallvec::SmallVec;
+
+use super::{AudioGraph, AudioGraphTime, AudioNode, AudioNodeId, CustomAudioFunction, RandomNode, RoundRobinNode};
 
 /// Creates a graph that plays one resource-backed sample once.
 ///
@@ -8,7 +11,14 @@ use super::{AudioGraph, AudioGraphTime};
 /// [`varispeed`], or [`custom`], or publish it through
 /// [`crate::audio::graph::AudioGraphFactory`].
 pub fn sample(resource_id: impl Into<String>) -> AudioGraph {
-	AudioGraph::sample(resource_id)
+	let mut nodes = SmallVec::new();
+	nodes.push(SmallBox::new(AudioNode::Sample {
+		resource_id: resource_id.into(),
+	}));
+	AudioGraph {
+		nodes,
+		output: AudioNodeId(0),
+	}
 }
 
 /// Selects the next input chain each time this graph is submitted for playback.
@@ -24,7 +34,9 @@ pub fn sample(resource_id: impl Into<String>) -> AudioGraph {
 /// Panics if no inputs are provided or if the combined graph would contain
 /// more than 64 nodes.
 pub fn round_robin(inputs: impl IntoIterator<Item = AudioGraph>) -> AudioGraph {
-	AudioGraph::round_robin(inputs)
+	AudioGraph::selector(inputs, "round-robin", |inputs| {
+		AudioNode::RoundRobin(Box::new(RoundRobinNode { inputs, next_index: 0 }))
+	})
 }
 
 /// Selects a random input chain each time this graph is submitted for playback.
@@ -40,7 +52,9 @@ pub fn round_robin(inputs: impl IntoIterator<Item = AudioGraph>) -> AudioGraph {
 /// Panics if no inputs are provided or if the combined graph would contain
 /// more than 64 nodes.
 pub fn random(inputs: impl IntoIterator<Item = AudioGraph>) -> AudioGraph {
-	AudioGraph::random(inputs)
+	AudioGraph::selector(inputs, "random", |inputs| {
+		AudioNode::Random(Box::new(RandomNode::new(inputs)))
+	})
 }
 
 /// Repeats the input graph until its lifecycle handle is deleted.
@@ -54,8 +68,13 @@ pub fn random(inputs: impl IntoIterator<Item = AudioGraph>) -> AudioGraph {
 /// # Panics
 ///
 /// Panics if a non-looping input graph already contains 64 nodes.
-pub fn r#loop(input: AudioGraph) -> AudioGraph {
-	input.looping()
+pub fn r#loop(mut input: AudioGraph) -> AudioGraph {
+	if matches!(&*input.nodes[input.output.0], AudioNode::Loop { .. }) {
+		return input;
+	}
+	let output = input.output;
+	input.push(AudioNode::Loop { input: output });
+	input
 }
 
 /// Applies a linear gain to every sample produced by the input graph.
@@ -69,8 +88,17 @@ pub fn r#loop(input: AudioGraph) -> AudioGraph {
 ///
 /// Panics if `gain` is negative, infinite, or not a number. For a non-unity
 /// gain, also panics if the input graph already contains 64 nodes.
-pub fn gain(input: AudioGraph, gain: f32) -> AudioGraph {
-	input.with_gain(gain)
+pub fn gain(mut input: AudioGraph, gain: f32) -> AudioGraph {
+	assert!(
+		gain.is_finite() && gain >= 0.0,
+		"Invalid audio graph gain. The gain must be finite and non-negative."
+	);
+	if gain == 1.0 {
+		return input;
+	}
+	let output = input.output;
+	input.push(AudioNode::Gain { input: output, gain });
+	input
 }
 
 /// Changes the input playback speed and pitch by the same rate.
@@ -85,8 +113,22 @@ pub fn gain(input: AudioGraph, gain: f32) -> AudioGraph {
 /// Panics if `rate` is outside `0.25..=4.0`, infinite, or not a number. For a
 /// non-unity rate, also panics if the input already contains a varispeed node
 /// or if the graph already contains 64 nodes.
-pub fn varispeed(input: AudioGraph, rate: f32) -> AudioGraph {
-	input.with_varispeed(rate)
+pub fn varispeed(mut input: AudioGraph, rate: f32) -> AudioGraph {
+	assert!(
+		rate.is_finite() && (0.25..=4.0).contains(&rate),
+		"Invalid audio graph varispeed rate. The provided rate is not finite or is outside 0.25..=4.0."
+	);
+	if rate == 1.0 {
+		return input;
+	}
+
+	assert!(
+		!input.nodes.iter().any(|node| matches!(&**node, AudioNode::Varispeed { .. })),
+		"Invalid audio graph varispeed. A second varispeed node was added to the graph."
+	);
+	let output = input.output;
+	input.push(AudioNode::Varispeed { input: output, rate });
+	input
 }
 
 /// Shifts the input pitch by a frequency ratio without changing its duration.
@@ -101,8 +143,22 @@ pub fn varispeed(input: AudioGraph, rate: f32) -> AudioGraph {
 /// Panics if `ratio` is outside `0.5..=2.0`, infinite, or not a number. For a
 /// non-unity ratio, also panics if the input already contains a pitch-shift
 /// node or if the graph already contains 64 nodes.
-pub fn pitch_shift(input: AudioGraph, ratio: f32) -> AudioGraph {
-	input.with_pitch_shift(ratio)
+pub fn pitch_shift(mut input: AudioGraph, ratio: f32) -> AudioGraph {
+	assert!(
+		ratio.is_finite() && (0.5..=2.0).contains(&ratio),
+		"Invalid audio graph pitch ratio. The ratio must be finite and between 0.5 and 2.0."
+	);
+	if ratio == 1.0 {
+		return input;
+	}
+
+	assert!(
+		!input.nodes.iter().any(|node| matches!(&**node, AudioNode::PitchShift { .. })),
+		"Invalid audio graph pitch shift. A graph can contain at most one pitch-shift node."
+	);
+	let output = input.output;
+	input.push(AudioNode::PitchShift { input: output, ratio });
+	input
 }
 
 /// Processes each rendered audio block with a user-provided closure.
@@ -127,9 +183,11 @@ pub fn pitch_shift(input: AudioGraph, ratio: f32) -> AudioGraph {
 /// # Panics
 ///
 /// Panics if the input graph already contains 64 nodes.
-pub fn custom<F>(input: AudioGraph, function: F) -> AudioGraph
+pub fn custom<F>(mut input: AudioGraph, function: F) -> AudioGraph
 where
 	F: FnMut(AudioGraphTime, &mut [f32]) + Clone + Send + Sync + 'static,
 {
-	input.with_custom(function)
+	let output = input.output;
+	input.push(AudioNode::Custom(output, CustomAudioFunction::new(function)));
+	input
 }

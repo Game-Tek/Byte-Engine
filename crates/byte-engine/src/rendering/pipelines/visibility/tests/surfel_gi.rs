@@ -117,37 +117,27 @@ fn reconstruct_covered_face(normal: [f32; 3], geometric: [f32; 3], stored: [f32;
 	}
 }
 
-/// A covered ornamental facet must retain its GI and occlusion even when its smoothed vertex normal differs from
-/// its triangle plane by more than the reconstruction's normal gate. The native lion census measured such faces.
+/// Verifies a covered surface keeps its GI and occlusion:
+///
+/// - An ornamental facet whose smoothed vertex normal differs from its triangle plane by more than the reconstruction's
+///   normal gate, as the native lion census measured.
+/// - A surface the first reconstruction already lit, which retrying the face plane must not replace.
+/// - A surface that no history texel matches in either normal, such as a rod or a bevel thinner than a texel, which
+///   takes the nearest tap's light and hit fraction. An empty result would count every ray as missed and show the
+///   unoccluded sky's reflection as a thin white line.
 #[test]
-fn surfel_reconstruction_recovers_a_covered_facet_with_a_smoothed_normal() {
-	assert_rgba_close(
-		reconstruct_covered_face([0.9, 0.0, -0.4358899], WALL_NORMAL, SSGI_WALL_NORMAL),
-		[0.3125, 0.15625, 0.0625, 1.0],
-		0.001,
-	);
-}
-
-/// Retrying the face plane must not replace a reconstruction that already has valid light and hit information.
-#[test]
-fn surfel_reconstruction_preserves_an_already_reconstructed_surface() {
-	assert_rgba_close(
-		reconstruct_covered_face(WALL_NORMAL, UP, SSGI_WALL_NORMAL),
-		[0.3125, 0.15625, 0.0625, 1.0],
-		0.001,
-	);
-}
-
-/// A surface that no history texel matches in either normal, such as a rod or a bevel thinner than a texel, takes
-/// the light and hit fraction of the nearest tap. An empty result would count every ray as missed and show the
-/// unoccluded sky's reflection as a thin white line.
-#[test]
-fn surfel_reconstruction_takes_the_nearest_tap_for_an_unmatched_surface() {
-	assert_rgba_close(
-		reconstruct_covered_face(WALL_NORMAL, WALL_NORMAL, [0.0, 1.0, 0.0, 0.0]),
-		[0.3125, 0.15625, 0.0625, 1.0],
-		0.001,
-	);
+fn surfel_reconstruction_keeps_the_light_of_a_covered_surface() {
+	for (normal, geometric, stored) in [
+		([0.9, 0.0, -0.4358899], WALL_NORMAL, SSGI_WALL_NORMAL),
+		(WALL_NORMAL, UP, SSGI_WALL_NORMAL),
+		(WALL_NORMAL, WALL_NORMAL, [0.0, 1.0, 0.0, 0.0]),
+	] {
+		assert_rgba_close(
+			reconstruct_covered_face(normal, geometric, stored),
+			[0.3125, 0.15625, 0.0625, 1.0],
+			0.001,
+		);
+	}
 }
 
 /// The frame-wide surfel passes, in the order a frame records them.

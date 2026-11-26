@@ -5,7 +5,7 @@
 //! and adds it to the lit image, before the background and the transparent phase. Build it in with
 //! `render.subsurface.enabled`; see the subsurface scattering design note.
 
-use ghi::context::{Context as _, ContextCreate as _};
+use ghi::context::ContextCreate as _;
 use ghi::frame::Frame as _;
 use utils::Extent;
 
@@ -82,31 +82,20 @@ impl SubsurfacePass {
 		targets: SubsurfaceTargets,
 		blue_noise: ghi::ImageHandle,
 	) -> Self {
-		let subsurface_layout = set_layouts::layout(set_layouts::SUBSURFACE);
-		let descriptor_set = subsurface_layout.create_set(context, "Subsurface Descriptor Set");
-		let view_data = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Subsurface View Data")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
-		let parameters = context.build_buffer(
-			ghi::buffer::Builder::new(ghi::Uses::Storage)
-				.name("Subsurface Parameters")
-				.host_access(ghi::HostAccess::Write)
-				.copies(ghi::Copies::PerFrame),
-		);
-		let binder = subsurface_layout.binder(descriptor_set);
-		context.write(&[
-			binder.buffer("view", view_data),
-			binder.texture("depth", depth),
-			binder.texture("diffuse_light", targets.diffuse),
-			binder.texture("profile_scale", targets.shape),
-			binder.texture("albedo_root", targets.albedo),
-			binder.image("lit_map", lit),
-			binder.buffer("parameters", parameters),
-			binder.texture("blue_noise", blue_noise),
-		]);
+		let view_data = context.build_buffer(super::frame_buffer("Subsurface View Data"));
+		let parameters = context.build_buffer(super::frame_buffer("Subsurface Parameters"));
+		let descriptor_set = set_layouts::create_set(context, set_layouts::SUBSURFACE, "Subsurface Descriptor Set", |set| {
+			[
+				set.buffer("view", view_data),
+				set.texture("depth", depth),
+				set.texture("diffuse_light", targets.diffuse),
+				set.texture("profile_scale", targets.shape),
+				set.texture("albedo_root", targets.albedo),
+				set.image("lit_map", lit),
+				set.buffer("parameters", parameters),
+				set.texture("blue_noise", blue_noise),
+			]
+		});
 
 		Self {
 			descriptor_set,

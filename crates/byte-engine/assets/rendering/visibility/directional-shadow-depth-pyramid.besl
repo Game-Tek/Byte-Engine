@@ -1,4 +1,5 @@
-// A workgroup's 32 threads reduce four by two cells.
+// A workgroup's 32 threads reduce a 32x16-texel area of the pyramid's first level: four by two 8x8 cells, or two by one
+// 16x16 cells.
 
 use ::byte_engine::rendering::visibility::layouts::shadow_depth_pyramid::*;
 
@@ -15,18 +16,26 @@ smallest: fn (quad: vec4f) -> f32 {
 
 main: fn (input: StageInput, shadow_depth_pyramid: ShadowDepthPyramid) -> void {
 	let source_extent: vec2u = texture_size(shadow_depth_pyramid.source_depth);
-	let cascade_cell_height: u32 = source_extent.y / 8;
+	let cell_size: u32 = DIRECTIONAL_SHADOW_PYRAMID_CELL_SIZE;
+	let cascade_cell_height: u32 = source_extent.y / cell_size;
+	// Each thread reads a 4x4 block, so a cell takes (cell_size / 4)^2 threads, and the workgroup's 32x16 texels hold
+	// (32 / cell_size) x (16 / cell_size) cells.
+	let blocks_per_side: u32 = cell_size / 4;
+	let threads_per_cell: u32 = blocks_per_side * blocks_per_side;
+	let cells_per_row: u32 = 32 / cell_size;
 
-	// A cell's four threads have consecutive local indices that start at a multiple of four, so they share a
-	// subgroup and their lane indices differ only in the two lowest bits: bit 0 picks the block's column, bit 1 its row.
-	let cell_in_workgroup: u32 = input.thread_idx / 4;
-	let block_in_cell: u32 = input.thread_idx % 4;
+	// A cell's threads have consecutive local indices that start at a multiple of their count, a power of two, so they
+	// share a subgroup and their lane indices differ only in the low bits: the lower half picks the block's column, the
+	// upper half its row.
+	let cell_in_workgroup: u32 = input.thread_idx / threads_per_cell;
+	let block_in_cell: u32 = input.thread_idx % threads_per_cell;
 	let packed_cell: vec2u = (input.thread_id
-		/ vec2u(DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH, DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT)) * vec2u(4, 2)
-		+ vec2u(cell_in_workgroup % 4, cell_in_workgroup / 4);
+		/ vec2u(DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_WIDTH, DIRECTIONAL_SHADOW_PYRAMID_WORKGROUP_HEIGHT))
+		* vec2u(cells_per_row, 16 / cell_size)
+		+ vec2u(cell_in_workgroup % cells_per_row, cell_in_workgroup / cells_per_row);
 	let shadow_layer: u32 = packed_cell.y / cascade_cell_height;
-	let block_texel: vec2u = vec2u(packed_cell.x, packed_cell.y % cascade_cell_height) * vec2u(8, 8)
-		+ vec2u(block_in_cell % 2, block_in_cell / 2) * vec2u(4, 4);
+	let block_texel: vec2u = vec2u(packed_cell.x, packed_cell.y % cascade_cell_height) * vec2u(cell_size, cell_size)
+		+ vec2u(block_in_cell % blocks_per_side, block_in_cell / blocks_per_side) * vec2u(4, 4);
 
 	// The block's four quads surround its texel corners at offsets 1 and 3. Issue every gather before reducing, so
 	// they overlap.
@@ -40,15 +49,15 @@ main: fn (input: StageInput, shadow_depth_pyramid: ShadowDepthPyramid) -> void {
 	let maximum_depth: f32 = max(max(largest(top_left), largest(top_right)), max(largest(bottom_left), largest(bottom_right)));
 	let minimum_depth: f32 = min(min(smallest(top_left), smallest(top_right)), min(smallest(bottom_left), smallest(bottom_right)));
 
-	// Combine the left and right blocks, then the upper and lower pairs; every thread then holds its cell's bounds.
-	maximum_depth = max(maximum_depth, subgroup_shuffle_xor_f32(maximum_depth, 1));
-	minimum_depth = min(minimum_depth, subgroup_shuffle_xor_f32(minimum_depth, 1));
-	maximum_depth = max(maximum_depth, subgroup_shuffle_xor_f32(maximum_depth, 2));
-	minimum_depth = min(minimum_depth, subgroup_shuffle_xor_f32(minimum_depth, 2));
+	// Combine the blocks one lane bit at a time, columns first, then rows; every thread then holds its cell's bounds.
+	for (let mask: u32 = 1; mask < threads_per_cell; mask = mask * 2) {
+		maximum_depth = max(maximum_depth, subgroup_shuffle_xor_f32(maximum_depth, mask));
+		minimum_depth = min(minimum_depth, subgroup_shuffle_xor_f32(minimum_depth, mask));
+	}
 
 	// When the resolution is an odd multiple of 16, each row's last workgroup reaches past the cascade. Its threads
 	// still take part in the shuffles, but only cells inside the cascade are written.
-	if (block_in_cell == 0 && packed_cell.x < source_extent.x / 8) {
+	if (block_in_cell == 0 && packed_cell.x < source_extent.x / cell_size) {
 		write(shadow_depth_pyramid.reduced_max_depth, packed_cell, vec4f(maximum_depth, 0.0, 0.0, 1.0));
 		write(shadow_depth_pyramid.reduced_min_depth, packed_cell, vec4f(minimum_depth, 0.0, 0.0, 1.0));
 	}

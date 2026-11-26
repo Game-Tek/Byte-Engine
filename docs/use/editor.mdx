@@ -265,8 +265,7 @@ panel. The panel reaches your game through the inspector, so its commands also w
    }
 
    app.inspector()
-   	.register_message("Stagger", app.world().channel::<CreateMessage<Stagger>>())
-   	.unwrap();
+   	.register_message("Stagger", app.world().channel::<CreateMessage<Stagger>>());
    ```
 
 2. Register the properties your panel shows. The inspector keeps the latest value each entity publishes, under the
@@ -278,8 +277,7 @@ panel. The panel reaches your game through the inspector, so its commands also w
    struct Plan(String);
 
    app.inspector()
-   	.watch_property("plan", app.world().channel::<CreateMessage<Plan>>())
-   	.unwrap();
+   	.watch_property("plan", app.world().channel::<CreateMessage<Plan>>());
    ```
 
    Publish a new value with `app.world().factory::<Plan>().derive(npc, Plan("Fleeing".into()))` whenever it changes.

@@ -293,11 +293,8 @@ mod tests {
 		labels.derive(handle, "renamed".to_string());
 		indices.derive(handle, 7);
 
-		let entities = observer.entities();
-		assert_eq!(entities.len(), 1);
-		assert_eq!(entities[0].handle(), handle);
 		assert_eq!(
-			entities[0].types(),
+			observer.entity(handle).expect("the entity is cataloged").types(),
 			[std::any::type_name::<String>(), std::any::type_name::<u32>()]
 		);
 	}

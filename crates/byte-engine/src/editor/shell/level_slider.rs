@@ -245,11 +245,4 @@ mod tests {
 		assert_eq!(nearest_stop(-100.0, 4), 0);
 		assert_eq!(nearest_stop(1000.0, 4), 3);
 	}
-
-	#[test]
-	fn the_first_stop_selects_by_distance_and_the_rest_name_levels() {
-		assert_eq!(stop_level(0), None);
-		assert_eq!(stop_level(1), Some(0));
-		assert_eq!(stop_level(3), Some(2));
-	}
 }

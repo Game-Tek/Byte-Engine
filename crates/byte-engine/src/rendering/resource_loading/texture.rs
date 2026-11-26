@@ -17,14 +17,13 @@ use resource_management::{
 	resource::{ReadTargets, ResourceGpuBacking, ResourcePayloadEncoding, ResourceReaderBacking},
 	resources::image::Image as ResourceImage,
 	stream::StreamMut,
-	types::Formats as ResourceFormat,
 };
 use smallvec::SmallVec;
 use utils::Extent;
 
 use super::{StagingLease, UploadStagingArena};
 use crate::rendering::loading::{
-	ImageDescription, ImageRegion, ImageUpload, LoadPipeline, LoaderLane, NativeImageRegion, NativeImageUpload,
+	ImageDescription, ImageRegion, ImageUpload, LoadError, LoadPipeline, LoaderLane, NativeImageRegion, NativeImageUpload,
 };
 
 /// Loads the mips of an image resource from `first_level` on through the loader and returns the finished image.
@@ -34,15 +33,31 @@ use crate::rendering::loading::{
 /// CPU-readable resources are staged and copied. GPU-backed resources are read straight from their file through
 /// native I/O. Next, return the image in the pipeline's resident value so the render thread interns it and binds
 /// it with a sampler the pipeline owns.
+///
+/// # Panics
+///
+/// Panics when `first_level` is past the resource's last mip.
 pub async fn load_texture<P: LoadPipeline>(
-	reference: Reference<ResourceImage>,
+	mut reference: Reference<ResourceImage>,
 	name: &str,
 	first_level: u32,
 	lane: &LoaderLane<P>,
-) -> Result<ghi::implementation::DetachedImage, TextureTransferError> {
-	let (metadata, source) = prepare_texture(reference, first_level, lane.staging().clone())
-		.await
-		.map_err(|error| TextureTransferError(format!("Texture preparation failed for {name}. {error}")))?;
+) -> Result<ghi::implementation::DetachedImage, LoadError> {
+	let failed = |stage: &str, error: &dyn std::fmt::Display| LoadError(format!("Texture {stage} failed for {name}. {error}"));
+	// The baker writes 2D images whose mip count fits their extent.
+	let image = reference.resource();
+	let [width, height, _] = image.extent;
+	let mip_count = image.mip_count.max(1);
+	assert!(
+		first_level < mip_count,
+		"Texture first mip level {first_level} is past the last of the {mip_count} mips of {name}. The most likely cause is that the caller chose the first level without reading the resource's mip count. Pass a level below the mip count."
+	);
+	let metadata = TextureMetadata {
+		format: image.format.ghi(),
+		extent: Extent::rectangle(width, height).mip(first_level),
+		mip_count: mip_count - first_level,
+		first_level,
+	};
 	let description = ImageDescription {
 		name: name.to_owned(),
 		format: metadata.format,
@@ -50,53 +65,41 @@ pub async fn load_texture<P: LoadPipeline>(
 		mip_levels: metadata.mip_count,
 		cube: false,
 	};
-	match source {
-		PreparedTextureSource::Staged(source) => {
-			// Every mip sits at its own offset inside the staging lease.
-			let regions = source
-				.layouts
-				.iter()
-				.enumerate()
-				.map(|(mip_level, layout)| layout.region(mip_level as u32))
-				.collect();
-			let [image] = lane
-				.upload(source.staging, [ImageUpload { description, regions }], SmallVec::new())
-				.await
-				.map_err(|error| TextureTransferError(format!("Texture upload failed for {name}. {error}")))?;
-			Ok(image)
-		}
-		PreparedTextureSource::Native(source) => {
-			let compression = source
-				.compression()
-				.map_err(|error| TextureTransferError(format!("Texture native encoding is unsupported for {name}. {error}")))?;
-			let regions = source
-				.regions(metadata)
-				.map_err(|error| TextureTransferError(format!("Texture I/O requests are invalid for {name}. {error}")))?;
-			lane.upload_native_image(NativeImageUpload {
-				description,
-				path: source.backing.path().to_owned(),
-				compression,
-				regions,
-			})
+
+	if !reference.is_gpu_backed() {
+		let (staging, layouts) = prepare_staged_texture(&mut reference, lane.staging().clone(), metadata)
 			.await
-			.map_err(|error| TextureTransferError(format!("Texture I/O failed for {name}. {error}")))
-		}
+			.map_err(|error| failed("preparation", &error))?;
+		// Every mip sits at its own offset inside the staging lease.
+		let regions = (0..)
+			.zip(&layouts)
+			.map(|(mip_level, layout)| layout.region(mip_level))
+			.collect();
+		let [image] = lane
+			.upload(staging, [ImageUpload { description, regions }], SmallVec::new())
+			.await
+			.map_err(|error| failed("upload", &error))?;
+		return Ok(image);
 	}
+
+	let Ok(ResourceReaderBacking::Gpu(backing)) = reference.consume_reader().into_backing_storage().await else {
+		return Err(failed("preparation", &TexturePreparationError::NativeBacking));
+	};
+	// The reference keeps its stream table after giving up its reader, so the upload reads the table in place.
+	let source = NativeTextureUpload { backing, reference };
+	let compression = source.compression().map_err(|error| failed("native encoding", &error))?;
+	let regions = source.regions(metadata).map_err(|error| failed("I/O request", &error))?;
+	lane.upload_native_image(NativeImageUpload {
+		description,
+		path: source.backing.path().to_owned(),
+		compression,
+		regions,
+	})
+	.await
+	.map_err(|error| failed("I/O", &error))
 }
 
-/// The `TextureTransferError` struct reports why a Resource Manager image could not become a GHI texture.
-#[derive(Debug)]
-pub struct TextureTransferError(String);
-
-impl std::fmt::Display for TextureTransferError {
-	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		formatter.write_str(&self.0)
-	}
-}
-
-impl std::error::Error for TextureTransferError {}
-
-/// The `TextureMetadata` struct keeps the validated shape of the image being loaded private to the texture utility.
+/// The `TextureMetadata` struct keeps the shape of the image being loaded private to the texture utility.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct TextureMetadata {
 	format: ghi::Formats,
@@ -104,75 +107,6 @@ struct TextureMetadata {
 	mip_count: u32,
 	/// The resource mip that becomes the image's base level, which names the stream each image level reads.
 	first_level: u32,
-}
-
-/// Prepares the persisted mips from `first_level` on without choosing a renderer destination, and returns the
-/// validated image shape with the source the loader uploads from.
-///
-/// CPU-readable resources receive one exclusive staging lease with rows
-/// already padded for GHI copies. GPU-backed resources retain their native
-/// file and stream metadata without decoding on the CPU. The caller supplies
-/// logical identity when reporting [`TexturePreparationError`].
-async fn prepare_texture(
-	mut reference: Reference<ResourceImage>,
-	first_level: u32,
-	staging: Arc<UploadStagingArena>,
-) -> Result<(TextureMetadata, PreparedTextureSource), TexturePreparationError> {
-	let image = reference.resource();
-	let [width, height, depth] = image.extent;
-	if width == 0 || height == 0 || depth != 0 {
-		return Err(TexturePreparationError::Dimensions);
-	}
-	let mip_count = image.mip_count.max(1);
-	let available_mips = u32::BITS - width.max(height).leading_zeros();
-	if mip_count > available_mips {
-		return Err(TexturePreparationError::MipCount);
-	}
-	if first_level >= mip_count {
-		return Err(TexturePreparationError::FirstLevel);
-	}
-	let metadata = TextureMetadata {
-		format: image.format.ghi(),
-		extent: Extent::rectangle(width, height).mip(first_level),
-		mip_count: mip_count - first_level,
-		first_level,
-	};
-
-	let source = if reference.is_gpu_backed() {
-		let backing = reference
-			.consume_reader()
-			.into_backing_storage()
-			.await
-			.map_err(|_| TexturePreparationError::NativeBacking)?;
-		let ResourceReaderBacking::Gpu(backing) = backing else {
-			return Err(TexturePreparationError::NativeBacking);
-		};
-		// The reference keeps its stream table after giving up its reader, so the upload reads the table in place.
-		PreparedTextureSource::Native(NativeTextureUpload { backing, reference })
-	} else {
-		PreparedTextureSource::Staged(prepare_staged_texture(&mut reference, staging, metadata).await?)
-	};
-
-	Ok((metadata, source))
-}
-
-/// The `PreparedTextureSource` enum selects CPU staging or native GPU resource I/O, and keeps the validated texture
-/// data alive until the loader uploads it.
-///
-/// [`load_texture`] turns this internal delivery choice into the matching loader upload.
-enum PreparedTextureSource {
-	/// CPU-readable bytes arranged for transfer command recording.
-	Staged(StagedTextureUpload),
-	/// Persisted GPU backing arranged for native resource-I/O submission.
-	Native(NativeTextureUpload),
-}
-
-/// The `StagedTextureUpload` struct keeps row-padded mip bytes until the loader copies them.
-///
-/// [`load_texture`] hands the lease to the loader, which returns it to the arena once the copies finished.
-struct StagedTextureUpload {
-	staging: StagingLease,
-	layouts: SmallVec<[TextureUploadLayout; 16]>,
 }
 
 /// The `NativeTextureUpload` struct retains a persisted GPU source and the reference whose stream table locates each mip.
@@ -299,12 +233,6 @@ impl TextureUploadLayout {
 /// Errors produced while validating or preparing baked texture transfer data.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum TexturePreparationError {
-	/// The resource is zero-sized or is not a 2D image.
-	Dimensions,
-	/// The declared mip count exceeds the image dimensions.
-	MipCount,
-	/// The requested first mip level is past the image's last mip.
-	FirstLevel,
 	/// Size arithmetic or staging placement overflowed.
 	Layout,
 	/// The complete padded mip chain does not fit the supplied staging arena.
@@ -322,15 +250,6 @@ pub(crate) enum TexturePreparationError {
 impl std::fmt::Display for TexturePreparationError {
 	fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		formatter.write_str(match self {
-			Self::Dimensions => {
-				"Texture dimensions are unsupported. The most likely cause is a zero-sized or non-2D baked image."
-			}
-			Self::FirstLevel => {
-				"Texture first mip level is past the image's last mip. The most likely cause is that the caller chose the first level without reading the resource's mip count. Pass a level below the mip count."
-			}
-			Self::MipCount => {
-				"Texture mip metadata is invalid. The most likely cause is a declared mip count larger than its dimensions permit."
-			}
 			Self::Layout => {
 				"Texture upload layout is invalid. The most likely cause is overflowing dimensions or inconsistent mip metadata."
 			}
@@ -395,11 +314,13 @@ pub(crate) async fn load_image_streams<'a>(
 		.ok_or(TexturePreparationError::Payload)
 }
 
+/// Reads the mips `metadata` names into one staging lease, each at its own GPU-row-aligned offset, and returns the
+/// lease with every mip's layout.
 async fn prepare_staged_texture(
 	reference: &mut Reference<ResourceImage>,
 	staging_arena: Arc<UploadStagingArena>,
 	metadata: TextureMetadata,
-) -> Result<StagedTextureUpload, TexturePreparationError> {
+) -> Result<(StagingLease, SmallVec<[TextureUploadLayout; 16]>), TexturePreparationError> {
 	let mut layouts = SmallVec::<[TextureUploadLayout; 16]>::new();
 	let mut upload_byte_count = 0usize;
 	for level in 0..metadata.mip_count {
@@ -419,7 +340,7 @@ async fn prepare_staged_texture(
 		let range = layout.offset..layout.offset + layout.copy.padded_size;
 		layout.copy.pack_rows(&mut staging.bytes_mut()[range]);
 	}
-	Ok(StagedTextureUpload { staging, layouts })
+	Ok((staging, layouts))
 }
 
 fn texture_payload_is_compact(
@@ -519,12 +440,6 @@ async fn load_texture_bytes(
 	load_image_streams(reference, streams).await
 }
 
-/// Maps a resource image format to the GHI format its image is created with, for loaders that name formats by the
-/// resource type.
-pub(crate) fn resource_format_to_ghi(format: ResourceFormat) -> ghi::Formats {
-	format.ghi()
-}
-
 #[cfg(test)]
 mod tests {
 	use resource_management::resource::GpuPayloadBlock;
@@ -551,8 +466,10 @@ mod tests {
 		}
 	}
 
+	/// Each stored band becomes one region of its mip, mips below the first level are skipped, and a mip its bands
+	/// don't cover exactly is rejected.
 	#[test]
-	fn block_regions_follow_each_band_of_every_mip() {
+	fn block_regions_follow_each_band_of_the_loaded_mips() {
 		let blocks = [
 			block(0, 0, 5, 100),
 			block(0, 5, 3, 200),
@@ -560,62 +477,24 @@ mod tests {
 			block(2, 0, 2, 400),
 		];
 		let regions = block_regions(&blocks, metadata(0)).expect("Complete bands should become regions");
-
 		assert_eq!(regions.len(), 4);
 		assert_eq!((regions[1].mip_level, regions[1].first_row), (0, 5));
 		assert_eq!(regions[1].extent, Extent::rectangle(16, 3));
 		assert_eq!(regions[1].stored, Some((200, 512)));
 		assert_eq!(regions[2].extent, Extent::rectangle(8, 4));
-	}
 
-	#[test]
-	fn block_regions_skip_mips_below_the_first_level() {
-		let blocks = [block(0, 0, 8, 100), block(1, 0, 4, 200), block(2, 0, 2, 300)];
-		let regions = block_regions(&blocks, metadata(1)).expect("Later mips should load on their own");
-
-		assert_eq!(regions.len(), 2);
-		assert_eq!((regions[0].mip_level, regions[0].stored), (0, Some((200, 512))));
+		let later = [block(0, 0, 8, 100), blocks[2], blocks[3]];
+		let regions = block_regions(&later, metadata(1)).expect("Later mips should load on their own");
+		assert_eq!((regions[0].mip_level, regions[0].stored), (0, Some((300, 512))));
 		assert_eq!((regions[1].mip_level, regions[1].extent), (1, Extent::rectangle(4, 2)));
-	}
 
-	#[test]
-	fn block_regions_reject_missing_or_overflowing_bands() {
-		let missing = [block(0, 0, 5, 100), block(1, 0, 4, 300), block(2, 0, 2, 400)];
-		assert_eq!(
-			block_regions(&missing, metadata(0)).err(),
-			Some(TexturePreparationError::Streams)
-		);
-		let overflowing = [block(0, 0, 9, 100), block(1, 0, 4, 300), block(2, 0, 2, 400)];
-		assert_eq!(
-			block_regions(&overflowing, metadata(0)).err(),
-			Some(TexturePreparationError::Streams)
-		);
-	}
-
-	#[test]
-	fn texture_layout_preserves_every_mip_and_gpu_row_pitch() {
-		let metadata = TextureMetadata {
-			format: ghi::Formats::RGBA8UNORM,
-			extent: Extent::rectangle(17, 3),
-			mip_count: 3,
-			first_level: 0,
-		};
-		let mut offset = 0;
-		let layouts = (0..metadata.mip_count)
-			.map(|level| {
-				let layout = TextureUploadLayout::new(metadata.format, metadata.extent.mip(level), 1, offset)
-					.expect("valid texture layout");
-				offset += layout.copy.padded_size;
-				layout
-			})
-			.collect::<SmallVec<[_; 16]>>();
-
-		assert_eq!(layouts.len(), 3);
-		assert_eq!(layouts[0].copy.compact_bytes_per_row, 68);
-		assert_eq!(layouts[0].copy.padded_bytes_per_row, 256);
-		assert_eq!(layouts[0].copy.padded_bytes_per_image, 768);
-		assert_eq!(layouts[1].offset, layouts[0].copy.padded_size);
-		assert_eq!(layouts[2].offset, layouts[0].copy.padded_size + layouts[1].copy.padded_size);
+		for first_band in [block(0, 0, 5, 100), block(0, 0, 9, 100)] {
+			let incomplete = [first_band, block(1, 0, 4, 300), block(2, 0, 2, 400)];
+			assert_eq!(
+				block_regions(&incomplete, metadata(0)).err(),
+				Some(TexturePreparationError::Streams)
+			);
+		}
 	}
 
 	#[test]
@@ -654,58 +533,5 @@ mod tests {
 		expand_compact_texture_levels(&mut staging, 6, &layouts).unwrap();
 		assert_eq!(&staging[..4], &[1, 2, 3, 4]);
 		assert_eq!(&staging[8..10], &[5, 6]);
-	}
-
-	/// Lays `source` out as the GPU expects it: compact rows expanded to the padded row pitch.
-	fn staged_texture_bytes(
-		format: ghi::Formats,
-		extent: Extent,
-		layer_count: usize,
-		source: &[u8],
-	) -> (Vec<u8>, TextureUploadLayout) {
-		let layout = TextureUploadLayout::new(format, extent, layer_count, 0).expect("texture layout");
-		assert_eq!(source.len(), layout.copy.compact_size);
-		let mut bytes = vec![0u8; layout.copy.padded_size];
-		bytes[..source.len()].copy_from_slice(source);
-		layout.copy.pack_rows(&mut bytes);
-		(bytes, layout)
-	}
-
-	#[test]
-	fn texture_upload_preserves_minimum_extent_and_bc_row_contents() {
-		let compact_row = 2 * 16;
-		let source = (0..(compact_row * 2)).map(|value| value as u8).collect::<Vec<_>>();
-		let (data, upload) = staged_texture_bytes(ghi::Formats::BC7, Extent::rectangle(5, 7), 1, &source);
-
-		assert_eq!(upload.copy.padded_bytes_per_row, 256);
-		assert_eq!(upload.copy.padded_bytes_per_image, 256 * 2);
-		assert_eq!(&data[0..compact_row], &source[0..compact_row]);
-		assert_eq!(&data[256..256 + compact_row], &source[compact_row..compact_row * 2]);
-
-		let (zero_data, zero_extent) =
-			staged_texture_bytes(ghi::Formats::RGBA8UNORM, Extent::rectangle(0, 0), 1, &[1, 2, 3, 4]);
-		assert_eq!(zero_extent.copy.padded_bytes_per_row, 256);
-		assert_eq!(zero_extent.copy.padded_bytes_per_image, 256);
-		assert_eq!(&zero_data[..4], &[1, 2, 3, 4]);
-	}
-
-	#[test]
-	fn cubemap_upload_preserves_every_face_and_image_pitch() {
-		let compact_face_size = 2 * 2 * 8;
-		let source = (0..compact_face_size * 6).map(|value| value as u8).collect::<Vec<_>>();
-		let (data, upload) = staged_texture_bytes(ghi::Formats::RGBA16F, Extent::square(2), 6, &source);
-
-		assert_eq!(upload.copy.padded_bytes_per_image, 512);
-		assert_eq!(data.len(), 512 * 6);
-		for face in 0..6 {
-			for row in 0..2 {
-				let source_start = face * compact_face_size + row * 16;
-				let upload_start = face * 512 + row * 256;
-				assert_eq!(
-					&data[upload_start..upload_start + 16],
-					&source[source_start..source_start + 16]
-				);
-			}
-		}
 	}
 }

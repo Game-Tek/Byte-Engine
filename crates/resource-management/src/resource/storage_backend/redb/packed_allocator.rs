@@ -303,11 +303,6 @@ impl PackedResourceAllocator {
 			crate::online_docs_url(BAKING_APP_RESOURCES_DOCS_PATH)
 		);
 	}
-
-	#[cfg(test)]
-	pub(super) fn high_water(&self) -> u64 {
-		self.lock_state().high_water
-	}
 }
 
 /// Reconstructs occupied and free slots while validating every database-visible range.

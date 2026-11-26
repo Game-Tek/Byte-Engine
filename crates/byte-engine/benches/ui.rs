@@ -9,8 +9,7 @@
 //!
 //! 1. Queue the tick's pointer, wheel, and text input on the [`Engine`].
 //! 2. Call [`Engine::evaluate`] with a frame allocator reset every tick.
-//! 3. Retain hit geometry for the next tick's input.
-//! 4. Call [`Engine::render`] and clone the render only when its revision moved.
+//! 3. Call [`Engine::render`] and clone the render only when its revision moved.
 //!
 //! Iterations are cyclic: each one leaves the screen equivalent to where it
 //! started, so every sample measures the same work. Fixture construction and
@@ -33,7 +32,7 @@ use byte_engine::{
 	ui::{
 		ConcreteLayer, ConcreteStyle, Container, ContainerContext as _, Context, Depth, ElementContext as _, ElementKey,
 		Engine, EvaluationContext, Id, Key, LayoutExtent, Properties, Render, RenderRevision, Size, Sizing, Text, Transform,
-		UiPoint, UiVector, flow, intersection::HitTest, primitive::Events,
+		UiPoint, UiVector, flow, primitive::Events,
 	},
 	utils::{RGBA, r#async::select_biased},
 };
@@ -53,7 +52,6 @@ const HEIGHT: f32 = 1080.0;
 /// The `Window` struct keeps what an application retains between UI ticks.
 struct Window<C: 'static> {
 	engine: Engine<C>,
-	hits: HitTest,
 	frame_allocator: bumpalo::Bump,
 	size: Size,
 	published: Option<RenderRevision>,
@@ -69,7 +67,6 @@ impl<C: 'static> Window<C> {
 		engine.mount(root);
 		let mut window = Self {
 			engine,
-			hits: HitTest::default(),
 			frame_allocator: bumpalo::Bump::new(),
 			size: Size::new(WIDTH, HEIGHT),
 			published: None,
@@ -88,8 +85,7 @@ impl<C: 'static> Window<C> {
 	/// Runs one application tick and returns whether it published a new render.
 	fn tick(&mut self) -> bool {
 		self.frame_allocator.reset();
-		let snapshot = self.engine.evaluate(self.size, &self.frame_allocator);
-		snapshot.retain_hit_test(&mut self.hits);
+		let _ = self.engine.evaluate(self.size, &self.frame_allocator);
 		let render = self.engine.render();
 		if self.published == Some(render.revision()) {
 			return false;
@@ -112,10 +108,10 @@ impl<C: 'static> Window<C> {
 
 	/// Returns the center of a surface as the last published frame drew it, in layout units.
 	fn center(&self, id: Id) -> UiPoint {
-		let bounds = self
-			.hits
-			.bounds(id)
-			.expect("A benchmark target is not on screen. The most likely cause is a layout change that moved it out of view.");
+		let bounds =
+			self.engine.geometry(id).map(|geometry| geometry.logical).expect(
+				"A benchmark target is not on screen. The most likely cause is a layout change that moved it out of view.",
+			);
 		UiPoint::new(bounds.x() + bounds.width() * 0.5, bounds.y() + bounds.height() * 0.5)
 	}
 
@@ -1231,7 +1227,11 @@ mod leaderboard {
 	fn select_row(bencher: Bencher, rows: usize) {
 		let mut window = window(rows);
 		let body = window.model().body.get().expect("The leaderboard did not report its body.");
-		let top = window.hits.bounds(body).expect("The leaderboard body is not on screen.");
+		let top = window
+			.engine
+			.geometry(body)
+			.expect("The leaderboard body is not on screen.")
+			.logical;
 		let row = |index: usize| UiPoint::new(top.x() + 200.0, top.y() + (index as f32 + 0.5) * ROW_HEIGHT);
 		window.click_at(row(3));
 		assert!(window.tick(), "Clicking a leaderboard row did not select it.");

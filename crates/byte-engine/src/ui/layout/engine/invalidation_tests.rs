@@ -3,7 +3,7 @@
 use super::*;
 use crate::ui::{
 	ContainerContext, Position, Sizing, flow,
-	style::{ConcreteLayer, ConcreteStyle, Layer},
+	style::{ConcreteLayer, ConcreteStyle},
 };
 
 /// Builds a scene by applying the requested changes before its next frame.
@@ -83,19 +83,16 @@ fn scene(stage: usize) -> Engine<usize> {
 	engine
 }
 
-/// Compares all layer properties consumed by the renderer.
-fn assert_same_style(actual: &ConcreteStyle, expected: &ConcreteStyle) {
-	assert_eq!(actual.layers().len(), expected.layers().len());
-	for (actual, expected) in actual.layers().iter().zip(expected.layers()) {
-		match (actual.fill(), expected.fill()) {
-			(Color::Value(actual), Color::Value(expected)) => assert_eq!(actual, expected),
-			(Color::Material(actual), Color::Material(expected)) => assert_eq!(actual, expected),
-			_ => panic!("Render layer colors differ"),
-		}
-		assert_eq!(actual.kind(), expected.kind());
-		assert_eq!(actual.feather(), expected.feather());
-		assert_eq!(actual.backdrop_blur_radius(), expected.backdrop_blur_radius());
-	}
+/// The parts of a placement a fresh scene must reproduce: everything but the motion, which only an edit makes.
+fn placed(placement: &RenderPlacement) -> (u32, Location3, Size, Option<Geometry>, Option<ClipMask>, f32) {
+	(
+		placement.id,
+		placement.position,
+		placement.size,
+		placement.clip,
+		placement.clip_mask,
+		placement.opacity,
+	)
 }
 
 /// Compares the geometry, inherited appearance, and content consumed by the renderer.
@@ -104,78 +101,42 @@ fn assert_same_render(actual: &Render, expected: &Render) {
 	assert_eq!(actual.elements().count(), expected.elements().count());
 	for (actual, expected) in actual.elements().zip(expected.elements()) {
 		assert_eq!(
-			(
-				actual.placement.id,
-				actual.placement.position,
-				actual.placement.size,
-				actual.placement.clip,
-				actual.placement.clip_mask,
-				actual.placement.opacity,
-				actual.corner_radii,
-				actual.corner_exponent
-			),
-			(
-				expected.placement.id,
-				expected.placement.position,
-				expected.placement.size,
-				expected.placement.clip,
-				expected.placement.clip_mask,
-				expected.placement.opacity,
-				expected.corner_radii,
-				expected.corner_exponent
-			),
+			(placed(&actual.placement), actual.corner_radii, actual.corner_exponent),
+			(placed(&expected.placement), expected.corner_radii, expected.corner_exponent),
 		);
-		assert_same_style(&actual.style, &expected.style);
+		assert!(actual.style.layers() == expected.style.layers(), "render layers differ");
 	}
 	assert_eq!(actual.texts().count(), expected.texts().count());
 	for (actual, expected) in actual.texts().zip(expected.texts()) {
 		assert_eq!(
+			(placed(&actual.placement), actual.font_size, &actual.content, actual.color),
 			(
-				actual.placement.id,
-				actual.placement.position,
-				actual.placement.size,
-				actual.placement.clip,
-				actual.placement.clip_mask,
-				actual.placement.opacity,
-				actual.font_size,
-				&actual.content
-			),
-			(
-				expected.placement.id,
-				expected.placement.position,
-				expected.placement.size,
-				expected.placement.clip,
-				expected.placement.clip_mask,
-				expected.placement.opacity,
+				placed(&expected.placement),
 				expected.font_size,
-				&expected.content
+				&expected.content,
+				expected.color
 			),
 		);
-		assert_eq!(actual.color, expected.color);
 	}
 	assert_eq!(actual.curves().count(), expected.curves().count());
 	for (actual, expected) in actual.curves().zip(expected.curves()) {
 		assert_eq!(
-			(
-				actual.placement.id,
-				actual.placement.position,
-				actual.placement.size,
-				actual.placement.clip,
-				actual.placement.clip_mask,
-				actual.placement.opacity,
-				&actual.segments
-			),
-			(
-				expected.placement.id,
-				expected.placement.position,
-				expected.placement.size,
-				expected.placement.clip,
-				expected.placement.clip_mask,
-				expected.placement.opacity,
-				&expected.segments
-			),
+			(placed(&actual.placement), &actual.segments),
+			(placed(&expected.placement), &expected.segments)
 		);
-		assert_same_style(&actual.style, &expected.style);
+		assert!(actual.style.layers() == expected.style.layers(), "render layers differ");
+	}
+}
+
+/// Compares two snapshots' elements and what they hit on a grid of points `step` layout units apart.
+fn assert_same_snapshot(actual: &Snapshot, expected: &Snapshot, step: usize) {
+	assert_eq!(actual.elements, expected.elements);
+	let size = expected.size;
+	for y in (0..size.y() as usize).step_by(step) {
+		for x in (0..size.x() as usize).step_by(step) {
+			let point = UiPoint::new(x as f32 * 2.0 / size.x() - 1.0, 1.0 - y as f32 * 2.0 / size.y());
+			assert_eq!(actual.hit(point, None), expected.hit(point, None), "at ({x}, {y})");
+		}
 	}
 }
 
@@ -268,15 +229,13 @@ fn retained_changes_match_fresh_layout_appearance_and_hits() {
 		} else {
 			Size::new(100, 100)
 		};
-		let mut actual_hits = crate::ui::intersection::HitTest::default();
-		let mut expected_hits = crate::ui::intersection::HitTest::default();
-		engine.evaluate(size, &allocator).retain_hit_test(&mut actual_hits);
-		fresh.evaluate(size, &allocator).retain_hit_test(&mut expected_hits);
+		engine.evaluate(size, &allocator);
+		fresh.evaluate(size, &allocator);
 		assert_same_render(engine.render(), fresh.render());
 		for x in [0.0, 10.0, 30.0, 50.0, 90.0] {
 			for y in [0.0, 20.0, 80.0] {
 				let point = UiPoint::new(x * 2.0 / size.x() - 1.0, 1.0 - y * 2.0 / size.y());
-				assert_eq!(actual_hits.query(point), expected_hits.query(point), "stage {stage}");
+				assert_eq!(engine.hit(point), fresh.hit(point), "stage {stage}");
 			}
 		}
 	}
@@ -354,11 +313,8 @@ fn text_edits_match_fresh_layout_rendering_and_hit_bounds() {
 		*engine.ctx_mut() = stage;
 		let mut fresh = text_scene(stage);
 		let size = Size::new(if stage == 7 { 500 } else { 400 }, 200);
-		let mut actual_hits = crate::ui::intersection::HitTest::default();
-		let mut expected_hits = crate::ui::intersection::HitTest::default();
-		engine.evaluate(size, &allocator).retain_hit_test(&mut actual_hits);
+		engine.evaluate(size, &allocator);
 		let expected = fresh.evaluate(size, &allocator);
-		expected.retain_hit_test(&mut expected_hits);
 		let expected_ids = expected.elements.iter().map(|element| element.id).collect::<Vec<_>>();
 		let actual_render = engine.render();
 		let expected_render = fresh.render();
@@ -366,7 +322,7 @@ fn text_edits_match_fresh_layout_rendering_and_hit_bounds() {
 		let (original, original_expected) = original.get_or_insert_with(|| (actual_render.clone(), expected_render.clone()));
 		assert_same_render(original, original_expected);
 		for id in expected_ids {
-			assert_eq!(actual_hits.bounds(id), expected_hits.bounds(id), "stage {stage}");
+			assert_eq!(engine.geometry(id), fresh.geometry(id), "stage {stage}");
 		}
 	}
 }
@@ -499,17 +455,15 @@ fn input_updates_appearance_before_the_next_hit_geometry() {
 	assert_eq!(engine.render().elements().count(), 1);
 	engine.pointer_pressed(UiPoint::new(-0.8, 0.8));
 	engine.pointer_released(UiPoint::new(-0.8, 0.8));
-	let mut hits = crate::ui::intersection::HitTest::default();
-	engine.evaluate(Size::new(100, 100), &allocator).retain_hit_test(&mut hits);
+	engine.evaluate(Size::new(100, 100), &allocator);
 	let child = engine.render().elements().nth(1).unwrap();
 	assert_eq!(child.placement.opacity, 0.25);
 	assert_eq!(child.placement.clip, None);
 	let child_id = child.placement.id;
 	let point = UiPoint::new(-0.1, 0.9);
-	assert_eq!(hits.query(point), None);
-	let next = engine.evaluate(Size::new(100, 100), &allocator);
-	next.retain_hit_test(&mut hits);
-	assert_eq!(hits.query(point).map(|id| engine.render_id(id)), Some(child_id));
+	assert_eq!(engine.hit(point), None);
+	engine.evaluate(Size::new(100, 100), &allocator);
+	assert_eq!(engine.hit(point).map(|id| engine.render_id(id)), Some(child_id));
 }
 
 #[test]
@@ -610,15 +564,7 @@ fn visual_subtrees_reuse_flow_placement_and_match_fresh_scenes() {
 		let actual = snapshot_of(retained.retained_layout.as_ref().unwrap());
 		let mut fresh = scene(camera, nested);
 		let expected = fresh.evaluate(Size::new(300, 200), &arena);
-		assert_eq!(actual.elements, expected.elements);
-		for y in (0..200).step_by(5) {
-			for x in (0..300).step_by(5) {
-				assert_eq!(
-					actual.hit(UiPoint::new(x as f32 / 150.0 - 1.0, 1.0 - y as f32 / 100.0), None),
-					expected.hit(UiPoint::new(x as f32 / 150.0 - 1.0, 1.0 - y as f32 / 100.0), None)
-				);
-			}
-		}
+		assert_same_snapshot(&actual, &expected, 5);
 		assert_same_render(retained.render(), fresh.render());
 	}
 }
@@ -682,13 +628,7 @@ fn display_size_edits_reuse_flow_placement_and_match_fresh_scenes() {
 		let actual = snapshot_of(retained.retained_layout.as_ref().unwrap());
 		let mut fresh = scene(display);
 		let expected = fresh.evaluate(Size::new(300, 300), &arena);
-		assert_eq!(actual.elements, expected.elements);
-		for y in (0..300).step_by(5) {
-			for x in (0..300).step_by(5) {
-				let point = UiPoint::new(x as f32 / 150.0 - 1.0, 1.0 - y as f32 / 150.0);
-				assert_eq!(actual.hit(point, None), expected.hit(point, None));
-			}
-		}
+		assert_same_snapshot(&actual, &expected, 5);
 		assert_same_render(retained.render(), fresh.render());
 	}
 }
@@ -804,13 +744,7 @@ fn transform_edits_refresh_appearance_inside_the_moved_subtree_only() {
 		let actual = retained.evaluate(Size::new(300, 200), &arena);
 		let mut fresh = scene(outer, inner);
 		let expected = fresh.evaluate(Size::new(300, 200), &arena);
-		assert_eq!(actual.elements, expected.elements);
-		for y in (0..200).step_by(4) {
-			for x in (0..300).step_by(4) {
-				let point = UiPoint::new(x as f32 / 150.0 - 1.0, 1.0 - y as f32 / 100.0);
-				assert_eq!(actual.hit(point, None), expected.hit(point, None));
-			}
-		}
+		assert_same_snapshot(&actual, &expected, 4);
 		assert_same_render(retained.render(), fresh.render());
 	}
 }

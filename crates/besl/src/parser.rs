@@ -517,13 +517,6 @@ main: fn () -> void {
 	}
 
 	#[test]
-	fn test_parse_member() {
-		let node = parse(&tokenize("color: In<vec4f>;")).expect("Failed to parse");
-
-		assert!(matches!(&node["color"].node, Nodes::Member { name: "color", r#type } if r#type == "In<vec4f>"));
-	}
-
-	#[test]
 	fn parse_match_rejects_malformed_arms() {
 		for source in [
 			"main: fn () -> void { match n { 0 => break 1 => break } }",

@@ -1,12 +1,11 @@
-//! Creates, destroys, and compacts a Vulkan context's acceleration structures. Recordings build them in
+//! Compacts a Vulkan context's acceleration structures and releases them once no frame reads them. The
+//! `ContextCreate` impl in `traits.rs` creates and destroys them, and recordings build them in
 //! `command_buffer/operations/acceleration_structures.rs`.
 
 use super::*;
 use crate::rt;
 use crate::vulkan::acceleration_structures::{
-	BOTTOM_LEVEL_FLAGS, BottomLevel, CompactionCopy, Completion, INSTANCE_SIZE, InstanceBuffer, RecordedBuilds,
-	STORAGE_BLOCK_SIZE, ScratchBuffer, StorageRange, TOP_LEVEL_FLAGS, TopLevel, TopLevelCopy, instance_geometry,
-	triangle_geometry,
+	CompactionCopy, Completion, RecordedBuilds, STORAGE_BLOCK_SIZE, ScratchBuffer, StorageRange,
 };
 use crate::vulkan::device::RayTracing;
 
@@ -40,7 +39,7 @@ impl Context {
 
 	/// Creates an acceleration structure of `ty` that occupies `size` bytes of storage, and returns it with the address
 	/// instances and descriptors name it by and the storage it lives in.
-	fn create_structure(
+	pub(crate) fn create_structure(
 		&mut self,
 		name: Option<&str>,
 		ty: vk::AccelerationStructureTypeKHR,
@@ -69,7 +68,7 @@ impl Context {
 
 	/// Returns the storage and scratch sizes a build of `geometries` needs, where `primitive_counts` holds the most
 	/// primitives each geometry has.
-	fn build_sizes(
+	pub(crate) fn build_sizes(
 		&self,
 		ty: vk::AccelerationStructureTypeKHR,
 		flags: vk::BuildAccelerationStructureFlagsKHR,
@@ -94,150 +93,6 @@ impl Context {
 				);
 		}
 		sizes
-	}
-
-	/// Checks that `size` bytes from `buffer` lie in a buffer that geometry may be built from, at a multiple of
-	/// `alignment`.
-	fn check_geometry_range(&self, buffer: &crate::BufferDescriptor, size: usize, alignment: usize) {
-		let resource = self.buffers.get_single(buffer.buffer);
-		rt::check_geometry_range(
-			"Vulkan",
-			buffer,
-			size,
-			alignment,
-			resource.map(|resource| (resource.uses, resource.size)),
-		);
-	}
-
-	/// Creates a bottom-level structure over `geometries`, sized for their build, after validating each geometry.
-	pub(crate) fn create_bottom_level(
-		&mut self,
-		name: Option<&str>,
-		geometries: &[rt::TriangleGeometry],
-	) -> crate::BottomLevelAccelerationStructureHandle {
-		self.ray_tracing("create a bottom-level acceleration structure");
-		rt::check_bottom_level_geometries("Vulkan", geometries);
-		for geometry in geometries {
-			// Builds resolve the same ranges later, so only creation checks them.
-			self.check_geometry_range(&geometry.positions.buffer_offset, geometry.positions.size, 4);
-			self.check_geometry_range(
-				&geometry.indices,
-				rt::index_bytes(geometry),
-				rt::index_size(geometry.index_format),
-			);
-		}
-
-		// Sizing ignores addresses, so the descriptions name none.
-		let descriptions = geometries
-			.iter()
-			.map(|geometry| triangle_geometry(geometry, 0, 0))
-			.collect::<SmallVec<[_; 8]>>();
-		let triangle_counts = geometries
-			.iter()
-			.map(|geometry| geometry.triangle_count)
-			.collect::<SmallVec<[_; 8]>>();
-		let sizes = self.build_sizes(
-			vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
-			BOTTOM_LEVEL_FLAGS,
-			&descriptions,
-			&triangle_counts,
-		);
-		let (structure, address, storage) = self.create_structure(
-			name,
-			vk::AccelerationStructureTypeKHR::BOTTOM_LEVEL,
-			sizes.acceleration_structure_size,
-		);
-		let handle = self.acceleration_structures.bottom_levels.insert(BottomLevel {
-			structure,
-			address,
-			storage,
-			geometries: geometries.into(),
-			build_scratch_size: sizes.build_scratch_size,
-			build_state: rt::BuildState::Unbuilt,
-		});
-		crate::BottomLevelAccelerationStructureHandle::from_bits(handle)
-	}
-
-	/// Creates a top-level structure with one copy for each frame in flight, each sized for `max_instance_count`
-	/// instances and with instance records of its own.
-	pub(crate) fn create_top_level(
-		&mut self,
-		name: Option<&str>,
-		max_instance_count: u32,
-	) -> crate::TopLevelAccelerationStructureHandle {
-		self.ray_tracing("create a top-level acceleration structure");
-		rt::check_max_instance_count("Vulkan", max_instance_count);
-		// Sizing ignores the address of the instance records; builds name their own.
-		let sizes = self.build_sizes(
-			vk::AccelerationStructureTypeKHR::TOP_LEVEL,
-			TOP_LEVEL_FLAGS,
-			&[instance_geometry(0)],
-			&[max_instance_count],
-		);
-		let mut copies = SmallVec::new();
-		for _ in 0..self.frames {
-			let (structure, address, storage) = self.create_structure(
-				name,
-				vk::AccelerationStructureTypeKHR::TOP_LEVEL,
-				sizes.acceleration_structure_size,
-			);
-			let (buffer, allocation, instances_address, pointer) = self.create_dedicated_buffer(
-				name,
-				(u64::from(max_instance_count) * INSTANCE_SIZE) as usize,
-				vk::BufferUsageFlags::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_KHR
-					| vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
-				crate::HostAccess::Write,
-			);
-			copies.push(TopLevelCopy {
-				structure,
-				address,
-				storage,
-				instances: InstanceBuffer {
-					buffer: buffer.resource,
-					allocation,
-					address: instances_address,
-					pointer: crate::vulkan::MappedMemoryPointer(pointer),
-				},
-				built_epoch: None,
-				recorded_frame: None,
-			});
-		}
-		let handle = self.acceleration_structures.top_levels.insert(TopLevel {
-			copies,
-			max_instance_count,
-			build_scratch_size: sizes.build_scratch_size,
-		});
-		crate::TopLevelAccelerationStructureHandle::from_bits(handle)
-	}
-
-	/// Destroys the bottom-level structure `handle` names once the frames recorded before this call complete.
-	pub(crate) fn destroy_bottom_level(&mut self, handle: crate::BottomLevelAccelerationStructureHandle) {
-		let bottom_level = self.acceleration_structures.bottom_levels.remove(handle.bits()).unwrap_or_else(|| {
-			panic!(
-				"The bottom-level acceleration structure handle is stale. The most likely cause is that the structure was destroyed twice. Destroy each structure once."
-			)
-		});
-		self.defer_destruction(Tasks::DeleteAccelerationStructure {
-			handle: bottom_level.structure,
-			storage: bottom_level.storage,
-		});
-	}
-
-	/// Destroys the top-level structure `handle` names, and every copy, once the frames recorded before this call
-	/// complete.
-	pub(crate) fn destroy_top_level(&mut self, handle: crate::TopLevelAccelerationStructureHandle) {
-		let top_level = self.acceleration_structures.top_levels.remove(handle.bits()).unwrap_or_else(|| {
-			panic!(
-				"The top-level acceleration structure handle is stale. The most likely cause is that the structure was destroyed twice. Destroy each structure once."
-			)
-		});
-		for copy in top_level.copies {
-			self.defer_destruction(Tasks::DeleteAccelerationStructure {
-				handle: copy.structure,
-				storage: copy.storage,
-			});
-			self.retire_dedicated_buffer(copy.instances.buffer, copy.instances.allocation);
-		}
 	}
 
 	/// Creates a scratch buffer of `size` bytes that builds read and write on the device.
@@ -421,7 +276,7 @@ impl Context {
 				functions.destroy_acceleration_structure(copy.structure, None);
 				self.device.device.destroy_buffer(copy.instances.buffer, None);
 			}
-			for source in structures.take_all_compaction_sources() {
+			for source in structures.compaction_sources.drain(..) {
 				functions.destroy_acceleration_structure(source.structure, None);
 			}
 			for copy in structures.ready_compactions.drain(..) {

@@ -27,36 +27,10 @@ pub struct AudioGraph {
 }
 
 impl AudioGraph {
-	/// Creates a graph whose output is one resource-backed sample node.
-	pub(super) fn sample(resource_id: impl Into<String>) -> Self {
-		let mut nodes = SmallVec::new();
-		nodes.push(SmallBox::new(AudioNode::Sample {
-			resource_id: resource_id.into(),
-		}));
-		Self {
-			nodes,
-			output: AudioNodeId(0),
-		}
-	}
-
-	/// Combines independent input graphs under one stateful selector node.
-	pub(super) fn round_robin(inputs: impl IntoIterator<Item = AudioGraph>) -> Self {
-		Self::selector(inputs, "round-robin", |inputs| {
-			AudioNode::RoundRobin(Box::new(RoundRobinNode { inputs, next_index: 0 }))
-		})
-	}
-
-	/// Combines independent input graphs under one non-repeating random selector.
-	pub(super) fn random(inputs: impl IntoIterator<Item = AudioGraph>) -> Self {
-		Self::selector(inputs, "random", |inputs| {
-			AudioNode::Random(Box::new(RandomNode::new(inputs)))
-		})
-	}
-
 	/// Combines independent input graphs under the selector node that `node` builds from their outputs.
 	///
 	/// A single input is returned directly without a selector node.
-	fn selector(
+	pub(super) fn selector(
 		inputs: impl IntoIterator<Item = AudioGraph>,
 		selector_name: &str,
 		node: impl FnOnce(SelectorInputs) -> AudioNode,
@@ -114,78 +88,6 @@ impl AudioGraph {
 	/// Applies the authoring-graph optimization pipeline in place.
 	fn optimize(&mut self) {
 		optimization::optimize(self);
-	}
-
-	/// Appends a loop node and makes it the graph output.
-	pub(super) fn looping(mut self) -> Self {
-		if matches!(&*self.nodes[self.output.0], AudioNode::Loop { .. }) {
-			return self;
-		}
-		let input = self.output;
-		self.push(AudioNode::Loop { input });
-		self
-	}
-
-	/// Appends a gain node and makes it the graph output.
-	pub(super) fn with_gain(mut self, gain: f32) -> Self {
-		assert!(
-			gain.is_finite() && gain >= 0.0,
-			"Invalid audio graph gain. The gain must be finite and non-negative."
-		);
-		if gain == 1.0 {
-			return self;
-		}
-		let input = self.output;
-		self.push(AudioNode::Gain { input, gain });
-		self
-	}
-
-	/// Appends a varispeed node that changes playback speed and pitch together.
-	pub(super) fn with_varispeed(mut self, rate: f32) -> Self {
-		assert!(
-			rate.is_finite() && (0.25..=4.0).contains(&rate),
-			"Invalid audio graph varispeed rate. The provided rate is not finite or is outside 0.25..=4.0."
-		);
-		if rate == 1.0 {
-			return self;
-		}
-
-		assert!(
-			!self.nodes.iter().any(|node| matches!(&**node, AudioNode::Varispeed { .. })),
-			"Invalid audio graph varispeed. A second varispeed node was added to the graph."
-		);
-		let input = self.output;
-		self.push(AudioNode::Varispeed { input, rate });
-		self
-	}
-
-	/// Appends a duration-preserving pitch-shift node.
-	pub(super) fn with_pitch_shift(mut self, ratio: f32) -> Self {
-		assert!(
-			ratio.is_finite() && (0.5..=2.0).contains(&ratio),
-			"Invalid audio graph pitch ratio. The ratio must be finite and between 0.5 and 2.0."
-		);
-		if ratio == 1.0 {
-			return self;
-		}
-
-		assert!(
-			!self.nodes.iter().any(|node| matches!(&**node, AudioNode::PitchShift { .. })),
-			"Invalid audio graph pitch shift. A graph can contain at most one pitch-shift node."
-		);
-		let input = self.output;
-		self.push(AudioNode::PitchShift { input, ratio });
-		self
-	}
-
-	/// Appends a user-provided block processor with per-playback closure state.
-	pub(super) fn with_custom<F>(mut self, function: F) -> Self
-	where
-		F: FnMut(AudioGraphTime, &mut [f32]) + Clone + Send + Sync + 'static,
-	{
-		let input = self.output;
-		self.push(AudioNode::Custom(input, CustomAudioFunction::new(function)));
-		self
 	}
 
 	pub(super) fn push(&mut self, node: AudioNode) {

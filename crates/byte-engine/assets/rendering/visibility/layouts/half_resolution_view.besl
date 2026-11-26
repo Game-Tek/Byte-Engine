@@ -1,0 +1,16 @@
+// The screen view constants at half the sink resolution, which the min depth pyramid, GTAO, and backdrop passes share,
+// with the helper that turns device depth into linear depth.
+
+use ::byte_engine::rendering::visibility::layouts::screen_view::*;
+
+HalfResolutionView: layer {
+	half_resolution_view: descriptor<{ type: ScreenView, binding: 0, access: read, memory: constant }>;
+}
+
+// Returns the linear depth of a device depth. A device depth of zero stays zero.
+linearize_depth: fn (view: HalfResolutionView, depth: f32) -> f32 {
+	if (depth == 0.0) {
+		return 0.0;
+	}
+	return view.half_resolution_view.depth_unproject_numerator / (depth + view.half_resolution_view.depth_unproject_denominator_offset);
+}

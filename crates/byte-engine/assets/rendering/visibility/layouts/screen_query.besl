@@ -21,15 +21,15 @@ ScreenQuery: layer {
 	points: descriptor<{ type: ScreenQueryPoints, binding: 0, access: read, memory: device }>;
 	instances: descriptor<{ type: ScreenQueryInstances, binding: 1, access: read_write, memory: device }>;
 	// The instance under each pixel, from the visibility buffer.
-	instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 2, access: read }>;
+	instance_index: descriptor<{ type: StorageImage<r32ui>, binding: 2, access: read }>;
 }
 
 // Returns the instance the visibility buffer holds at query `query`'s pixel, or `NO_INSTANCE` for a point outside it.
 instance_at_query: fn (screen_query: ScreenQuery, query: u32) -> u32 {
 	let point: vec2u = screen_query.points.points[query];
-	let extent: vec2u = image_size(screen_query.instance_index_render_target);
+	let extent: vec2u = image_size(screen_query.instance_index);
 	if (point.x >= extent.x || point.y >= extent.y) {
 		return NO_INSTANCE;
 	}
-	return image_load_u32(screen_query.instance_index_render_target, point);
+	return image_load_u32(screen_query.instance_index, point);
 }

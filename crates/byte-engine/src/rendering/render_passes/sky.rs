@@ -654,7 +654,7 @@ impl AtmosphereSkyEnvironment {
 			key: None,
 		};
 		let maps = EnvironmentMaps {
-			diffuse: irradiance.into(),
+			irradiance: irradiance.into(),
 			specular: specular.into(),
 		};
 		(environment, maps)

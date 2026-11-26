@@ -42,7 +42,7 @@ SurfelResolve: layer {
 	surfel_resolve_parameters: descriptor<{ type: SurfelResolveParameters, binding: 0, access: read }>;
 	surfel_spawns: descriptor<{ type: SurfelSpawn[], binding: 1, access: read_write }>;
 	// The half-resolution view-space normals the reconstruction and material evaluation compare surfaces with, named
-	// `SSGI Normals` like SSGI's.
+	// `Indirect Diffuse Normals` like SSGI's.
 	normal_output: descriptor<{ type: StorageImage<rg16_snorm>, binding: 2, access: write }>;
 	debug_view_targets: descriptor<{ type: StorageImage, binding: 3, access: write, count: 15 }>;
 }

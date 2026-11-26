@@ -14,7 +14,7 @@ use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
 
 use super::SinkHistory;
-use super::depth_pyramid::depth_unprojection;
+use super::min_depth_pyramid::depth_unprojection;
 use crate::rendering::SetBinder;
 use crate::rendering::pipelines::visibility::shader_data::ReflectionShaderParameters;
 
@@ -30,12 +30,12 @@ impl ScreenSpaceReflections {
 	/// Binds the depth pyramid, the previous frame's copies of `lit` and `depth`, and the per-frame parameters into
 	/// the material evaluation set `evaluation`.
 	///
-	/// `depth_pyramid` comes from [`super::depth_pyramid::DepthPyramidPass`]. Create `lit` and `depth` with
+	/// `min_depth_pyramid` comes from [`super::min_depth_pyramid::MinDepthPyramidPass`]. Create `lit` and `depth` with
 	/// [`crate::rendering::RenderPassBuilder::create_history_render_target`].
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		evaluation: SetBinder<'_>,
-		depth_pyramid: ghi::ImageHandle,
+		min_depth_pyramid: ghi::ImageHandle,
 		lit: ghi::ImageHandle,
 		depth: ghi::ImageHandle,
 	) -> Self {
@@ -49,7 +49,7 @@ impl ScreenSpaceReflections {
 		// image past the screen's edge.
 		context.write(&[
 			evaluation.buffer("reflection_parameters", parameters),
-			evaluation.texture("depth_pyramid", depth_pyramid),
+			evaluation.texture("depth_pyramid", min_depth_pyramid),
 			evaluation.texture_with_frame("previous_lit", lit, -1),
 			evaluation.texture_with_frame("previous_depth", depth, -1),
 		]);

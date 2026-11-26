@@ -52,9 +52,9 @@ use super::render_pass::{
 	FrameWork, GiSettings, GtaoSettings, IndirectDiffuseSource, MAX_SURFEL_RAY_BUDGET, PROBE_RAY_BUDGET_RANGE, PROBE_RAYS,
 	PROBE_SPACING_RANGE, ProbeGiSettings, ProbeVolume, RayHits, RayTracing, SURFEL_CAPACITY_RANGE, SURFEL_RAY_BUDGET_STEP,
 	ShadowMaps, ShadowWork, SinkHistory, SinkTargets, SunCascades, SurfelGiSettings, SurfelLight, SurfelPool,
-	VisibilityRenderPass, create_backdrop_targets, create_diffuse_radiance_history_target, create_fog_light_target,
-	create_gtao_targets, create_ssgi_targets, create_subsurface_targets, create_sun_visibility_targets, create_surfel_targets,
-	create_velocity_targets,
+	VisibilityRenderPass, create_backdrop_targets, create_diffuse_radiance_target, create_fog_light_target,
+	create_gtao_targets, create_indirect_diffuse_targets, create_subsurface_targets, create_sun_visibility_targets,
+	create_surfel_targets, create_velocity_targets,
 };
 use super::residency::MeshResidencies;
 use super::scene::{
@@ -610,7 +610,7 @@ impl ResidentEnvironment {
 	/// Returns the writes that bind this environment's maps in a sink's material evaluation set.
 	fn descriptor_writes(self, set: SetBinder<'_>) -> [ghi::DescriptorWrite; 2] {
 		[
-			set.sampled("environment_irradiance", self.diffuse_image, self.sampler),
+			set.sampled("environment_irradiance", self.irradiance_image, self.sampler),
 			set.sampled("environment_specular", self.specular_image, self.sampler),
 		]
 	}
@@ -636,7 +636,7 @@ pub(crate) fn create_fallback_environment(
 		[FACE; 6].as_flattened(),
 	);
 	ResidentEnvironment {
-		diffuse_image: image.into(),
+		irradiance_image: image.into(),
 		specular_image: image.into(),
 		sampler,
 		upward_illuminance: 0.0,
@@ -1085,8 +1085,8 @@ impl VisibilityPipelineManager {
 				.length(instances)
 				.copies(ghi::Copies::PerFrame),
 		);
-		let lighting_buffer = context.build_buffer(
-			host_buffer("Light Data", ghi::Uses::Storage | ghi::Uses::TransferDestination).copies(ghi::Copies::PerFrame),
+		let lighting_data = context.build_buffer(
+			host_buffer("Lighting Data", ghi::Uses::Storage | ghi::Uses::TransferDestination).copies(ghi::Copies::PerFrame),
 		);
 		let scene_layout = set_layouts::layout(set_layouts::SCENE);
 		let descriptor_set = scene_layout.create_set(context, "Scene Descriptor Set");
@@ -1115,7 +1115,7 @@ impl VisibilityPipelineManager {
 				settings.surfel_capacity,
 				settings.surfel_ray_budget,
 				environment,
-				lighting_buffer,
+				lighting_data,
 			)
 		});
 		let probe_volume = (settings.features.probe_gi && ray_tracing).then(|| {
@@ -1125,7 +1125,7 @@ impl VisibilityPipelineManager {
 				settings.probe_ray_budget,
 				settings.probe_spacing,
 				environment,
-				lighting_buffer,
+				lighting_data,
 			)
 		});
 		let acceleration_structures = (surfel_pool.is_some() || probe_volume.is_some())
@@ -1276,7 +1276,7 @@ impl VisibilityPipelineManager {
 				views_buffer,
 				frame_buffer,
 				meshes_buffer,
-				lighting_buffer,
+				lighting_data,
 				render_info: Default::default(),
 				sink_states: Vec::new(),
 			},
@@ -1556,13 +1556,13 @@ impl VisibilityPipelineManager {
 		// nothing reads its maps before they hold light.
 		if self.environment.requested.is_none()
 			&& let Some(crate::rendering::EnvironmentMaps {
-				diffuse: diffuse_image,
+				irradiance: irradiance_image,
 				specular: specular_image,
 			}) = generated_environment
 		{
 			if self.environment.bound.specular_image != specular_image {
 				self.environment.bind(ResidentEnvironment {
-					diffuse_image,
+					irradiance_image,
 					specular_image,
 					sampler: self.loader.environment_sampler,
 					// Generated light is physical already, so no requested lux rescales it.
@@ -2947,10 +2947,10 @@ impl PipelineManager for VisibilityPipelineManager {
 			1,
 		);
 		let primitive_index = render_pass_builder.create_render_target(
-			ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("primitive index"),
+			ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("Primitive Index"),
 		);
-		let instance_id = render_pass_builder.create_render_target(
-			ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("instance_id"),
+		let instance_index = render_pass_builder.create_render_target(
+			ghi::image::Builder::new(ghi::Formats::U32, ghi::Uses::RenderTarget | ghi::Uses::Image).name("Instance Index"),
 		);
 		render_pass_builder.alias("Depth", "depth");
 		render_pass_builder.alias("Lit", "main");
@@ -2958,12 +2958,12 @@ impl PipelineManager for VisibilityPipelineManager {
 			color: lit.into(),
 			depth: depth.into(),
 		});
-		let ssgi = create_ssgi_targets(render_pass_builder);
-		let diffuse_radiance_history = self
+		let indirect_diffuse = create_indirect_diffuse_targets(render_pass_builder);
+		let diffuse_radiance = self
 			.settings
 			.features
 			.ssgi
-			.then(|| create_diffuse_radiance_history_target(render_pass_builder));
+			.then(|| create_diffuse_radiance_target(render_pass_builder));
 		let sun_visibility = create_sun_visibility_targets(render_pass_builder);
 		let gtao = create_gtao_targets(render_pass_builder);
 		let fog_light = create_fog_light_target(render_pass_builder);
@@ -2994,14 +2994,14 @@ impl PipelineManager for VisibilityPipelineManager {
 			self.pipeline_manager.clone(),
 			self.scene.descriptor_set,
 			self.scene.views_buffer.into(),
-			self.scene.lighting_buffer,
+			self.scene.lighting_data,
 			SinkTargets {
 				lit,
 				depth,
 				primitive_index: primitive_index.into(),
-				instance_id: instance_id.into(),
-				ssgi,
-				diffuse_radiance_history,
+				instance_index: instance_index.into(),
+				indirect_diffuse,
+				diffuse_radiance,
 				surfels,
 				sun_visibility,
 				gtao,

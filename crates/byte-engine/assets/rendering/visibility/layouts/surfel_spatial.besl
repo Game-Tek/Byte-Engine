@@ -5,9 +5,9 @@ SurfelSpatial: layer {
 	// This frame's `Surfel History` and `Surfel History Weights`, which the resolve wrote.
 	surfel_temporal_history: descriptor<{ type: Texture2D, binding: 0, access: read }>;
 	surfel_temporal_weights: descriptor<{ type: Texture2D, binding: 1, access: read }>;
-	// This frame's `SSGI Normals`.
+	// This frame's `Indirect Diffuse Normals`.
 	surfel_spatial_normals: descriptor<{ type: Texture2D, binding: 2, access: read }>;
-	// The half-resolution light material evaluation upsamples, named `SSGI History` like SSGI's: pre-exposed light in RGB,
+	// The half-resolution light material evaluation upsamples, named `Indirect Diffuse History` like SSGI's: pre-exposed light in RGB,
 	// as irradiance over π, and the hit fraction in alpha.
 	surfel_output: descriptor<{ type: StorageImage<rgba16f>, binding: 3, access: write }>;
 }

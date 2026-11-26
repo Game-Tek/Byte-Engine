@@ -46,7 +46,7 @@ OCCLUSION_TEST: const u32 = 3;
 OCCLUSION_PAGES: const u32 = 4;
 
 MAX_TASK_VIEWS: const u32 = 6;
-// The coarsest occlusion pyramid level. Keep it one below `OCCLUSION_PYRAMID_MIP_COUNT`.
+// The coarsest occlusion pyramid level. Keep it one below `MAX_DEPTH_PYRAMID_MIP_COUNT`.
 OCCLUSION_PYRAMID_LAST_LEVEL: const f32 = 8.0;
 
 // Returns an SNORM8 component of a packed word, from the byte at bit `shift`.

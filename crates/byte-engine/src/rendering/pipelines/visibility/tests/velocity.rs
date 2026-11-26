@@ -148,8 +148,8 @@ fn run_velocity_after(
 	descriptors.bind_buffer(slot(&program, "previous_models"), &mut previous_models);
 	descriptors.bind_buffer(slot(&program, "previous_vertex_positions"), &mut previous_positions);
 	descriptors.bind_texture(slot(&program, "depth"), &mut depth);
-	descriptors.bind_image(slot(&program, "triangle_index"), &mut triangle_indices);
-	descriptors.bind_image(slot(&program, "instance_index_render_target"), &mut instance_indices);
+	descriptors.bind_image(slot(&program, "primitive_index"), &mut triangle_indices);
+	descriptors.bind_image(slot(&program, "instance_index"), &mut instance_indices);
 	descriptors.bind_image(slot(&program, "velocity_output"), &mut output);
 	descriptors.bind_image(slot(&program, "reactive_output"), &mut reactive);
 	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, pixel);

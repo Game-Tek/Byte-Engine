@@ -12,7 +12,7 @@ use besl::vm::{
 use super::geometry::{GeometryCapacity, GeometryCounts, GeometryRanges, RetiredRanges};
 use super::layout::{MESHLET_LOCAL_VERTICES, NO_COARSER_LEVEL, ShaderMeshLevel, ShaderMeshletData, ShaderMeshletVertex};
 use super::mesh_dispatch::MeshDispatchWorkItem;
-use super::render_pass::{OCCLUSION_PYRAMID_HEIGHT, OCCLUSION_PYRAMID_MIP_COUNT, OCCLUSION_PYRAMID_WIDTH, OcclusionPhase};
+use super::render_pass::{MAX_DEPTH_PYRAMID_HEIGHT, MAX_DEPTH_PYRAMID_MIP_COUNT, MAX_DEPTH_PYRAMID_WIDTH, OcclusionPhase};
 use super::shader_data::{MESH_FLAG_DOUBLE_SIDED, MESH_FLAG_SKINNED};
 use crate::rendering::shader_vm_test::{
 	IDENTITY_MATRIX, array_buffer, assert_rgba_close, buffer, column_major, compile, empty_image, input_buffer, lane_config,
@@ -20,7 +20,7 @@ use crate::rendering::shader_vm_test::{
 };
 
 const VIEWS: &str = "views";
-const GTAO_VIEW: &str = "gtao_view";
+const HALF_RESOLUTION_VIEW: &str = "half_resolution_view";
 const SCREEN_VIEW: &str = "screen_view";
 const GTAO_PARAMETERS: &str = "gtao_parameters";
 const MESH_DATA: &str = "meshes";
@@ -30,7 +30,7 @@ const MATERIAL_OFFSET: &str = "material_offset_buffer";
 const MATERIAL_OFFSET_SCRATCH: &str = "material_offset_scratch_buffer";
 const MATERIAL_DISPATCH: &str = "material_evaluation_dispatches";
 const PIXEL_MAPPING: &str = "pixel_mapping_buffer";
-const INSTANCE_INDEX: &str = "instance_index_render_target";
+const INSTANCE_INDEX: &str = "instance_index";
 const LIT: &str = "lit_map";
 const DIFFUSE_RADIANCE_HISTORY: &str = "diffuse_radiance_map";
 const SUBSURFACE_ALBEDO: &str = "subsurface_albedo";
@@ -202,7 +202,7 @@ fn visibility_fragment_main_forwards_primitive_and_instance_identifiers() {
 		Value::U32(0x0102_03ab)
 	);
 	assert_eq!(
-		instance_output.read("_besl_output_instance_id").expect("instance output"),
+		instance_output.read("_besl_output_instance_index").expect("instance output"),
 		Value::U32(37)
 	);
 }
@@ -1051,14 +1051,14 @@ fn occlusion_fixture_depth(z: f32) -> f32 {
 /// Builds a full production-extent occlusion pyramid whose mip zero holds `depth(x, y)`. Each later level keeps the
 /// farthest of four texels, as the production build does.
 fn occlusion_pyramid(depth: impl Fn(u32, u32) -> f32) -> Texture {
-	let mut level: Vec<f32> = (0..OCCLUSION_PYRAMID_WIDTH * OCCLUSION_PYRAMID_HEIGHT)
-		.map(|index| depth(index % OCCLUSION_PYRAMID_WIDTH, index / OCCLUSION_PYRAMID_WIDTH))
+	let mut level: Vec<f32> = (0..MAX_DEPTH_PYRAMID_WIDTH * MAX_DEPTH_PYRAMID_HEIGHT)
+		.map(|index| depth(index % MAX_DEPTH_PYRAMID_WIDTH, index / MAX_DEPTH_PYRAMID_WIDTH))
 		.collect();
 	let texels = |level: &[f32]| level.iter().map(|&depth| [depth, 0.0, 0.0, 1.0]).collect::<Vec<_>>();
-	let mut pyramid = texture_2d(OCCLUSION_PYRAMID_WIDTH, OCCLUSION_PYRAMID_HEIGHT, &texels(&level));
-	for mip in 1..OCCLUSION_PYRAMID_MIP_COUNT {
-		let source_width = OCCLUSION_PYRAMID_WIDTH >> (mip - 1);
-		let [width, height] = [OCCLUSION_PYRAMID_WIDTH >> mip, OCCLUSION_PYRAMID_HEIGHT >> mip];
+	let mut pyramid = texture_2d(MAX_DEPTH_PYRAMID_WIDTH, MAX_DEPTH_PYRAMID_HEIGHT, &texels(&level));
+	for mip in 1..MAX_DEPTH_PYRAMID_MIP_COUNT {
+		let source_width = MAX_DEPTH_PYRAMID_WIDTH >> (mip - 1);
+		let [width, height] = [MAX_DEPTH_PYRAMID_WIDTH >> mip, MAX_DEPTH_PYRAMID_HEIGHT >> mip];
 		level = (0..width * height)
 			.map(|index| {
 				let [x, y] = [index % width * 2, index / width * 2];
@@ -1142,7 +1142,7 @@ fn task_main_culls_meshlets_hidden_behind_the_occlusion_pyramid() {
 #[test]
 fn task_main_keeps_meshlets_seen_through_a_gap_in_the_occlusion_pyramid() {
 	// The meshlet covers about the center twentieth of the screen's width. Leave one texel inside it uncovered.
-	let gap = [OCCLUSION_PYRAMID_WIDTH / 2 + 3, OCCLUSION_PYRAMID_HEIGHT / 2 - 5];
+	let gap = [MAX_DEPTH_PYRAMID_WIDTH / 2 + 3, MAX_DEPTH_PYRAMID_HEIGHT / 2 - 5];
 	let mut pyramid = occlusion_pyramid(|x, y| if [x, y] == gap { 0.0 } else { occlusion_fixture_depth(5.0) });
 
 	assert_eq!(
@@ -2112,7 +2112,7 @@ fn run_pixel_mapping(
 		}
 		texture
 	});
-	let [lit, diffuse_radiance_history, subsurface_albedo] = &mut images;
+	let [lit, diffuse_radiance, subsurface_albedo] = &mut images;
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(slot(program, MESH_DATA), &mut tables.meshes);
 	descriptors.bind_buffer(slot(program, MATERIAL_EVALUATIONS), &mut tables.evaluations);
@@ -2120,7 +2120,7 @@ fn run_pixel_mapping(
 	descriptors.bind_buffer(slot(program, PIXEL_MAPPING), &mut pixel_mapping);
 	descriptors.bind_image(slot(program, INSTANCE_INDEX), instance_indices);
 	descriptors.bind_image(slot(program, LIT), lit);
-	descriptors.bind_image(slot(program, DIFFUSE_RADIANCE_HISTORY), diffuse_radiance_history);
+	descriptors.bind_image(slot(program, DIFFUSE_RADIANCE_HISTORY), diffuse_radiance);
 	descriptors.bind_image(slot(program, SUBSURFACE_ALBEDO), subsurface_albedo);
 	descriptors.bind_push_constant(&mut push_constant);
 	run_workgroup_containing::<PIXEL_MAPPING_WORKGROUP_SIZE>(program, descriptors, PIXEL_MAPPING_WORKGROUP_WIDTH, [0, 0]);
@@ -2519,8 +2519,8 @@ pub(super) const GTAO_DEPTH_NUMERATOR: f32 = GTAO_NEAR * GTAO_FAR / (GTAO_FAR - 
 pub(super) const GTAO_DEPTH_OFFSET: f32 = GTAO_NEAR / (GTAO_FAR - GTAO_NEAR);
 
 /// Creates compact camera data for one square GTAO shader fixture.
-fn gtao_view_data(program: &ExecutableProgram, width: u32, height: u32) -> besl::vm::Buffer {
-	screen_view_buffer(program, slot(program, GTAO_VIEW), width, height)
+fn half_resolution_view_data(program: &ExecutableProgram, width: u32, height: u32) -> besl::vm::Buffer {
+	screen_view_buffer(program, slot(program, HALF_RESOLUTION_VIEW), width, height)
 }
 
 /// Returns the pixel-to-ray scale in xy and offset in zw of a `width` by `height` image seen through the fixture
@@ -2606,7 +2606,7 @@ fn run_gtao(
 	coordinate: [u32; 2],
 	(radius, samples_per_ray, radial_rays): (f32, u32, u32),
 ) -> GtaoOutput {
-	let mut view = gtao_view_data(program, width, height);
+	let mut view = half_resolution_view_data(program, width, height);
 	let mut parameters = buffer(program, slot(program, GTAO_PARAMETERS));
 	for (member, value) in [
 		("radius", Value::F32(radius)),
@@ -2623,7 +2623,7 @@ fn run_gtao(
 	let mut bent_normal = empty_image(width, height);
 	let mut blue_noise = blue_noise_texture();
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(slot(program, GTAO_VIEW), &mut view);
+	descriptors.bind_buffer(slot(program, HALF_RESOLUTION_VIEW), &mut view);
 	descriptors.bind_buffer(slot(program, GTAO_PARAMETERS), &mut parameters);
 	descriptors.bind_texture(slot(program, "depth_pyramid"), &mut depth_pyramid);
 	descriptors.bind_image(slot(program, "ao_output"), &mut output);
@@ -2762,7 +2762,7 @@ fn run_gtao_depth_pyramid(program: &ExecutableProgram, source: &mut Texture, wid
 		empty_image((width / 4).max(1), (height / 4).max(1)),
 		empty_image((width / 8).max(1), (height / 8).max(1)),
 	];
-	let mut view = gtao_view_data(program, width, height);
+	let mut view = half_resolution_view_data(program, width, height);
 	// Without a cascade fit, the pass leaves the bounds alone.
 	let mut bounds = buffer(program, slot(program, RECEIVER_BOUNDS));
 	let mut fit = buffer(program, slot(program, RECEIVER_FIT));
@@ -2771,7 +2771,7 @@ fn run_gtao_depth_pyramid(program: &ExecutableProgram, source: &mut Texture, wid
 		.write("fitted_suns", Value::U32(0))
 		.expect("depth pyramid push constant");
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(slot(program, GTAO_VIEW), &mut view);
+	descriptors.bind_buffer(slot(program, HALF_RESOLUTION_VIEW), &mut view);
 	descriptors.bind_texture(slot(program, "source_depth"), source);
 	let [reduced_1, reduced_2, reduced_3] = &mut reduced;
 	descriptors.bind_image(slot(program, "reduced_depth_1"), reduced_1);
@@ -2884,8 +2884,8 @@ fn directional_shadow_depth_pyramid_combines_each_cells_four_blocks_in_every_cas
 		for workgroup_x in [0, PYRAMID_WORKGROUP_WIDTH] {
 			let mut descriptors = DescriptorBindings::new();
 			descriptors.bind_texture(slot(&program, "source_depth"), &mut source);
-			descriptors.bind_image(slot(&program, "reduced_depth_1"), &mut reduced);
-			descriptors.bind_image(slot(&program, "reduced_minimum_1"), &mut reduced_minimum);
+			descriptors.bind_image(slot(&program, "reduced_max_depth"), &mut reduced);
+			descriptors.bind_image(slot(&program, "reduced_min_depth"), &mut reduced_minimum);
 			run_workgroup_containing::<PYRAMID_WORKGROUP_SIZE>(
 				&program,
 				descriptors,
@@ -3055,13 +3055,13 @@ fn run_gtao_upscale_fixture(
 	ao_texels: &[[f32; 4]],
 	coordinate: [u32; 2],
 ) -> [f32; 4] {
-	let mut view = gtao_view_data(program, low_extent[0], low_extent[1]);
+	let mut view = half_resolution_view_data(program, low_extent[0], low_extent[1]);
 	let mut device_depth = texture_2d(full_extent[0], full_extent[1], device_depth_texels);
 	let mut linear_depth = texture_2d(low_extent[0], low_extent[1], linear_depth_texels);
 	let mut ao = texture_2d(low_extent[0], low_extent[1], ao_texels);
 	let mut output = empty_image(full_extent[0], full_extent[1]);
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(slot(program, GTAO_VIEW), &mut view);
+	descriptors.bind_buffer(slot(program, HALF_RESOLUTION_VIEW), &mut view);
 	descriptors.bind_texture(slot(program, "visibility_depth"), &mut device_depth);
 	descriptors.bind_texture(slot(program, "ao_source"), &mut ao);
 	descriptors.bind_image(slot(program, "ao_output"), &mut output);
@@ -3173,13 +3173,13 @@ fn backdrop_copies_light_and_linearizes_depth() {
 		[0.0, 0.0, 0.0, 1.0],
 	];
 
-	let mut view = gtao_view_data(&program, 2, 1);
+	let mut view = half_resolution_view_data(&program, 2, 1);
 	let mut source_lit = texture_2d(2, 1, &lit);
 	let mut source_depth = texture_2d(2, 1, &depth);
 	let mut color = empty_image(2, 1);
 	let mut linear_depth = empty_image(2, 1);
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(slot(&program, GTAO_VIEW), &mut view);
+	descriptors.bind_buffer(slot(&program, HALF_RESOLUTION_VIEW), &mut view);
 	descriptors.bind_texture(slot(&program, "source_lit"), &mut source_lit);
 	descriptors.bind_texture(slot(&program, "source_depth"), &mut source_depth);
 	descriptors.bind_image(slot(&program, "color"), &mut color);
@@ -3252,7 +3252,7 @@ const SSGI_EXTENT: u32 = 32;
 /// The uniform diffuse radiance of the previous frame in trace fixtures, as the trace reports it for a hit.
 const SSGI_LIT_COLOR: [f32; 4] = [2.0, 1.0, 0.5, 1.0];
 
-/// Returns the square fixture projection that [`gtao_view_data`] also encodes. The screen-space reflection tests
+/// Returns the square fixture projection that [`half_resolution_view_data`] also encodes. The screen-space reflection tests
 /// share it.
 pub(super) fn ssgi_projection() -> maths_rs::Mat4f {
 	math::projection_matrix(math::Degrees::new(60.0), 1.0, GTAO_NEAR, GTAO_FAR)
@@ -4131,7 +4131,7 @@ impl SunVisibilityGeometry {
 		descriptors.bind_buffer(slot(program, VERTEX_POSITIONS), &mut self.positions);
 		descriptors.bind_buffer(slot(program, VERTEX_INDICES), &mut self.vertex_indices);
 		descriptors.bind_buffer(slot(program, PRIMITIVE_INDICES), &mut self.primitive_indices);
-		descriptors.bind_image(slot(program, "triangle_index"), &mut self.triangle_indices);
+		descriptors.bind_image(slot(program, "primitive_index"), &mut self.triangle_indices);
 		descriptors.bind_image(slot(program, INSTANCE_INDEX), &mut self.instance_indices);
 	}
 }
@@ -4236,12 +4236,12 @@ fn run_sun_visibility_program(
 	descriptors.bind_image(slot(&program, "sun_visibility_output"), &mut output);
 	descriptors.bind_texture(slot(&program, "contact_shadow_trace"), &mut trace);
 	descriptors.bind_buffer(slot(&program, "sun_visibility_parameters"), &mut parameters);
-	descriptors.bind_texture(slot(&program, "depth_shadow_map"), &mut shadow_map);
+	descriptors.bind_texture(slot(&program, "directional_shadow_map"), &mut shadow_map);
 	descriptors.bind_texture(
-		slot(&program, "directional_shadow_depth_minimum_pyramid"),
+		slot(&program, "directional_shadow_min_depth_pyramid"),
 		&mut shadow_minimum_pyramid,
 	);
-	descriptors.bind_texture(slot(&program, "directional_shadow_depth_cells"), &mut shadow_cells);
+	descriptors.bind_texture(slot(&program, "directional_shadow_max_depth_pyramid"), &mut shadow_cells);
 	run_workgroup_containing::<TILE_WORKGROUP_SIZE>(&program, descriptors, TILE_WORKGROUP_WIDTH, pixel);
 	rgba(&output, pixel)
 }
@@ -4912,7 +4912,7 @@ fn run_receiver_bounds(scene: &ReceiverFitScene) -> besl::vm::Buffer {
 	let program = asset!("depth-pyramid.besl");
 	let half_extent = RECEIVER_FIT_EXTENT / 2;
 	let mut depth = texture_2d(RECEIVER_FIT_EXTENT, RECEIVER_FIT_EXTENT, &scene.device_depth);
-	let mut view = gtao_view_data(&program, half_extent, half_extent);
+	let mut view = half_resolution_view_data(&program, half_extent, half_extent);
 	let mut reduced = [
 		empty_image(half_extent, half_extent),
 		empty_image(half_extent / 2, half_extent / 2),
@@ -4932,7 +4932,7 @@ fn run_receiver_bounds(scene: &ReceiverFitScene) -> besl::vm::Buffer {
 		];
 		let [reduced_1, reduced_2, reduced_3] = &mut reduced;
 		let mut descriptors = DescriptorBindings::new();
-		descriptors.bind_buffer(slot(&program, GTAO_VIEW), &mut view);
+		descriptors.bind_buffer(slot(&program, HALF_RESOLUTION_VIEW), &mut view);
 		descriptors.bind_texture(slot(&program, "source_depth"), &mut depth);
 		descriptors.bind_image(slot(&program, "reduced_depth_1"), reduced_1);
 		descriptors.bind_image(slot(&program, "reduced_depth_2"), reduced_2);

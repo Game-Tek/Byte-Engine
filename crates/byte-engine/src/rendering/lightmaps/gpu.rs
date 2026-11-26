@@ -751,7 +751,7 @@ impl Bake {
 			host("Lightmap Bake Material Parameters", parameter_values.len()),
 			&parameter_values,
 		);
-		let lighting_buffer = render.build_buffer_with::<LightingData>(
+		let lighting_data = render.build_buffer_with::<LightingData>(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
 				.name("Lightmap Bake Lights")
 				.host_access(ghi::HostAccess::Write),
@@ -786,7 +786,7 @@ impl Bake {
 			ENGINE_MODULES,
 		);
 		let lights_set = lights_layout.create_set(render, "Lightmap Bake Lights");
-		render.write(&[lights_layout.binder(lights_set).buffer("scene_lights", lighting_buffer)]);
+		render.write(&[lights_layout.binder(lights_set).buffer("lighting_data", lighting_data)]);
 
 		// The texels, their sums, and the image.
 		let bake_layout = SetLayout::from_layer(
@@ -866,7 +866,7 @@ impl Bake {
 		if loaded.environment.is_none() {
 			// Paths that leave a scene without an environment bring back no light.
 			let fallback = create_fallback_environment(render, queue, environment_sampler);
-			render.write(&[bake_binder.sampled("lightmap_environment", fallback.specular_image, environment_sampler)]);
+			render.write(&[bake_binder.sampled("lightmap_environment_specular", fallback.specular_image, environment_sampler)]);
 		}
 
 		let command_buffer = render.queue(queue).create_command_buffer(Some("Lightmap Bake"));
@@ -1023,7 +1023,7 @@ impl Bake {
 				if let Some(environment) = environment.take() {
 					let specular = frame.intern_image(environment.specular_image);
 					frame.write(&[bake_layout.binder(*bake_set).sampled(
-						"lightmap_environment",
+						"lightmap_environment_specular",
 						specular,
 						*environment_sampler,
 					)]);

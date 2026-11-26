@@ -20,7 +20,7 @@ use super::super::shader_data::ShaderViewData;
 use super::super::shadow_selection::{ShadowLayout, SunShadow};
 use super::super::shadow_updates::{ShadowDraw, ShadowDraws, ShadowImage};
 use super::super::virtual_shadows::{DirectionalShadowTechnique, VirtualShadowSettings};
-use super::depth_pyramid::{ScreenViewData, screen_view_data};
+use super::min_depth_pyramid::{ScreenViewData, screen_view_data};
 use super::virtual_shadows::VirtualShadowMaps;
 use super::{
 	ComputeStage, OcclusionPhase, Pipelines, StageCounters, opaque_layer_pipelines, record_compute_stages,
@@ -191,7 +191,7 @@ pub(crate) fn receiver_fit_shader_data(
 ///
 /// The shadow views come from the first sink, so each sink would render the same maps. The visibility pipeline manager
 /// owns one `ShadowMaps` and records it with the first sink only; every sink's material evaluation samples its
-/// [`Self::directional`], [`Self::directional_depth_pyramid`], [`Self::cone`], and [`Self::point`] images. Each frame
+/// [`Self::directional`], [`Self::directional_max_depth_pyramid`], [`Self::cone`], and [`Self::point`] images. Each frame
 /// renders its maps before it reads them, and the graphics queue orders one frame's reads before the next frame's
 /// writes, so frames in flight share the images too.
 ///
@@ -207,9 +207,9 @@ pub(crate) struct ShadowMaps {
 	pub(crate) directional: ghi::BaseImageHandle,
 	/// One max-depth cell per [`DIRECTIONAL_SHADOW_DEPTH_CELL_SIZE`] texels of each cascade, one layer's cells below
 	/// the previous layer's.
-	pub(crate) directional_depth_pyramid: ghi::BaseImageHandle,
+	pub(crate) directional_max_depth_pyramid: ghi::BaseImageHandle,
 	/// The same cells' min depth, which proves receivers behind every texel of an area fully shadowed.
-	pub(crate) directional_depth_minimum_pyramid: ghi::BaseImageHandle,
+	pub(crate) directional_min_depth_pyramid: ghi::BaseImageHandle,
 	/// One image per size class, the smallest first.
 	pub(crate) cone: [ghi::BaseImageHandle; LOCAL_SHADOW_SIZE_CLASS_COUNT],
 	/// One image per size class, the smallest first.
@@ -237,7 +237,7 @@ impl ShadowMaps {
 	/// [`ShadowWork::cascade_resolution`] draws them at it. Every map image starts empty, and [`Self::prepare`] sizes
 	/// it to the maps the budget gives it.
 	///
-	/// Next, write [`Self::directional`], [`Self::directional_depth_pyramid`], [`Self::cone`], and [`Self::point`] into
+	/// Next, write [`Self::directional`], [`Self::directional_max_depth_pyramid`], [`Self::cone`], and [`Self::point`] into
 	/// each sink's material-evaluation descriptor set, as [`super::VisibilityRenderPass::new`] does, and record
 	/// [`Self::prepare`] with the first sink each frame.
 	pub(crate) fn new(
@@ -267,10 +267,11 @@ impl ShadowMaps {
 				.extent(depth_pyramid_extent(resolution, 1))
 				.mip_levels(DIRECTIONAL_SHADOW_DEPTH_PYRAMID_MIP_COUNT)
 		};
-		let directional_depth_pyramid: ghi::BaseImageHandle =
-			context.build_image(depth_pyramid("Directional Shadow Depth Pyramid")).into();
-		let directional_depth_minimum_pyramid: ghi::BaseImageHandle = context
-			.build_image(depth_pyramid("Directional Shadow Minimum Depth Pyramid"))
+		let directional_max_depth_pyramid: ghi::BaseImageHandle = context
+			.build_image(depth_pyramid("Directional Shadow Max Depth Pyramid"))
+			.into();
+		let directional_min_depth_pyramid: ghi::BaseImageHandle = context
+			.build_image(depth_pyramid("Directional Shadow Min Depth Pyramid"))
 			.into();
 		// Images start at zero extent, so no map has backing memory until a visible light uses it.
 		let cone = std::array::from_fn(|_| {
@@ -294,8 +295,8 @@ impl ShadowMaps {
 		let pyramid = shadow_depth_pyramid_layout.binder(depth_pyramid_descriptor_set);
 		context.write(&[
 			pyramid.sampled("source_depth", directional, source_sampler),
-			pyramid.image_mip("reduced_depth_1", directional_depth_pyramid, 0),
-			pyramid.image_mip("reduced_minimum_1", directional_depth_minimum_pyramid, 0),
+			pyramid.image_mip("reduced_max_depth", directional_max_depth_pyramid, 0),
+			pyramid.image_mip("reduced_min_depth", directional_min_depth_pyramid, 0),
 		]);
 		Self {
 			depth_pyramid_descriptor_set,
@@ -303,8 +304,8 @@ impl ShadowMaps {
 			local_pipelines: Pipelines::sides(pipeline_manager, "cone-shadow"),
 			depth_pyramid_pipeline: Pipelines::request(pipeline_manager, ["directional-shadow-depth-pyramid"]),
 			directional,
-			directional_depth_pyramid,
-			directional_depth_minimum_pyramid,
+			directional_max_depth_pyramid,
+			directional_min_depth_pyramid,
 			cone,
 			point,
 			virtual_maps: VirtualShadowMaps::new(
@@ -399,7 +400,7 @@ impl ShadowMaps {
 				POINT_SHADOW_FACE_COUNT,
 			);
 		}
-		for pyramid in [self.directional_depth_pyramid, self.directional_depth_minimum_pyramid] {
+		for pyramid in [self.directional_max_depth_pyramid, self.directional_min_depth_pyramid] {
 			frame.resize_image(pyramid, depth_pyramid_extent(work.cascade_resolution, layout.suns));
 		}
 
@@ -495,7 +496,7 @@ pub(super) struct CascadeFitPass {
 impl CascadeFitPass {
 	/// Creates the fit's buffers and requests its pipeline. `views` is the scene's views buffer, whose cascade views
 	/// the fit rewrites through its own set, the only one that binds them for writing. Hand
-	/// [`Self::receiver_bounds`] and [`Self::receiver_fit_parameters`] to the sink's [`super::DepthPyramidPass`],
+	/// [`Self::receiver_bounds`] and [`Self::receiver_fit_parameters`] to the sink's [`super::MinDepthPyramidPass`],
 	/// which finds the bounds.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,

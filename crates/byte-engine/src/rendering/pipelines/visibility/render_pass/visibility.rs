@@ -33,7 +33,7 @@ pub(super) struct VisibilityPass {
 	/// the alpha test, come from the coverage shaders.
 	pub(super) pipelines: Pipelines<2>,
 	pub(super) primitive_index: ghi::BaseImageHandle,
-	pub(super) instance_id: ghi::BaseImageHandle,
+	pub(super) instance_index: ghi::BaseImageHandle,
 	pub(super) depth: ghi::BaseImageHandle,
 }
 
@@ -74,7 +74,7 @@ impl VisibilityPass {
 		};
 		let attachments = [
 			identifier(self.primitive_index),
-			identifier(self.instance_id),
+			identifier(self.instance_index),
 			ghi::AttachmentInformation::new(
 				self.depth,
 				ghi::Layouts::RenderTarget,

@@ -56,7 +56,7 @@ pub(crate) const ENGINE_MODULES: &[(&str, &str)] = engine_modules![
 	"visibility/layouts/gtao.besl",
 	"visibility/layouts/gtao_blur.besl",
 	"visibility/layouts/gtao_upscale.besl",
-	"visibility/layouts/gtao_view.besl",
+	"visibility/layouts/half_resolution_view.besl",
 	"visibility/layouts/hiz_base.besl",
 	"visibility/layouts/hiz_tail.besl",
 	"visibility/layouts/light_clusters.besl",

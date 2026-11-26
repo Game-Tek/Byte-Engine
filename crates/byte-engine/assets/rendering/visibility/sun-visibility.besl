@@ -265,7 +265,7 @@ resolve_sun_shadow: fn (
 	let first_cascade: u32 = sun * 4;
 	return sample_directional_shadow(
 		scene, shadows,
-		shadows.depth_shadow_map,
+		shadows.directional_shadow_map,
 		first_cascade + 1,
 		first_cascade + 2,
 		first_cascade + 3,
@@ -317,7 +317,7 @@ main: fn (input: StageInput, scene: Scene, sun_visibility: SunVisibility, sampli
 	if (input.thread_idx < sun_count * 4) {
 		let cascade_view_projection: mat4f = scene.views.views[input.thread_idx + 1].view_projection;
 		shared_cascade_texels_per_meter[input.thread_idx] = directional_shadow_texels_per_meter(
-			cascade_view_projection, f32(texture_size(shadows.depth_shadow_map).x)
+			cascade_view_projection, f32(texture_size(shadows.directional_shadow_map).x)
 		);
 		shared_cascade_depth_per_meter[input.thread_idx] = directional_shadow_depth_per_meter(cascade_view_projection);
 	}
@@ -337,14 +337,14 @@ main: fn (input: StageInput, scene: Scene, sun_visibility: SunVisibility, sampli
 	let pixel_f: vec2f = vec2f(f32(pixel.x), f32(pixel.y));
 	let view_position: vec3f = sun_view_position(sun_visibility, pixel_f, 1.0 / center_inverse_z);
 	let world_position: vec3f = scene.views.views[0].inverse_view * vec4f(view_position.x, view_position.y, view_position.z, 1.0);
-	let instance_index: u32 = image_load_u32(sun_visibility.instance_index_render_target, pixel);
+	let instance_index: u32 = image_load_u32(sun_visibility.instance_index, pixel);
 	if (instance_index == 4294967295) {
 		write(sun_visibility.sun_visibility_output, pixel, vec4f(1.0, 1.0, 1.0, 1.0));
 		return;
 	}
 	let mesh: Mesh = scene.meshes[instance_index];
 	// The low eight bits name the triangle within its meshlet, and the rest the meshlet.
-	let triangle_meshlet_indices: u32 = image_load_u32(sun_visibility.triangle_index, pixel);
+	let triangle_meshlet_indices: u32 = image_load_u32(sun_visibility.primitive_index, pixel);
 	let meshlet: Meshlet = scene.meshlets[triangle_meshlet_indices >> 8];
 	let primitive_index_base: u32 = (meshlet.triangle_offset + (triangle_meshlet_indices & 255)) * 3;
 	let vertex_index_base: u32 = meshlet.primitive_offset;

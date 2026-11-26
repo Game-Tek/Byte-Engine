@@ -803,9 +803,9 @@ pub(super) fn visibility_shader_module<'a>(tile: bool) -> [Node<'a>; 2] {
 
 /// Declares the screen-space indirect diffuse helpers from [`sources`].
 ///
-/// Opaque material evaluation reconstructs each pixel's indirect diffuse light from the half-resolution SSGI history
-/// with them, so SSGI writes no full-resolution image. They read `ssgi_normals`, `ssgi_view`, `ssgi_history`, and
-/// `depth_pyramid` of the material evaluation set.
+/// Opaque material evaluation reconstructs each pixel's indirect diffuse light from the half-resolution indirect
+/// diffuse history with them, so SSGI writes no full-resolution image. They read `indirect_diffuse_normals`,
+/// `half_resolution_view`, `indirect_diffuse_history`, and `depth_pyramid` of the material evaluation set.
 ///
 /// An uber shader's scope, `tile`, declares the tile's workgroup window of history texels instead, and a
 /// `sample_screen_space_indirect_diffuse` that reads its taps from the window, so the lighting suffix is the same.

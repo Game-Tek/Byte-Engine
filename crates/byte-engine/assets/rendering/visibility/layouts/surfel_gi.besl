@@ -291,7 +291,7 @@ SurfelGi: layer {
 	surfel_rays: descriptor<{ type: u32[], binding: 11, access: read_write }>;
 	surfel_ray_results: descriptor<{ type: SurfelRayResult[], binding: 12, access: read_write }>;
 	// The scene's lights, which light what the rays hit.
-	surfel_scene_lights: descriptor<{ type: LightingBuffer, binding: 13, access: read, memory: device }>;
+	surfel_lighting_data: descriptor<{ type: LightingBuffer, binding: 13, access: read, memory: device }>;
 	// The frame's spawn requests from rays' hits, the first `hit_spawns` of them.
 	surfel_hit_spawns: descriptor<{ type: SurfelHitSpawn[], binding: 14, access: read_write }>;
 	// Each surfel's guide cells, SURFEL_GUIDE_CELLS per slot, row by row of the equal-area square.
@@ -303,7 +303,7 @@ SurfelGi: layer {
 	// resolve skips the occlusion test for a pixel nearer than it. The integrate pass measures it every frame.
 	surfel_clearances: descriptor<{ type: f32[], binding: 17, access: read_write }>;
 	// The environment's roughness-prefiltered specular levels, whose light the rays that miss bring back.
-	surfel_environment_radiance: descriptor<{ type: TextureCube, binding: 18, access: read }>;
+	surfel_environment_specular: descriptor<{ type: TextureCube, binding: 18, access: read }>;
 }
 
 // Returns the cascade-zero cell that holds `relative`, a position relative to the grid origin. The coordinates are

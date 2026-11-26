@@ -1,5 +1,5 @@
 //! Per-sink GPU work: shadows, light clusters, visibility rasterization, material prepasses, the cascade fit, the
-//! occlusion and linear depth pyramids, sun visibility, GTAO, SSGI or the surfel or probe resolve, material
+//! max and min depth pyramids, sun visibility, GTAO, SSGI or the surfel or probe resolve, material
 //! evaluation, which also traces screen-space reflections, and the light of the height fog. GTAO runs only while its settings enable it, and SSGI, surfel
 //! GI, and probe GI only in frames they light; see [`IndirectDiffuseSource`].
 //!
@@ -8,11 +8,11 @@
 //! with the sink's [`StageCounters`] so the inspector reports where the pass's GPU time goes.
 
 mod backdrop;
-mod depth_pyramid;
 mod fog_light;
 mod gtao;
 mod light_clusters;
 mod materials;
+mod min_depth_pyramid;
 mod occlusion;
 mod probe_gi;
 mod ray_hits;
@@ -175,10 +175,6 @@ pub(super) fn record_meshlet_dispatches(
 
 use self::backdrop::BackdropPass;
 pub(crate) use self::backdrop::{BackdropTargets, create_backdrop_targets};
-use self::depth_pyramid::DepthPyramidPass;
-// Only the layout tests compare the record with the stride its layer reflects.
-#[cfg(test)]
-pub(crate) use self::depth_pyramid::ScreenViewData;
 use self::fog_light::FogLightPass;
 pub(crate) use self::fog_light::create_fog_light_target;
 #[cfg(test)]
@@ -189,6 +185,10 @@ pub(crate) use self::gtao::{GtaoSettings, create_gtao_targets};
 use self::light_clusters::LightClusterPass;
 pub(super) use self::materials::{MATERIAL_EVALUATION_PUSH_CONSTANT_SIZE, MATERIAL_PREPASS_PIPELINES};
 use self::materials::{MaterialEvaluationPass, MaterialPrepasses, ScreenSpaceLighting, evaluation_is_active};
+use self::min_depth_pyramid::MinDepthPyramidPass;
+// Only the layout tests compare the record with the stride its layer reflects.
+#[cfg(test)]
+pub(crate) use self::min_depth_pyramid::ScreenViewData;
 use self::occlusion::OcclusionCulling;
 pub(crate) use self::occlusion::OcclusionPhase;
 pub(super) use self::probe_gi::PROBE_GI_PIPELINES;
@@ -206,7 +206,7 @@ use self::shadows::CascadeFitPass;
 pub(crate) use self::shadows::{ShadowMaps, ShadowWork, SunCascades};
 pub(super) use self::ssgi::SSGI_PIPELINES;
 use self::ssgi::SsgiPass;
-pub(crate) use self::ssgi::{SsgiTargets, create_diffuse_radiance_history_target, create_ssgi_targets};
+pub(crate) use self::ssgi::{IndirectDiffuseTargets, create_diffuse_radiance_target, create_indirect_diffuse_targets};
 pub(super) use self::subsurface::SUBSURFACE_PIPELINES;
 use self::subsurface::SubsurfacePass;
 pub(crate) use self::subsurface::{SubsurfaceTargets, create_subsurface_targets};
@@ -227,8 +227,8 @@ pub(crate) use self::virtual_shadows::VirtualShadowMark;
 use self::visibility::{VisibilityPass, VisibilityPhase};
 #[cfg(test)]
 pub(crate) use self::{
-	depth_pyramid::screen_view_data,
-	occlusion::{OCCLUSION_PYRAMID_HEIGHT, OCCLUSION_PYRAMID_MIP_COUNT, OCCLUSION_PYRAMID_WIDTH},
+	min_depth_pyramid::screen_view_data,
+	occlusion::{MAX_DEPTH_PYRAMID_HEIGHT, MAX_DEPTH_PYRAMID_MIP_COUNT, MAX_DEPTH_PYRAMID_WIDTH},
 	shadows::{ReceiverFitShaderData, receiver_fit_shader_data},
 };
 use super::acceleration_structures::AccelerationStructureWork;
@@ -277,12 +277,14 @@ pub(crate) struct StageCounters {
 	virtual_shadow_maps: ghi::CounterHandle,
 	light_clusters: ghi::CounterHandle,
 	visibility_early: ghi::CounterHandle,
-	occlusion_pyramid: ghi::CounterHandle,
+	/// The farthest-depth pyramid that occlusion culling tests meshlets against.
+	max_depth_pyramid: ghi::CounterHandle,
 	visibility_late: ghi::CounterHandle,
 	/// The opaque layer's material count, offset, and pixel mapping.
 	material_prepasses: ghi::CounterHandle,
 	cascade_fit: ghi::CounterHandle,
-	depth_pyramid: ghi::CounterHandle,
+	/// The nearest linear depth pyramid the screen-space passes sample, and the shadow receiver bounds.
+	min_depth_pyramid: ghi::CounterHandle,
 	/// The bottom-level builds and the top-level build of the scene's acceleration structures.
 	acceleration_structures: ghi::CounterHandle,
 	/// The surfel economy, count, scan, and scatter that list the frame's surfels in the grid.
@@ -330,11 +332,11 @@ impl StageCounters {
 			virtual_shadow_maps: builder.create_gpu_counter("virtual-shadow-maps"),
 			light_clusters: builder.create_gpu_counter("light-clusters"),
 			visibility_early: builder.create_gpu_counter("visibility-early"),
-			occlusion_pyramid: builder.create_gpu_counter("occlusion-pyramid"),
+			max_depth_pyramid: builder.create_gpu_counter("max-depth-pyramid"),
 			visibility_late: builder.create_gpu_counter("visibility-late"),
 			material_prepasses: builder.create_gpu_counter("material-prepasses"),
 			cascade_fit: builder.create_gpu_counter("cascade-fit"),
-			depth_pyramid: builder.create_gpu_counter("depth-pyramid"),
+			min_depth_pyramid: builder.create_gpu_counter("min-depth-pyramid"),
 			acceleration_structures: builder.create_gpu_counter("acceleration-structures"),
 			surfel_grid: builder.create_gpu_counter("surfel-grid"),
 			surfel_validate: builder.create_gpu_counter("surfel-validate"),
@@ -394,12 +396,12 @@ pub(crate) struct SinkTargets {
 	/// the pixel that saw their hit.
 	pub(crate) depth: ghi::ImageHandle,
 	pub(crate) primitive_index: ghi::BaseImageHandle,
-	pub(crate) instance_id: ghi::BaseImageHandle,
-	/// The SSGI images. Surfel GI and probe GI write the same images in SSGI's place.
-	pub(crate) ssgi: SsgiTargets,
+	pub(crate) instance_index: ghi::BaseImageHandle,
+	/// The half-resolution indirect diffuse light and its normals, which SSGI, surfel GI, or probe GI writes.
+	pub(crate) indirect_diffuse: IndirectDiffuseTargets,
 	/// The diffuse light that opaque material evaluation writes for next frame's SSGI rays, present when the project
 	/// builds SSGI in.
-	pub(crate) diffuse_radiance_history: Option<ghi::ImageHandle>,
+	pub(crate) diffuse_radiance: Option<ghi::ImageHandle>,
 	/// Surfel GI's own images, present when the frame has a [`SurfelPool`] that surfel GI can light this sink from.
 	pub(crate) surfels: Option<SurfelTargets>,
 	/// The sun's contact shadows, which opaque material evaluation multiplies into the sun's shadow.
@@ -598,7 +600,7 @@ pub(crate) struct VisibilityRenderPass {
 	occlusion: OcclusionCulling,
 	/// Absent in the uber material evaluation mode, whose uber shaders find each pixel's material themselves.
 	material_prepasses: Option<MaterialPrepasses>,
-	depth_pyramid: DepthPyramidPass,
+	min_depth_pyramid: MinDepthPyramidPass,
 	sun_visibility: SunVisibilityPass,
 	/// Absent when the project left GTAO out of its shaders.
 	gtao: Option<GtaoPass>,
@@ -640,7 +642,7 @@ impl VisibilityRenderPass {
 		pipeline_manager: PipelineManagerClient,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		views_buffer: ghi::BaseBufferHandle,
-		lighting_buffer: ghi::BufferHandle<LightingData>,
+		lighting_data: ghi::BufferHandle<LightingData>,
 		targets: SinkTargets,
 		shadow_maps: &ShadowMaps,
 		stage_counters: StageCounters,
@@ -666,7 +668,7 @@ impl VisibilityRenderPass {
 				base_descriptor_set,
 				visibility,
 				material_evaluation_descriptor_set,
-				targets.instance_id,
+				targets.instance_index,
 			)
 		});
 		let linear_sampler = context.build_sampler(ghi::sampler::Builder::new());
@@ -679,7 +681,7 @@ impl VisibilityRenderPass {
 		// The passes of this frame bind its own copy of the depth; only reflections read the previous one.
 		let depth: ghi::BaseImageHandle = targets.depth.into();
 		let cascade_fit = CascadeFitPass::new(context, &pipeline_manager, views_buffer);
-		let depth_pyramid = DepthPyramidPass::new(
+		let min_depth_pyramid = MinDepthPyramidPass::new(
 			context,
 			&pipeline_manager,
 			depth,
@@ -698,23 +700,23 @@ impl VisibilityRenderPass {
 			.enabled()
 			.then(|| shadow_maps.virtual_maps.create_mark(context, depth));
 		// The diffuse radiance history exists exactly when the project builds SSGI in.
-		let ssgi = targets.diffuse_radiance_history.map(|diffuse_radiance_history| {
+		let ssgi = targets.diffuse_radiance.map(|diffuse_radiance| {
 			SsgiPass::new(
 				context,
 				&pipeline_manager,
-				depth_pyramid.depth_pyramid,
-				depth_pyramid.view_data,
-				targets.ssgi,
-				diffuse_radiance_history,
+				min_depth_pyramid.min_depth_pyramid,
+				min_depth_pyramid.view_data,
+				targets.indirect_diffuse,
+				diffuse_radiance,
 				blue_noise,
 			)
 		});
 		let surfel_resolve = targets.surfels.map(|surfels| {
 			SurfelResolvePass::new(
 				context,
-				depth_pyramid.depth_pyramid,
-				depth_pyramid.view_data,
-				targets.ssgi,
+				min_depth_pyramid.min_depth_pyramid,
+				min_depth_pyramid.view_data,
+				targets.indirect_diffuse,
 				surfels,
 				&debug_views,
 			)
@@ -722,26 +724,31 @@ impl VisibilityRenderPass {
 		let probe_resolve = probe_gi.then(|| {
 			ProbeResolvePass::new(
 				context,
-				depth_pyramid.depth_pyramid,
-				depth_pyramid.view_data,
-				targets.ssgi,
+				min_depth_pyramid.min_depth_pyramid,
+				min_depth_pyramid.view_data,
+				targets.indirect_diffuse,
 				&debug_views,
 			)
 		});
-		let light_clusters = LightClusterPass::new(context, &pipeline_manager, lighting_buffer, evaluation);
-		let reflections =
-			ScreenSpaceReflections::new(context, evaluation, depth_pyramid.depth_pyramid, targets.lit, targets.depth);
+		let light_clusters = LightClusterPass::new(context, &pipeline_manager, lighting_data, evaluation);
+		let reflections = ScreenSpaceReflections::new(
+			context,
+			evaluation,
+			min_depth_pyramid.min_depth_pyramid,
+			targets.lit,
+			targets.depth,
+		);
 		let backdrop = BackdropPass::new(
 			context,
 			&pipeline_manager,
-			depth_pyramid.view_descriptor_set,
+			min_depth_pyramid.view_descriptor_set,
 			evaluation,
 			depth_sampler,
 			targets.lit,
 			depth,
 			targets.backdrop,
 		);
-		let screen_query = ScreenQueryPass::new(context, &pipeline_manager, targets.instance_id);
+		let screen_query = ScreenQueryPass::new(context, &pipeline_manager, targets.instance_index);
 		// The debug target pool, which the shown views write; see `MATERIAL_DEBUG_VIEWS`.
 		let mut writes = debug_views
 			.targets()
@@ -753,23 +760,23 @@ impl VisibilityRenderPass {
 			.collect::<Vec<_>>();
 		writes.extend([
 			evaluation.image("lit_map", targets.lit),
-			evaluation.buffer("lighting_data", lighting_buffer),
+			evaluation.buffer("lighting_data", lighting_data),
 			evaluation.sampled("ao", targets.gtao.ambient_occlusion, linear_sampler),
 			evaluation.sampled("gtao_bent_normal", targets.gtao.bent_normal, linear_sampler),
 			// Material evaluation upsamples the half-resolution SSGI result itself. It fetches texels at edges, and filters the
 			// history in one read where all four texels lie on the pixel's plane.
-			evaluation.sampled("ssgi_history", targets.ssgi.history, linear_sampler),
-			evaluation.sampled("ssgi_normals", targets.ssgi.normals, depth_sampler),
-			evaluation.buffer("ssgi_view", depth_pyramid.view_data),
+			evaluation.sampled("indirect_diffuse_history", targets.indirect_diffuse.history, linear_sampler),
+			evaluation.sampled("indirect_diffuse_normals", targets.indirect_diffuse.normals, depth_sampler),
+			evaluation.buffer("half_resolution_view", min_depth_pyramid.view_data),
 			evaluation.sampled("sun_visibility", targets.sun_visibility.visibility, depth_sampler),
-			visibility.image("triangle_index", targets.primitive_index),
-			visibility.image("instance_index_render_target", targets.instance_id),
+			visibility.image("primitive_index", targets.primitive_index),
+			visibility.image("instance_index", targets.instance_index),
 			evaluation.image("reactive_map", targets.velocity.reactive),
 		]);
 		// Without SSGI the shaders leave out `diffuse_radiance_map`, so nothing is bound there.
 		writes.extend(
 			targets
-				.diffuse_radiance_history
+				.diffuse_radiance
 				.map(|image| evaluation.image("diffuse_radiance_map", image)),
 		);
 		// Without subsurface scattering the shaders leave out its images, so nothing is bound there.
@@ -796,7 +803,7 @@ impl VisibilityRenderPass {
 			base_descriptor_set,
 			depth,
 			targets.primitive_index,
-			targets.instance_id,
+			targets.instance_index,
 			shadow_maps,
 			targets.sun_visibility,
 			features.contact_shadows,
@@ -808,7 +815,7 @@ impl VisibilityRenderPass {
 				descriptor_sets: [base_descriptor_set, occlusion.descriptor_set],
 				pipelines: Pipelines::sides(&pipeline_manager, "visibility"),
 				primitive_index: targets.primitive_index,
-				instance_id: targets.instance_id,
+				instance_index: targets.instance_index,
 				depth,
 			},
 			occlusion,
@@ -825,8 +832,8 @@ impl VisibilityRenderPass {
 					context,
 					&pipeline_manager,
 					depth,
-					depth_pyramid.depth_pyramid,
-					depth_pyramid.view_descriptor_set,
+					min_depth_pyramid.min_depth_pyramid,
+					min_depth_pyramid.view_descriptor_set,
 					targets.gtao,
 					blue_noise,
 				)
@@ -836,13 +843,13 @@ impl VisibilityRenderPass {
 				context,
 				&pipeline_manager,
 				base_descriptor_set,
-				lighting_buffer,
+				lighting_data,
 				depth,
 				shadow_maps,
 				targets.fog_light,
 				blue_noise,
 			),
-			depth_pyramid,
+			min_depth_pyramid,
 			ssgi,
 			surfel_resolve,
 			probe_resolve,
@@ -855,7 +862,7 @@ impl VisibilityRenderPass {
 				base_descriptor_set,
 				depth,
 				targets.primitive_index,
-				targets.instance_id,
+				targets.instance_index,
 				previous_vertex_positions,
 				targets.velocity,
 				instance_capacity,
@@ -1009,8 +1016,8 @@ impl VisibilityRenderPass {
 		let fitted_suns = receiver_fit.len() as u32;
 		let fits_receivers = fitted_suns > 0;
 		let [light_cluster_pipeline] = self.light_clusters.pipelines.resolve(pipeline_manager)?;
-		let [depth_pyramid_pipeline] = self.depth_pyramid.pipelines.resolve(pipeline_manager)?;
-		let occlusion_pyramid = self.occlusion.prepare(pipeline_manager)?;
+		let [min_depth_pyramid_pipeline] = self.min_depth_pyramid.pipelines.resolve(pipeline_manager)?;
+		let max_depth_pyramid = self.occlusion.prepare(pipeline_manager)?;
 		let [sun_visibility_pipeline] = self.sun_visibility.resolve_pipelines.resolve(pipeline_manager)?;
 		// A disabled pass neither records nor holds the frame back while its pipelines compile.
 		let contact_shadow_pipeline = match &self.sun_visibility.trace_pipelines {
@@ -1036,7 +1043,9 @@ impl VisibilityRenderPass {
 			None => None,
 		};
 		let light_clusters = self.light_clusters.prepare(frame, sink, light_cluster_pipeline);
-		let depth_pyramid = self.depth_pyramid.prepare(frame, sink, depth_pyramid_pipeline, fitted_suns);
+		let min_depth_pyramid = self
+			.min_depth_pyramid
+			.prepare(frame, sink, min_depth_pyramid_pipeline, fitted_suns);
 		let sun_visibility = self.sun_visibility.prepare(
 			frame,
 			sink,
@@ -1227,7 +1236,7 @@ impl VisibilityRenderPass {
 			c.counter(counters.visibility_early, |c| {
 				draw(c, VisibilityPhase::Opaque, OcclusionPhase::Early)
 			});
-			c.counter(counters.occlusion_pyramid, &occlusion_pyramid);
+			c.counter(counters.max_depth_pyramid, &max_depth_pyramid);
 			c.counter(counters.visibility_late, |c| {
 				draw(c, VisibilityPhase::Opaque, OcclusionPhase::Late)
 			});
@@ -1240,8 +1249,8 @@ impl VisibilityRenderPass {
 					prepasses.record(c, extent, pipelines, VisibilityPhase::Opaque)
 				});
 			}
-			// The depth pyramid also finds the directional shadow receiver bounds the cascade fit shrinks to.
-			c.counter(counters.depth_pyramid, &depth_pyramid);
+			// The min depth pyramid also finds the directional shadow receiver bounds the cascade fit shrinks to.
+			c.counter(counters.min_depth_pyramid, &min_depth_pyramid);
 			// Velocity reads the opaque layer's visibility buffer, which the transparent layer later overwrites.
 			if let Some(stages) = &velocity {
 				c.counter(counters.velocity, |c| record_compute_stages(c, None, stages));

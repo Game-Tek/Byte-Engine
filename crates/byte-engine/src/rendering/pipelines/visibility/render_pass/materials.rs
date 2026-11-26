@@ -72,14 +72,14 @@ impl MaterialPrepasses {
 	/// Creates the buffers the prepasses write and material evaluation reads, binds them in the sink's visibility buffer
 	/// set, and requests the prepass pipelines.
 	///
-	/// `instance_id` is the sink's instance target, which the prepasses read the pixels' materials from.
+	/// `instance_index` is the sink's instance target, which the prepasses read the pixels' materials from.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		visibility: SetBinder<'_>,
 		material_evaluation_descriptor_set: ghi::DescriptorSetHandle,
-		instance_id: ghi::BaseImageHandle,
+		instance_index: ghi::BaseImageHandle,
 	) -> Self {
 		use ghi::context::{Context as _, ContextCreate as _};
 
@@ -106,7 +106,7 @@ impl MaterialPrepasses {
 			dispatch.buffer("material_offset_scratch_buffer", material_offset_scratch),
 			dispatch.buffer("material_evaluation_dispatches", evaluation_dispatches),
 			dispatch.buffer("pixel_mapping_buffer", pixel_mapping),
-			dispatch.image("instance_index_render_target", instance_id),
+			dispatch.image("instance_index", instance_index),
 			visibility.buffer("material_count", material_count),
 			visibility.buffer("material_offset", material_offset),
 			visibility.buffer("pixel_mapping", pixel_mapping),

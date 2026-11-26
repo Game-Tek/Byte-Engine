@@ -94,7 +94,7 @@ fn reconstruct_covered_face(normal: [f32; 3], geometric: [f32; 3], stored: [f32;
 		normal[0], normal[1], normal[2], geometric[0], geometric[1], geometric[2],
 	);
 	let program = compile(&besl::lex(&builtins, with_engine_modules(source.leak())).expect("reconstruction shader"));
-	let mut view = buffer(&program, slot(&program, "ssgi_view"));
+	let mut view = buffer(&program, slot(&program, "half_resolution_view"));
 	view.write("pixel_to_ray_mul", Value::Vec2F([0.01, -0.01]))
 		.expect("view scale");
 	view.write("pixel_to_ray_add", Value::Vec2F([-0.075, 0.075]))
@@ -104,10 +104,10 @@ fn reconstruct_covered_face(normal: [f32; 3], geometric: [f32; 3], stored: [f32;
 	let mut history = texture_2d(16, 16, &[[0.3125, 0.15625, 0.0625, 1.0]; 256]);
 	let mut result = buffer(&program, slot(&program, "results"));
 	let mut descriptors = DescriptorBindings::new();
-	descriptors.bind_buffer(slot(&program, "ssgi_view"), &mut view);
+	descriptors.bind_buffer(slot(&program, "half_resolution_view"), &mut view);
 	descriptors.bind_texture(slot(&program, "depth_pyramid"), &mut depth);
-	descriptors.bind_texture(slot(&program, "ssgi_normals"), &mut normals);
-	descriptors.bind_texture(slot(&program, "ssgi_history"), &mut history);
+	descriptors.bind_texture(slot(&program, "indirect_diffuse_normals"), &mut normals);
+	descriptors.bind_texture(slot(&program, "indirect_diffuse_history"), &mut history);
 	descriptors.bind_buffer(slot(&program, "results"), &mut result);
 	crate::rendering::shader_vm_test::run_at(&program, &mut descriptors, [0, 0]);
 	drop(descriptors);
@@ -330,7 +330,7 @@ impl SurfelSet {
 				descriptors.bind_buffer(slot, buffer);
 			}
 		}
-		if let Some(slot) = program.slot("surfel_environment_radiance") {
+		if let Some(slot) = program.slot("surfel_environment_specular") {
 			descriptors.bind_texture(slot, &mut self.environment_radiance);
 		}
 	}
@@ -1547,7 +1547,7 @@ impl WhiteShade {
 		.expect("the white hit should take the material hit layers");
 		let white_hit = compile(&besl::lex(&builtins, white_hit).expect("the white hit should link"));
 		let hits = array_buffer(&shade, slot(&shade, "ray_hits"), RAY_BUDGET as usize);
-		let lights = buffer(&shade, slot(&shade, "surfel_scene_lights"));
+		let lights = buffer(&shade, slot(&shade, "surfel_lighting_data"));
 		let pipeline = RayTracingPipeline::new(pass, vec![white_hit]).expect("the white hit should run in the shade pass");
 		Self {
 			pipeline,
@@ -1586,7 +1586,7 @@ impl WhiteShade {
 		let shade = &self.shade;
 		set.bind(shade, &mut descriptors);
 		descriptors.bind_buffer(slot(shade, "ray_hits"), &mut self.hits);
-		descriptors.bind_buffer(slot(shade, "surfel_scene_lights"), &mut self.lights);
+		descriptors.bind_buffer(slot(shade, "surfel_lighting_data"), &mut self.lights);
 		descriptors.bind_acceleration_structure(slot(shade, "scene_structure"), scene);
 		self.pipeline
 			.trace_rays(&mut descriptors, &[0], [rays.len() as u32, 1, 1])

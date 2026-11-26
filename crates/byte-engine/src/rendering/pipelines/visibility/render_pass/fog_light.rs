@@ -192,7 +192,7 @@ impl FogLightPass {
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		base_descriptor_set: ghi::DescriptorSetHandle,
-		lighting_buffer: ghi::BufferHandle<LightingData>,
+		lighting_data: ghi::BufferHandle<LightingData>,
 		depth: ghi::BaseImageHandle,
 		shadow_maps: &ShadowMaps,
 		target: ghi::BaseImageHandle,
@@ -222,7 +222,7 @@ impl FogLightPass {
 		);
 		let fog_light = fog_light_layout.binder(descriptor_set);
 		let mut writes = vec![
-			fog_light.buffer("lighting_data", lighting_buffer),
+			fog_light.buffer("lighting_data", lighting_data),
 			fog_light.buffer("parameters", parameters),
 			fog_light.buffer("tile_masks", tile_masks),
 			fog_light.sampled("depth", depth, point_sampler),

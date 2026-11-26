@@ -8,10 +8,10 @@ main: fn (
 	},
 ) -> output {
 	primitive_index: u32,
-	instance_id: u32,
+	instance_index: u32,
 } {
 	return {
 		primitive_index: pipeline_input.primitive_index,
-		instance_id: pipeline_input.instance_index,
+		instance_index: pipeline_input.instance_index,
 	};
 }

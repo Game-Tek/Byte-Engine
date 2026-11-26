@@ -38,21 +38,21 @@ SURFEL_HIT_SPAWN_COVERAGE: const f32 = 0.1;
 surfel_direct_light: fn (ray_traced_scene: RayTracedScene, surfel_gi_set: SurfelGi, position: vec3f, normal: vec3f) -> vec3f {
 	let shadow_origin: vec3f = position + normal * SURFEL_HIT_OFFSET;
 	let light: vec3f = vec3f(0.0, 0.0, 0.0);
-	for (let index: u32 = 0; index < surfel_gi_set.surfel_scene_lights.light_count; index = index + 1) {
-		if (surfel_gi_set.surfel_scene_lights.lights[index].type == DIRECTIONAL_LIGHT) {
+	for (let index: u32 = 0; index < surfel_gi_set.surfel_lighting_data.light_count; index = index + 1) {
+		if (surfel_gi_set.surfel_lighting_data.lights[index].type == DIRECTIONAL_LIGHT) {
 			// A sun keeps the direction its light travels in `position`.
-			let toward_sun: vec3f = -surfel_gi_set.surfel_scene_lights.lights[index].position;
+			let toward_sun: vec3f = -surfel_gi_set.surfel_lighting_data.lights[index].position;
 			let sun_cosine: f32 = dot(normal, toward_sun);
 			if (sun_cosine > 0.0) {
 				if (!trace_occlusion(ray_traced_scene.scene_structure, 255, shadow_origin, toward_sun, 0.0, SURFEL_RAY_LENGTH)) {
-					light = light + surfel_gi_set.surfel_scene_lights.lights[index].color * (sun_cosine / 3.14159265359);
+					light = light + surfel_gi_set.surfel_lighting_data.lights[index].color * (sun_cosine / 3.14159265359);
 				}
 			}
 			continue;
 		}
-		let to_light: vec3f = surfel_gi_set.surfel_scene_lights.lights[index].position - position;
+		let to_light: vec3f = surfel_gi_set.surfel_lighting_data.lights[index].position - position;
 		let distance_squared: f32 = dot(to_light, to_light);
-		let reach: f32 = surfel_gi_set.surfel_scene_lights.lights[index].reach;
+		let reach: f32 = surfel_gi_set.surfel_lighting_data.lights[index].reach;
 		if (distance_squared <= 0.0 || distance_squared >= reach * reach) {
 			continue;
 		}
@@ -60,14 +60,14 @@ surfel_direct_light: fn (ray_traced_scene: RayTracedScene, surfel_gi_set: Surfel
 		let toward_light: vec3f = to_light * (1.0 / distance);
 		let cosine: f32 = dot(normal, toward_light);
 		let falloff: f32 = 1.0 / distance_squared;
-		if (surfel_gi_set.surfel_scene_lights.lights[index].type == CONE_LIGHT) {
-			let cone: vec2f = surfel_gi_set.surfel_scene_lights.lights[index].cone_cosines;
-			let along: f32 = 0.0 - dot(surfel_gi_set.surfel_scene_lights.lights[index].direction, toward_light);
+		if (surfel_gi_set.surfel_lighting_data.lights[index].type == CONE_LIGHT) {
+			let cone: vec2f = surfel_gi_set.surfel_lighting_data.lights[index].cone_cosines;
+			let along: f32 = 0.0 - dot(surfel_gi_set.surfel_lighting_data.lights[index].direction, toward_light);
 			falloff = falloff * clamp((along - cone.y) / (cone.x - cone.y), 0.0, 1.0);
 		}
 		if (cosine > 0.0 && falloff > 0.0) {
 			if (!trace_occlusion(ray_traced_scene.scene_structure, 255, shadow_origin, toward_light, 0.0, distance - SURFEL_HIT_OFFSET)) {
-				light = light + surfel_gi_set.surfel_scene_lights.lights[index].color * (falloff * cosine / 3.14159265359);
+				light = light + surfel_gi_set.surfel_lighting_data.lights[index].color * (falloff * cosine / 3.14159265359);
 			}
 		}
 	}

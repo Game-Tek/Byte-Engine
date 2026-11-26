@@ -579,7 +579,7 @@ resolve_blended_sun_shadow: fn (
 		geometric_normal, dot(view_normal, vec3f(sun_direction.x, sun_direction.y, sun_direction.z))
 	);
 	let first_view: u32 = sun * 4 + 1;
-	let shadow_map_width: f32 = f32(texture_size(shadows.depth_shadow_map).x);
+	let shadow_map_width: f32 = f32(texture_size(shadows.directional_shadow_map).x);
 	// The resolve computes each cascade's scales once per workgroup. A pixel list has no workgroup to share them with.
 	let view_projection0: mat4f = scene.views.views[first_view].view_projection;
 	let view_projection1: mat4f = scene.views.views[first_view + 1].view_projection;
@@ -587,7 +587,7 @@ resolve_blended_sun_shadow: fn (
 	let view_projection3: mat4f = scene.views.views[first_view + 3].view_projection;
 	return sample_directional_shadow(
 		scene, shadows,
-		shadows.depth_shadow_map,
+		shadows.directional_shadow_map,
 		first_view,
 		first_view + 1,
 		first_view + 2,

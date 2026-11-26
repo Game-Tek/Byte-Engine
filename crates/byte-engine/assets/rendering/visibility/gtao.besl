@@ -8,7 +8,7 @@
 // AO output, and later mips serve distant samples.
 
 use ::byte_engine::rendering::visibility::layouts::screen_view::*;
-use ::byte_engine::rendering::visibility::layouts::gtao_view::*;
+use ::byte_engine::rendering::visibility::layouts::half_resolution_view::*;
 use ::byte_engine::rendering::visibility::layouts::gtao::*;
 
 NormalDelta: struct {
@@ -93,21 +93,21 @@ level_position_scale: fn (extent: vec2u, level: u32) -> vec2f {
 
 // Reconstructs Psample - Pcenter from the sample's offset in pixels, without materializing either complete position.
 view_position_delta: fn (
-	gtao_view: GtaoView,
+	view: HalfResolutionView,
 	delta_pixel: vec2f,
 	sample_linear_depth: f32,
 	center_ray: vec2f,
 	center_z: f32
 ) -> vec3f {
-	let sample_z: f32 = sample_linear_depth * gtao_view.gtao_view.view_z_sign;
+	let sample_z: f32 = sample_linear_depth * view.half_resolution_view.view_z_sign;
 	let delta_z: f32 = sample_z - center_z;
-	let delta_ray: vec2f = delta_pixel * gtao_view.gtao_view.pixel_to_ray_mul;
+	let delta_ray: vec2f = delta_pixel * view.half_resolution_view.pixel_to_ray_mul;
 	let delta_xy: vec2f = fma(center_ray, vec2f(delta_z, delta_z), delta_ray * sample_z);
 	return vec3f(delta_xy.x, delta_xy.y, delta_z);
 }
 
 normal_delta: fn (
-	gtao_view: GtaoView,
+	view: HalfResolutionView,
 	sample_coord: vec2u,
 	center_coord: vec2u,
 	sample_depth: f32,
@@ -118,7 +118,7 @@ normal_delta: fn (
 		return NormalDelta(vec3f(0.0, 0.0, 0.0), false);
 	}
 	let delta_pixel: vec2f = vec2f(f32(sample_coord.x) - f32(center_coord.x), f32(sample_coord.y) - f32(center_coord.y));
-	return NormalDelta(view_position_delta(gtao_view, delta_pixel, sample_depth, center_ray, center_z), true);
+	return NormalDelta(view_position_delta(view, delta_pixel, sample_depth, center_ray, center_z), true);
 }
 
 // Returns a derivative oriented toward the positive screen axis. The negative
@@ -136,8 +136,8 @@ nearer_oriented_delta: fn (positive: NormalDelta, negative: NormalDelta) -> Norm
 
 // Derives camera-facing winding from the projection convention. This remains
 // stable at grazing angles where a per-pixel face-forward dot becomes ambiguous.
-camera_facing_normal_winding: fn (gtao_view: GtaoView) -> f32 {
-	let winding_test: f32 = (0.0 - gtao_view.gtao_view.view_z_sign) * gtao_view.gtao_view.pixel_to_ray_mul.x * gtao_view.gtao_view.pixel_to_ray_mul.y;
+camera_facing_normal_winding: fn (view: HalfResolutionView) -> f32 {
+	let winding_test: f32 = (0.0 - view.half_resolution_view.view_z_sign) * view.half_resolution_view.pixel_to_ray_mul.x * view.half_resolution_view.pixel_to_ray_mul.y;
 	if (winding_test < 0.0) {
 		return 0.0 - 1.0;
 	}
@@ -145,7 +145,7 @@ camera_facing_normal_winding: fn (gtao_view: GtaoView) -> f32 {
 }
 
 reconstruct_normal: fn (
-	gtao_view: GtaoView,
+	view: HalfResolutionView,
 	pixel: vec2u,
 	extent: vec2u,
 	neighbor_depths: NeighborDepths,
@@ -159,12 +159,12 @@ reconstruct_normal: fn (
 
 	// A neighbor past the image edge reads the edge texel, the pixel itself, which `normal_delta` rejects.
 	let dx: NormalDelta = nearer_oriented_delta(
-		normal_delta(gtao_view, right_coord, pixel, neighbor_depths.right, center_ray, center_z),
-		normal_delta(gtao_view, left_coord, pixel, neighbor_depths.left, center_ray, center_z)
+		normal_delta(view, right_coord, pixel, neighbor_depths.right, center_ray, center_z),
+		normal_delta(view, left_coord, pixel, neighbor_depths.left, center_ray, center_z)
 	);
 	let dy: NormalDelta = nearer_oriented_delta(
-		normal_delta(gtao_view, bottom_coord, pixel, neighbor_depths.bottom, center_ray, center_z),
-		normal_delta(gtao_view, top_coord, pixel, neighbor_depths.top, center_ray, center_z)
+		normal_delta(view, bottom_coord, pixel, neighbor_depths.bottom, center_ray, center_z),
+		normal_delta(view, top_coord, pixel, neighbor_depths.top, center_ray, center_z)
 	);
 
 	// Without two reliable tangents, returning zero suppresses AO instead of
@@ -175,7 +175,7 @@ reconstruct_normal: fn (
 
 	let dx_length_sq: f32 = dot(dx.value, dx.value);
 	let dy_length_sq: f32 = dot(dy.value, dy.value);
-	let unnormalized: vec3f = cross(dx.value, dy.value) * camera_facing_normal_winding(gtao_view);
+	let unnormalized: vec3f = cross(dx.value, dy.value) * camera_facing_normal_winding(view);
 	let normal_length_sq: f32 = dot(unnormalized, unnormalized);
 	// cross squared divided by the tangent-length product is sin squared of
 	// the angle between the derivatives. Compare without performing division.
@@ -187,8 +187,8 @@ reconstruct_normal: fn (
 	return unnormalized * inversesqrt(normal_length_sq);
 }
 
-compute_radius_data: fn (gtao_view: GtaoView, gtao_set: Gtao, linear_depth: f32) -> RadiusData {
-	let pixels_per_unit: f32 = gtao_view.gtao_view.projection_pixels_y / max(linear_depth, 0.0001);
+compute_radius_data: fn (view: HalfResolutionView, gtao_set: Gtao, linear_depth: f32) -> RadiusData {
+	let pixels_per_unit: f32 = view.half_resolution_view.projection_pixels_y / max(linear_depth, 0.0001);
 	let ideal_screen_radius: f32 = gtao_set.gtao_parameters.radius * pixels_per_unit;
 	let screen_radius: f32 = clamp(ideal_screen_radius, GTAO_MIN_EFFECTIVE_RADIUS_PIXELS, GTAO_MAX_RADIUS_PIXELS);
 	return RadiusData(
@@ -228,7 +228,7 @@ fast_acos: fn (x: f32) -> f32 {
 // Returns the higher of `previous_horizon` and the sample's horizon: the cosine of the angle between the view vector and
 // the direction to the sample, faded to `low_horizon`, the surface's tangent, as the sample nears the radius.
 update_horizon: fn (
-	gtao_view: GtaoView,
+	view: HalfResolutionView,
 	previous_horizon: f32,
 	low_horizon: f32,
 	sample_position: vec2f,
@@ -243,7 +243,7 @@ update_horizon: fn (
 		return previous_horizon;
 	}
 
-	let delta: vec3f = view_position_delta(gtao_view, sample_position - pixel_position, sample_linear_depth, center_ray, center_z);
+	let delta: vec3f = view_position_delta(view, sample_position - pixel_position, sample_linear_depth, center_ray, center_z);
 	let distance_sq: f32 = dot(delta, delta);
 	let inverse_distance: f32 = inversesqrt(distance_sq);
 	let normalized_distance: f32 = distance_sq * inverse_distance * inverse_radius;
@@ -256,7 +256,7 @@ update_horizon: fn (
 	return max(previous_horizon, mix(low_horizon, horizon, weight));
 }
 
-main: fn (input: StageInput, gtao_view: GtaoView, gtao_set: Gtao) -> void {
+main: fn (input: StageInput, view: HalfResolutionView, gtao_set: Gtao) -> void {
 	let pixel: vec2u = input.thread_id;
 	let extent: vec2u = image_size(gtao_set.ao_output);
 	if (pixel.x >= extent.x || pixel.y >= extent.y) {
@@ -275,10 +275,10 @@ main: fn (input: StageInput, gtao_view: GtaoView, gtao_set: Gtao) -> void {
 		return;
 	}
 
-	let center_ray: vec2f = fma(pixel_position, gtao_view.gtao_view.pixel_to_ray_mul, gtao_view.gtao_view.pixel_to_ray_add);
-	let center_z: f32 = center_linear_depth * gtao_view.gtao_view.view_z_sign;
+	let center_ray: vec2f = fma(pixel_position, view.half_resolution_view.pixel_to_ray_mul, view.half_resolution_view.pixel_to_ray_add);
+	let center_z: f32 = center_linear_depth * view.half_resolution_view.view_z_sign;
 	let normal: vec3f = reconstruct_normal(
-		gtao_view,
+		view,
 		pixel,
 		extent,
 		NeighborDepths(lower_right.z, upper_left.x, upper_left.z, lower_right.x),
@@ -291,7 +291,7 @@ main: fn (input: StageInput, gtao_view: GtaoView, gtao_set: Gtao) -> void {
 		write(gtao_set.bent_normal_output, pixel, vec4f(0.5, 0.5, 0.0, 0.0));
 		return;
 	}
-	let radius: RadiusData = compute_radius_data(gtao_view, gtao_set, center_linear_depth);
+	let radius: RadiusData = compute_radius_data(view, gtao_set, center_linear_depth);
 	let samples_per_ray: u32 = clamp(gtao_set.gtao_parameters.samples_per_ray, GTAO_MIN_SAMPLES_PER_RAY, GTAO_MAX_SAMPLES_PER_RAY);
 	let radial_rays: u32 = clamp(gtao_set.gtao_parameters.radial_rays, GTAO_MIN_RADIAL_RAYS, GTAO_MAX_RADIAL_RAYS);
 	let ray_pairs: u32 = radial_rays / 2;
@@ -329,10 +329,10 @@ main: fn (input: StageInput, gtao_view: GtaoView, gtao_set: Gtao) -> void {
 		// The slice is the plane through the view vector and the view-space direction a positive screen step takes at
 		// constant depth. Angles in it run from the view vector, positive toward that direction.
 		let slice_direction: vec3f = vec3f(
-			axis_direction.x * gtao_view.gtao_view.pixel_to_ray_mul.x,
-			axis_direction.y * gtao_view.gtao_view.pixel_to_ray_mul.y,
+			axis_direction.x * view.half_resolution_view.pixel_to_ray_mul.x,
+			axis_direction.y * view.half_resolution_view.pixel_to_ray_mul.y,
 			0.0
-		) * gtao_view.gtao_view.view_z_sign;
+		) * view.half_resolution_view.view_z_sign;
 		let orthogonal_direction: vec3f = normalize(slice_direction - view_vector * dot(slice_direction, view_vector));
 		let slice_axis: vec3f = cross(orthogonal_direction, view_vector);
 		let projected_normal: vec3f = normal - slice_axis * dot(normal, slice_axis);
@@ -375,7 +375,7 @@ main: fn (input: StageInput, gtao_view: GtaoView, gtao_set: Gtao) -> void {
 			let positive_depth: f32 = hierarchical_depth(gtao_set, positive_sample.position, positive_sample.level, level_scales);
 			let negative_depth: f32 = hierarchical_depth(gtao_set, negative_sample.position, negative_sample.level, level_scales);
 			positive_horizon = update_horizon(
-				gtao_view,
+				view,
 				positive_horizon,
 				positive_low,
 				positive_sample.position,
@@ -387,7 +387,7 @@ main: fn (input: StageInput, gtao_view: GtaoView, gtao_set: Gtao) -> void {
 				radius.inverse_world_radius
 			);
 			negative_horizon = update_horizon(
-				gtao_view,
+				view,
 				negative_horizon,
 				negative_low,
 				negative_sample.position,

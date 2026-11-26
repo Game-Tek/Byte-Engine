@@ -32,5 +32,5 @@ MaterialDispatch: layer {
 	material_evaluation_dispatches: descriptor<{ type: MaterialEvaluationDispatches, binding: 3, access: read_write, memory: device }>;
 	pixel_mapping_buffer: descriptor<{ type: PixelMapping, binding: 4, access: write, memory: device }>;
 	// The instance under each pixel, from the visibility buffer.
-	instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 5, access: read }>;
+	instance_index: descriptor<{ type: StorageImage<r32ui>, binding: 5, access: read }>;
 }

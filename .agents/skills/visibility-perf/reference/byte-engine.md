@@ -23,9 +23,9 @@ Current breakdown (low GPU state, `stage.*` medians in ms):
 | visibility-early | 0.44 | meshlet raster |
 | particles | 0.34 | the demo's rain and splashes, real content |
 | material-prepasses | 0.30 | count, offset, pixel mapping |
-| depth-pyramid | 0.14 | linear depth pyramid plus the shadow receiver bounds, in 16x16 workgroups |
+| min-depth-pyramid | 0.14 | nearest linear depth pyramid plus the shadow receiver bounds, in 16x16 workgroups |
 | cascade-fit | 0.004 | four threads; the bounds come from the depth pyramid pass |
-| everything else | 0.26 | fog, ACES, occlusion pyramid, background, late raster, clusters |
+| everything else | 0.26 | fog, ACES, max depth pyramid, background, late raster, clusters |
 
 The stages summed to about 7.1 ms against a 7.24 ms scene time before the pyramid change, which took about 0.3 ms
 off both; the gaps between stages shrank from 0.25 to about 0.1 ms when the bounds pass, its clear, and their
@@ -262,7 +262,7 @@ How to prove a change pixel-identical in the model viewer, and how to measure in
 - To give temporal passes their history on a locked screen, force frames from about 6 parallel clients looping
   `GET /screenshots?sink=0&format=raw` (raw skips the PNG encode). Each capture then follows 40 to 60 consecutive
   ticks; count them from `/metrics/frames?since=<tick>` rows whose `gpu` map has `screen-space`. One-at-a-time
-  forcing leaves `SSGI History` all zeros, so a forced-frame SSGI timing taken that way measured an SSGI that did
+  forcing leaves `Indirect Diffuse History` all zeros, so a forced-frame SSGI timing taken that way measured an SSGI that did
   nothing.
 - Bloom's intermediate captures (`Bloom Downsample 0`, `Bloom Upsample 1`) differ run to run with identical shaders.
   Only `Bloom Output` is bit-stable across hidden forced-frame runs, so judge by it and diff against a second run of
@@ -310,8 +310,8 @@ How to prove a change pixel-identical in the model viewer, and how to measure in
 
 - Find what lights a dark patch before blaming the pass you suspect. Surfel GI's "blotches" in Sponza's gallery were
   environment reflections leaking through a noisy hit fraction, not diffuse light: the lit image's 32 × 32 blocks
-  correlated r = +0.88 with max(0, 1 − A) of raw `SSGI History` and −0.18 with its diffuse light. Capture raw
-  `SSGI History` with the lit image, correlate the lit blocks against each channel, and compare two captures of one
+  correlated r = +0.88 with max(0, 1 − A) of raw `Indirect Diffuse History` and −0.18 with its diffuse light. Capture raw
+  `Indirect Diffuse History` with the lit image, correlate the lit blocks against each channel, and compare two captures of one
   pinned look a few hundred frames apart for drift.
 - Pick a regime key the change can't reach. The uber material evaluation A/B removed the prepasses before the
   receiver-fitted cascades, and `stage.shadow-maps` rose a steady 0.05 ms in every pair; `stage.screen-space` was

@@ -24,9 +24,9 @@ use utils::Extent;
 
 use super::super::loader::ResidentEnvironment;
 use super::super::shader_data::LightingData;
-use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
+use super::min_depth_pyramid::{MIN_DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
 use super::ray_hits::{RayHits, RayStages, RayTracing, ShadeStage};
-use super::{ComputeStage, Pipelines, SinkHistory, SsgiTargets};
+use super::{ComputeStage, IndirectDiffuseTargets, Pipelines, SinkHistory};
 use crate::configuration::{Accepts, Read, Setting};
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, SetBinder, SetLayout, Sink};
@@ -97,7 +97,7 @@ const SPAWN_RATE: f32 = 78.125;
 
 /// The render-graph name of the half-resolution light the resolve accumulates from its estimates: pre-exposed light in
 /// RGB and the hit fraction in alpha. The next frame's resolve reprojects it, and the spatial pass filters it into
-/// `SSGI History`.
+/// `Indirect Diffuse History`.
 pub(crate) const SURFEL_HISTORY_TARGET: &str = "Surfel History";
 /// The render-graph name of what each `Surfel History` texel holds besides its light: the confidence it accumulated
 /// in R, and the variance of its light's luminance in G.
@@ -335,7 +335,7 @@ fn environment_writes(set: SetBinder<'_>, environment: ResidentEnvironment) -> [
 	let ResidentEnvironment {
 		specular_image, sampler, ..
 	} = environment;
-	[set.sampled("surfel_environment_radiance", specular_image, sampler)]
+	[set.sampled("surfel_environment_specular", specular_image, sampler)]
 }
 
 impl SurfelPool {
@@ -343,7 +343,7 @@ impl SurfelPool {
 	/// pipelines.
 	///
 	/// Take both sizes from [`super::super::VisibilityPipelineSettings`], which validated them at startup.
-	/// `environment` is the bound environment; bind the next one with [`Self::environment_writes`]. `lighting_buffer` is
+	/// `environment` is the bound environment; bind the next one with [`Self::environment_writes`]. `lighting_data` is
 	/// the scene's light table, whose lights light what the rays hit.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
@@ -351,7 +351,7 @@ impl SurfelPool {
 		capacity: u32,
 		ray_budget: u32,
 		environment: ResidentEnvironment,
-		lighting_buffer: ghi::BufferHandle<LightingData>,
+		lighting_data: ghi::BufferHandle<LightingData>,
 	) -> Self {
 		let surfel_gi_layout = set_layouts::layout(set_layouts::SURFEL_GI);
 		let descriptor_set = surfel_gi_layout.create_set(context, "Surfel GI Descriptor Set");
@@ -421,7 +421,7 @@ impl SurfelPool {
 			set.buffer("surfel_guides", guides),
 			set.buffer("surfel_depths", depths),
 			set.buffer("surfel_clearances", clearances),
-			set.buffer("surfel_scene_lights", lighting_buffer),
+			set.buffer("surfel_lighting_data", lighting_data),
 			set.buffer("surfel_hit_spawns", hit_spawns),
 		]);
 		context.write(&environment_writes(set, environment));
@@ -596,14 +596,14 @@ pub(super) struct SurfelResolvePass {
 impl SurfelResolvePass {
 	/// Wires the resolve, allocation, temporal accumulation, and spatial descriptor sets of one sink.
 	///
-	/// `depth_pyramid` and `view_data` come from [`super::depth_pyramid::DepthPyramidPass`]. `ssgi` are the sink's
-	/// SSGI images, which the stages write in SSGI's place, `surfels` its images from [`create_surfel_targets`], and
+	/// `min_depth_pyramid` and `view_data` come from [`super::min_depth_pyramid::MinDepthPyramidPass`]. `indirect_diffuse` are the sink's
+	/// indirect diffuse images, which the stages write, `surfels` its images from [`create_surfel_targets`], and
 	/// `debug_views` its debug target pool.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
-		depth_pyramid: ghi::ImageHandle,
+		min_depth_pyramid: ghi::ImageHandle,
 		view_data: ghi::BufferHandle<ScreenViewData>,
-		ssgi: SsgiTargets,
+		indirect_diffuse: IndirectDiffuseTargets,
 		surfels: SurfelTargets,
 		debug_views: &crate::rendering::DebugViews,
 	) -> Self {
@@ -630,7 +630,7 @@ impl SurfelResolvePass {
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
 				.mip_map_mode(ghi::FilteringModes::Closest)
-				.max_lod((DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
+				.max_lod((MIN_DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
 		let screen_trace = screen_trace_layout.binder(screen_trace_descriptor_set);
 		let resolve = surfel_resolve_layout.binder(descriptor_set);
@@ -646,20 +646,20 @@ impl SurfelResolvePass {
 			.collect::<Vec<_>>();
 		writes.extend([
 			screen_trace.buffer("screen_view", view_data),
-			screen_trace.sampled("depth_pyramid", depth_pyramid, point_sampler),
+			screen_trace.sampled("depth_pyramid", min_depth_pyramid, point_sampler),
 			resolve.buffer("surfel_resolve_parameters", parameters),
 			resolve.buffer("surfel_spawns", spawns),
-			resolve.image("normal_output", ssgi.normals),
+			resolve.image("normal_output", indirect_diffuse.normals),
 			temporal.sampled_with_frame("surfel_previous_history", surfels.history, point_sampler, -1),
 			temporal.sampled_with_frame("surfel_previous_weights", surfels.weights, point_sampler, -1),
-			temporal.sampled_with_frame("surfel_previous_depth", depth_pyramid, point_sampler, -1),
-			temporal.sampled_with_frame("surfel_previous_normals", ssgi.normals, point_sampler, -1),
+			temporal.sampled_with_frame("surfel_previous_depth", min_depth_pyramid, point_sampler, -1),
+			temporal.sampled_with_frame("surfel_previous_normals", indirect_diffuse.normals, point_sampler, -1),
 			temporal.image("surfel_history_output", surfels.history),
 			temporal.image("surfel_weights_output", surfels.weights),
 			spatial.sampled("surfel_temporal_history", surfels.history, point_sampler),
 			spatial.sampled("surfel_temporal_weights", surfels.weights, point_sampler),
-			spatial.sampled("surfel_spatial_normals", ssgi.normals, point_sampler),
-			spatial.image("surfel_output", ssgi.history),
+			spatial.sampled("surfel_spatial_normals", indirect_diffuse.normals, point_sampler),
+			spatial.image("surfel_output", indirect_diffuse.history),
 		]);
 		context.write(&writes);
 		Self {
@@ -877,7 +877,7 @@ mod tests {
 			size_of::<SurfelHitSpawn>()
 		);
 		assert_eq!(
-			stride(set_layouts::SURFEL_GI, "surfel_scene_lights"),
+			stride(set_layouts::SURFEL_GI, "surfel_lighting_data"),
 			size_of::<LightingData>()
 		);
 		assert_eq!(

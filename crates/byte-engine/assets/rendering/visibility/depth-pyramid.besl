@@ -10,7 +10,7 @@
 // in x and y and 0..1 in z. The cascade fit then shrinks each cascade to its box and resets the bounds.
 
 use ::byte_engine::rendering::visibility::layouts::screen_view::*;
-use ::byte_engine::rendering::visibility::layouts::gtao_view::*;
+use ::byte_engine::rendering::visibility::layouts::half_resolution_view::*;
 use ::byte_engine::rendering::visibility::layouts::receiver_bounds::*;
 use ::byte_engine::rendering::visibility::layouts::depth_pyramid::*;
 
@@ -199,7 +199,7 @@ combine_thread_boxes: fn (lane: u32) -> void {
 	}
 }
 
-main: fn (input: StageInput, gtao_view: GtaoView, depth_pyramid: DepthPyramid) -> void {
+main: fn (input: StageInput, view: HalfResolutionView, depth_pyramid: DepthPyramid) -> void {
 	let lane: u32 = input.thread_idx;
 	let fitted_suns: u32 = push_constant.fitted_suns;
 	let receiver_bounds_count: u32 = fitted_suns * RECEIVER_BOUNDS_PER_SUN;
@@ -248,7 +248,7 @@ main: fn (input: StageInput, gtao_view: GtaoView, depth_pyramid: DepthPyramid) -
 	for (let index: u32 = 0; index < DEPTH_PYRAMID_PIXELS_PER_THREAD; index = index + 1) {
 		nearest_source_depth = max(nearest_source_depth, pixel_depths[index]);
 	}
-	let nearest_depth: f32 = linearize_depth(gtao_view, nearest_source_depth);
+	let nearest_depth: f32 = linearize_depth(view, nearest_source_depth);
 	shared_depth[lane] = nearest_depth;
 	if (in_range) {
 		write(depth_pyramid.reduced_depth_1, level_1_coordinate, vec4f(nearest_depth, 0.0, 0.0, 1.0));

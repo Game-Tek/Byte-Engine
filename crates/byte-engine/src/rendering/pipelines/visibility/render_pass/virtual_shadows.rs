@@ -22,7 +22,7 @@ use super::super::virtual_shadows::{
 	ShaderVirtualShadowFrame, VIRTUAL_SHADOW_LEVELS, VIRTUAL_SHADOW_PAGE_TEXELS, VIRTUAL_SHADOW_PAGES,
 	VIRTUAL_SHADOW_RESOLUTION, VirtualShadowSettings,
 };
-use super::depth_pyramid::{ScreenViewData, screen_view_data};
+use super::min_depth_pyramid::{ScreenViewData, screen_view_data};
 use super::{OcclusionPhase, Pipelines, opaque_layer_pipelines, record_meshlet_dispatches};
 use crate::rendering::csm::MIN_CASTER_TEXELS;
 use crate::rendering::pipelines::visibility::set_layouts;

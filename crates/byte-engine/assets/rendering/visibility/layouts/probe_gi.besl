@@ -105,7 +105,7 @@ ProbeGi: layer {
 	probe_irradiance_atlas: descriptor<{ type: StorageImage<rgba16f>, binding: 5, access: read_write }>;
 	probe_distance_atlas: descriptor<{ type: StorageImage<rg16f>, binding: 6, access: read_write }>;
 	// The scene's light table, whose lights light what probe rays hit.
-	probe_scene_lights: descriptor<{ type: LightingBuffer, binding: 7, access: read, memory: device }>;
+	probe_lighting_data: descriptor<{ type: LightingBuffer, binding: 7, access: read, memory: device }>;
 }
 
 // Returns how many probes the frame updates: those the gather pass listed, up to the budget.

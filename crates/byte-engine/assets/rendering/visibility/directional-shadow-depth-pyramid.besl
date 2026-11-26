@@ -49,7 +49,7 @@ main: fn (input: StageInput, shadow_depth_pyramid: ShadowDepthPyramid) -> void {
 	// When the resolution is an odd multiple of 16, each row's last workgroup reaches past the cascade. Its threads
 	// still take part in the shuffles, but only cells inside the cascade are written.
 	if (block_in_cell == 0 && packed_cell.x < source_extent.x / 8) {
-		write(shadow_depth_pyramid.reduced_depth_1, packed_cell, vec4f(maximum_depth, 0.0, 0.0, 1.0));
-		write(shadow_depth_pyramid.reduced_minimum_1, packed_cell, vec4f(minimum_depth, 0.0, 0.0, 1.0));
+		write(shadow_depth_pyramid.reduced_max_depth, packed_cell, vec4f(maximum_depth, 0.0, 0.0, 1.0));
+		write(shadow_depth_pyramid.reduced_min_depth, packed_cell, vec4f(minimum_depth, 0.0, 0.0, 1.0));
 	}
 }

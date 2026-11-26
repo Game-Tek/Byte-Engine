@@ -43,7 +43,7 @@ own three passes inside `screen-space`.
 | | `surfel-allocate-hits` | Turns the hits' spawn requests into surfels while the pool has room for them. |
 | `screen-space` | `surfel-resolve` | Lights each half-resolution pixel from the first surfels its cell lists, every other frame, blends that estimate into the pixel's reprojected history by their confidences, into `Surfel History`, and votes on spawns and despawns. |
 | | `surfel-allocate` | Turns each tile's spawn request into a surfel. |
-| | `surfel-spatial` | Filters the history over each pixel's surface and fills what it lacks, into `SSGI History`, which material evaluation reads. |
+| | `surfel-spatial` | Filters the history over each pixel's surface and fills what it lacks, into `Indirect Diffuse History`, which material evaluation reads. |
 
 `render_pass/surfel_gi.rs` creates the buffers and the stages,
 `render_pass/ray_hits.rs` the hit buffers and the sort that probe GI shares,
@@ -478,7 +478,7 @@ inside the resolve, it saves that dispatch, both images, and four reads a
 pixel: 0.64 ms of resolve and 0.19 ms of history became 0.73 ms.
 
 `surfel-spatial` filters the history for material evaluation, into
-`SSGI History`. Each pixel averages its history with neighbors on a
+`Indirect Diffuse History`. Each pixel averages its history with neighbors on a
 golden-angle spiral, weighed by how surely they lie on its surface and by their
 confidence, after a reversible tone map ("Optimized Reversible Tonemapper for
 Resolve" by Timothy Lottes) that keeps a lone bright texel from spreading. As
@@ -671,7 +671,7 @@ and 9%.
   reprojected confidence before the gather, so a pixel the previous frame didn't
   see always gathers.
 - **The spatial pass feeds only material evaluation.** It reads the temporal
-  history and writes `SSGI History`, which nothing in surfel GI reads. A pass
+  history and writes `Indirect Diffuse History`, which nothing in surfel GI reads. A pass
   that fed its output back into the history, a surfel, or a ray would compound
   its loss of energy every frame.
 - **A bake without surfel GI carries none of its assets.**

@@ -30,7 +30,7 @@ impl LightClusterPass {
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
-		lighting_buffer: ghi::BufferHandle<LightingData>,
+		lighting_data: ghi::BufferHandle<LightingData>,
 		evaluation: SetBinder<'_>,
 	) -> Self {
 		let light_clusters_layout = set_layouts::layout(set_layouts::LIGHT_CLUSTERS);
@@ -45,7 +45,7 @@ impl LightClusterPass {
 			context.build_buffer(ghi::buffer::Builder::new(ghi::Uses::Storage).name("Light Cluster Masks"));
 		let clusters = light_clusters_layout.binder(descriptor_set);
 		context.write(&[
-			clusters.buffer("lighting_data", lighting_buffer),
+			clusters.buffer("lighting_data", lighting_data),
 			clusters.buffer("light_cluster_parameters", parameters),
 			clusters.buffer("light_cluster_masks", masks),
 			evaluation.buffer("light_cluster_masks", masks),

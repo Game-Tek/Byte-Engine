@@ -3,6 +3,8 @@
 // declared and are never reached, so they need no resource.
 // `rendering/pipelines/visibility/render_pass.rs` creates it and binds its resources by these names.
 
+use ::byte_engine::rendering::visibility::layouts::screen_view::*;
+
 Light: struct {
 	position: vec3f,
 	color: vec3f,
@@ -48,17 +50,6 @@ LightClusterParameters: struct {
 	depth_slice_scale: f32,
 }
 
-// The camera constants of the half-resolution depth pyramid and SSGI images, as `ScreenViewData` lays them out. SSGI
-// reads their pixel rays, and `sceneposition` the rays at the screen's corners.
-SsgiView: struct {
-	pixel_to_ray_mul: vec2f,
-	pixel_to_ray_add: vec2f,
-	projection_pixels_y: f32,
-	view_z_sign: f32,
-	depth_unproject_numerator: f32,
-	depth_unproject_denominator_offset: f32,
-}
-
 ReflectionParameters: struct {
 	world_to_previous_clip: mat4f,
 	previous_exposure: f32,
@@ -80,12 +71,14 @@ MaterialEvaluation: layer {
 	lit_map: descriptor<{ type: StorageImage<r11f_g11f_b10f>, binding: 0, access: read_write }>;
 	lighting_data: descriptor<{ type: LightingData, binding: 1, access: read, memory: device }>;
 	// The half-resolution SSGI history and normals, from which opaque evaluation reconstructs indirect diffuse light.
-	ssgi_normals: descriptor<{ type: Texture2D, binding: 2, access: read }>;
-	ssgi_view: descriptor<{ type: SsgiView, binding: 3, access: read, memory: device }>;
+	indirect_diffuse_normals: descriptor<{ type: Texture2D, binding: 2, access: read }>;
+	// The camera constants at half the sink resolution, the min depth pyramid's and the indirect diffuse images'. SSGI
+	// reads their pixel rays, and `sceneposition` the rays at the screen's corners.
+	half_resolution_view: descriptor<{ type: ScreenView, binding: 3, access: read, memory: device }>;
 	ao: descriptor<{ type: Texture2D, binding: 4, access: read }>;
 	environment_irradiance: descriptor<{ type: TextureCube, binding: 5, access: read }>;
 	environment_specular: descriptor<{ type: TextureCube, binding: 6, access: read }>;
-	ssgi_history: descriptor<{ type: Texture2D, binding: 7, access: read }>;
+	indirect_diffuse_history: descriptor<{ type: Texture2D, binding: 7, access: read }>;
 	// This frame's diffuse radiance, which the next frame's SSGI rays read.
 	diffuse_radiance_map: descriptor<{ type: StorageImage<rgba16f>, binding: 8, access: write }>;
 	// The sun's resolved visibility per opaque pixel, one channel per sun slot.

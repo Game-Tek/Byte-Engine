@@ -512,7 +512,7 @@ pub struct SceneBackgroundTargets {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EnvironmentMaps {
 	/// The cube of irradiance over π.
-	pub diffuse: ghi::BaseImageHandle,
+	pub irradiance: ghi::BaseImageHandle,
 	/// The cube of radiance prefiltered for roughness `level / 7` over eight levels.
 	pub specular: ghi::BaseImageHandle,
 }

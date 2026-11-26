@@ -71,7 +71,7 @@ LightmapBake: layer {
 	// Per traced texel: the sum of its paths' light in RGB, and how many first hit a back face in alpha.
 	lightmap_accumulation: descriptor<{ type: vec4f[], binding: 2, access: read_write, memory: device }>;
 	// The environment's light, as the roughness-prefiltered specular levels of the world environment.
-	lightmap_environment: descriptor<{ type: TextureCube, binding: 3, access: read }>;
+	lightmap_environment_specular: descriptor<{ type: TextureCube, binding: 3, access: read }>;
 	// Per image texel: the traced texel it holds, or NO_LIGHTMAP_TEXEL.
 	lightmap_texel_indices: descriptor<{ type: u32[], binding: 4, access: read, memory: device }>;
 	// Per image texel: irradiance over π in RGB, and in alpha the share of the texel's paths whose first ray reached

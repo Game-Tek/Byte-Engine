@@ -1241,7 +1241,7 @@ mod tests {
 			assert_eq!(
 				captures[0].capture,
 				ScreenshotCapture::PreviousSceneTarget {
-					target: "Diffuse Radiance History".to_string(),
+					target: "Diffuse Radiance".to_string(),
 				}
 			);
 			Screenshots {
@@ -1253,7 +1253,7 @@ mod tests {
 
 		let response = server.request(
 			"GET",
-			"/screenshots?sink=0&target=Diffuse+Radiance+History&previous=true&format=raw",
+			"/screenshots?sink=0&target=Diffuse+Radiance&previous=true&format=raw",
 			"",
 		);
 		responder.join().expect("join screenshot responder");

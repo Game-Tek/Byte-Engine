@@ -48,7 +48,7 @@ main: fn (input: StageInput, scene: Scene, velocity: Velocity) -> void {
 	let center: vec2f = vec2f(f32(pixel.x) + 0.5, f32(pixel.y) + 0.5);
 	let ndc: vec2f = vec2f(center.x / extent.x * 2.0 - 1.0, 1.0 - center.y / extent.y * 2.0);
 	let device_depth: f32 = fetch(velocity.depth, pixel).x;
-	let instance_index: u32 = image_load_u32(velocity.instance_index_render_target, pixel);
+	let instance_index: u32 = image_load_u32(velocity.instance_index, pixel);
 
 	// The background shows directions, which move only as the camera turns.
 	if (instance_index == 4294967295 || device_depth <= 0.0) {
@@ -64,7 +64,7 @@ main: fn (input: StageInput, scene: Scene, velocity: Velocity) -> void {
 
 	let mesh: Mesh = scene.meshes[instance_index];
 	// The low eight bits name the triangle within its meshlet, and the rest the meshlet.
-	let triangle_meshlet_indices: u32 = image_load_u32(velocity.triangle_index, pixel);
+	let triangle_meshlet_indices: u32 = image_load_u32(velocity.primitive_index, pixel);
 	let meshlet: Meshlet = scene.meshlets[triangle_meshlet_indices >> 8];
 	let primitive_index_base: u32 = (meshlet.triangle_offset + (triangle_meshlet_indices & 255)) * 3;
 	let vertex_index_base: u32 = meshlet.primitive_offset;

@@ -20,7 +20,7 @@ use utils::Extent;
 
 use super::super::layout::MAX_DIRECTIONAL_SHADOW_COUNT;
 use super::super::shadow_selection::SunShadow;
-use super::depth_pyramid::screen_view_data;
+use super::min_depth_pyramid::screen_view_data;
 use super::shadows::ShadowMaps;
 use super::{ComputeStage, Pipelines};
 use crate::configuration::{Accepts, Read, Setting};
@@ -153,7 +153,7 @@ pub(crate) fn view_space_direction_to_light(view: math::Matrix, light_direction:
 /// The `SunVisibilityPass` struct resolves the sun's shadow for every opaque pixel, so material evaluation reads one
 /// value instead of filtering the shadow map and the contact shadows itself.
 ///
-/// It runs after [`super::depth_pyramid::DepthPyramidPass`] and the shadow maps, and before opaque material
+/// It runs after [`super::min_depth_pyramid::MinDepthPyramidPass`] and the shadow maps, and before opaque material
 /// evaluation, which multiplies the sun's light by [`SUN_VISIBILITY_TARGET`]. Create its targets with
 /// [`create_sun_visibility_targets`].
 pub(super) struct SunVisibilityPass {
@@ -175,7 +175,7 @@ impl SunVisibilityPass {
 	/// Wires the depth images, the shadow maps, and the targets, and requests the trace and resolve pipelines.
 	///
 	/// `base_descriptor_set` is the sink's base visibility set, whose views the resolve reads the cascades from. The trace
-	/// marches the opaque layer's `depth`, which the resolve also reads. `primitive_index` and `instance_id` are the visibility buffer, from which the resolve takes each receiver's
+	/// marches the opaque layer's `depth`, which the resolve also reads. `primitive_index` and `instance_index` are the visibility buffer, from which the resolve takes each receiver's
 	/// triangle. `shadow_maps` holds the sun's cascades and their depth pyramid. Without `contact_shadows`, the trace
 	/// pipeline is not requested.
 	pub(super) fn new(
@@ -184,7 +184,7 @@ impl SunVisibilityPass {
 		base_descriptor_set: ghi::DescriptorSetHandle,
 		depth: ghi::BaseImageHandle,
 		primitive_index: ghi::BaseImageHandle,
-		instance_id: ghi::BaseImageHandle,
+		instance_index: ghi::BaseImageHandle,
 		shadow_maps: &ShadowMaps,
 		targets: SunVisibilityTargets,
 		contact_shadows: bool,
@@ -222,21 +222,21 @@ impl SunVisibilityPass {
 			trace.image("contact_shadow_output", targets.trace),
 			trace.sampled("contact_shadow_depth", depth, point_sampler),
 			resolve.sampled("visibility_depth", depth, point_sampler),
-			resolve.image("triangle_index", primitive_index),
-			resolve.image("instance_index_render_target", instance_id),
+			resolve.image("primitive_index", primitive_index),
+			resolve.image("instance_index", instance_index),
 			resolve.image("sun_visibility_output", targets.visibility),
 			resolve.sampled("contact_shadow_trace", targets.trace, point_sampler),
 			resolve.buffer("sun_visibility_parameters", parameters),
-			cascades.sampled("depth_shadow_map", shadow_maps.directional, shadow_sampler),
+			cascades.sampled("directional_shadow_map", shadow_maps.directional, shadow_sampler),
 			// The layer fixes the minimum pyramid's reducing sampler.
 			cascades.texture(
-				"directional_shadow_depth_minimum_pyramid",
-				shadow_maps.directional_depth_minimum_pyramid,
+				"directional_shadow_min_depth_pyramid",
+				shadow_maps.directional_min_depth_pyramid,
 			),
 			// The maximum pyramid, with the point sampler, for the blocker search's gathers.
 			cascades.sampled(
-				"directional_shadow_depth_cells",
-				shadow_maps.directional_depth_pyramid,
+				"directional_shadow_max_depth_pyramid",
+				shadow_maps.directional_max_depth_pyramid,
 				point_sampler,
 			),
 			// Blended surfaces read the suns the resolve reads, from the same buffer.

@@ -7,7 +7,7 @@
 // much lookups trust each one. Its confidence is how much of its coverage those trusted surfels make up: a lone new
 // surfel's light shows at once in the estimate, but with only the confidence its rays earned. It blends the estimate
 // into the pixel's validated history by that confidence, with `surfel_temporal_reproject` and `surfel_temporal_blend`,
-// and writes its normal to `SSGI Normals`; the spatial pass then fills what neither covers. A pixel hidden from every
+// and writes its normal to `Indirect Diffuse Normals`; the spatial pass then fills what neither covers. A pixel hidden from every
 // surfel that would light it takes no light, with the confidence of the surfels that hide it.
 //
 // While it reads the cell, it keeps alive the surfels that serve it. The tile then elects at most one spawn, at its

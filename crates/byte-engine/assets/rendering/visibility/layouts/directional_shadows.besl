@@ -44,10 +44,10 @@ SunVisibilityParameters: struct {
 farthest_occluder: sampler<{ filter: linear, mip_filter: nearest, reduction: min }>;
 
 DirectionalShadows: layer {
-	depth_shadow_map: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
-	directional_shadow_depth_minimum_pyramid: descriptor<{ type: Texture2D, binding: 1, access: read, sampler: farthest_occluder }>;
+	directional_shadow_map: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
+	directional_shadow_min_depth_pyramid: descriptor<{ type: Texture2D, binding: 1, access: read, sampler: farthest_occluder }>;
 	// The maximum pyramid, with a plain sampler: the blocker search gathers its cells four at a time.
-	directional_shadow_depth_cells: descriptor<{ type: Texture2D, binding: 2, access: read }>;
+	directional_shadow_max_depth_pyramid: descriptor<{ type: Texture2D, binding: 2, access: read }>;
 	// The shadowed suns of the sink's frame, which the resolve and blended surfaces read their directions and count from.
 	sun_parameters: descriptor<{ type: SunVisibilityParameters, binding: 3, access: read }>;
 }
@@ -171,7 +171,7 @@ directional_shadow_area_is_fully_shadowed: fn (
 	// and H/8 cells tall per layer.
 	let cell_extent: vec2u = shadow_map_extent / vec2u(8, 8);
 	let layer_offset: f32 = f32(shadow_layer * cell_extent.y);
-	let pyramid_size: vec2u = texture_size(shadows.directional_shadow_depth_minimum_pyramid);
+	let pyramid_size: vec2u = texture_size(shadows.directional_shadow_min_depth_pyramid);
 	let pyramid_extent: vec2f = vec2f(f32(pyramid_size.x), f32(pyramid_size.y));
 	let first_cell: vec2f = vec2f(
 		floor(shadow_texel_position.x / 8.0 - 1.5),
@@ -196,10 +196,10 @@ directional_shadow_area_is_fully_shadowed: fn (
 		clamp(first_cell.y + 3.0, 1.0, maximum_corner.y) + layer_offset
 	) / pyramid_extent;
 	// Issue the independent probes before reducing them, so one fetch does not gate the next.
-	let probe0: f32 = downsample_min(shadows.directional_shadow_depth_minimum_pyramid, corner0, 0.0);
-	let probe1: f32 = downsample_min(shadows.directional_shadow_depth_minimum_pyramid, corner1, 0.0);
-	let probe2: f32 = downsample_min(shadows.directional_shadow_depth_minimum_pyramid, corner2, 0.0);
-	let probe3: f32 = downsample_min(shadows.directional_shadow_depth_minimum_pyramid, corner3, 0.0);
+	let probe0: f32 = downsample_min(shadows.directional_shadow_min_depth_pyramid, corner0, 0.0);
+	let probe1: f32 = downsample_min(shadows.directional_shadow_min_depth_pyramid, corner1, 0.0);
+	let probe2: f32 = downsample_min(shadows.directional_shadow_min_depth_pyramid, corner2, 0.0);
+	let probe3: f32 = downsample_min(shadows.directional_shadow_min_depth_pyramid, corner3, 0.0);
 	let block_minimum: f32 = min(min(min(min(1.0, probe0), probe1), probe2), probe3);
 	let plane_rise: f32 = 4.0 * (abs(depth_gradient_per_texel.x) + abs(depth_gradient_per_texel.y));
 	return block_minimum > surface_depth + plane_rise;
@@ -262,7 +262,7 @@ directional_shadow_blocker_depth: fn (
 		&& first_cell.x + 3.0 < f32(cell_extent.x) && first_cell.y + 3.0 < f32(cell_extent.y)) {
 		// The whole block lies inside the cascade, so four gathers read it, each the quad around one cell corner: x and
 		// y hold the left and right cells of the quad's second row, z and w the right and left cells of its first row.
-		let pyramid_extent: vec2u = texture_size(shadows.directional_shadow_depth_cells);
+		let pyramid_extent: vec2u = texture_size(shadows.directional_shadow_max_depth_pyramid);
 		let pyramid_extent_f: vec2f = vec2f(f32(pyramid_extent.x), f32(pyramid_extent.y));
 		// The first cell's center lies between two and one cells before the receiver on each axis, so the four tent
 		// weights per axis, 2 - |offset|, sum to four. Each quad works out its own, since an array indexed by the loop
@@ -280,7 +280,7 @@ directional_shadow_blocker_depth: fn (
 				let next_row: u32 = row + 1;
 				// The corner the quad's four cells share, in the cascade's rows of the pyramid.
 				let corner_uv: vec2f = (first_cell + vec2f(f32(next_column), f32(next_row) + layer_offset)) / pyramid_extent_f;
-				let quad: vec4f = gather(shadows.directional_shadow_depth_cells, corner_uv);
+				let quad: vec4f = gather(shadows.directional_shadow_max_depth_pyramid, corner_uv);
 				let depth: f32 = first_depth + cell_step.x * f32(column) + cell_step.y * f32(row);
 				let weight_x: f32 = 2.0 - abs(first_offset.x + f32(column));
 				let next_weight_x: f32 = 2.0 - abs(first_offset.x + f32(next_column));
@@ -312,7 +312,7 @@ directional_shadow_blocker_depth: fn (
 				let cell_x: f32 = first_cell.x + f32(column);
 				if (cell_x >= 0.0 && cell_y >= 0.0 && cell_x < f32(cell_extent.x) && cell_y < f32(cell_extent.y)) {
 					let cell_maximum: f32 = fetch(
-						shadows.directional_shadow_depth_cells,
+						shadows.directional_shadow_max_depth_pyramid,
 						vec2u(u32(cell_x), u32(cell_y + layer_offset))
 					).x;
 					let cell_center: vec2f = vec2f(cell_x + 0.5, cell_y + 0.5) * 8.0;

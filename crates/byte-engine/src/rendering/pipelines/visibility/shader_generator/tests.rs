@@ -547,7 +547,7 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 				ssgi: false,
 				..Default::default()
 			},
-			"ssgi_history",
+			"indirect_diffuse_history",
 		),
 		(
 			VisibilityFeatures {
@@ -602,7 +602,7 @@ fn material_evaluation_without_a_feature_reaches_none_of_its_images() {
 		..every_feature
 	};
 	assert!(
-		reaches(surfels_alone, "ssgi_history"),
+		reaches(surfels_alone, "indirect_diffuse_history"),
 		"Material evaluation should read indirect diffuse light while surfel GI is built in."
 	);
 	assert!(
@@ -1001,7 +1001,7 @@ fn backdrop_position_rebuilds_world_positions_in_the_besl_vm() {
 	// A vertical field of view of 90 degrees reaches one unit up per unit of depth, and an aspect ratio of two twice as
 	// far across, so the projection's scales are 0.5 and 1. These are the constants `screen_view_data` builds from them
 	// for a 4 by 2 pixel pyramid. The camera stands ten units along x.
-	let mut screen_view = buffer(&executable, slot(&executable, "ssgi_view"));
+	let mut screen_view = buffer(&executable, slot(&executable, "half_resolution_view"));
 	screen_view.write("pixel_to_ray_mul", Value::Vec2F([1.0, -1.0])).unwrap();
 	screen_view.write("pixel_to_ray_add", Value::Vec2F([-1.5, 0.5])).unwrap();
 	screen_view.write("view_z_sign", Value::F32(1.0)).unwrap();
@@ -1017,7 +1017,7 @@ fn backdrop_position_rebuilds_world_positions_in_the_besl_vm() {
 	let mut results = buffer(&executable, slot(&executable, "results"));
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(slot(&executable, "views"), &mut views);
-	descriptors.bind_buffer(slot(&executable, "ssgi_view"), &mut screen_view);
+	descriptors.bind_buffer(slot(&executable, "half_resolution_view"), &mut screen_view);
 	descriptors.bind_texture(slot(&executable, "backdrop_depth"), &mut depth);
 	descriptors.bind_buffer(slot(&executable, "results"), &mut results);
 	run_at(&executable, &mut descriptors, [0, 0]);
@@ -1792,8 +1792,8 @@ fn material_reflection_surface_normal_follows_the_triangle_in_the_besl_vm() {
 		for (name, input) in names.into_iter().zip(&mut inputs) {
 			descriptors.bind_buffer(slot(&executable, name), input);
 		}
-		descriptors.bind_image(slot(&executable, "triangle_index"), &mut triangles);
-		descriptors.bind_image(slot(&executable, "instance_index_render_target"), &mut instances);
+		descriptors.bind_image(slot(&executable, "primitive_index"), &mut triangles);
+		descriptors.bind_image(slot(&executable, "instance_index"), &mut instances);
 		descriptors.bind_push_constant(&mut push_constant);
 		descriptors.bind_buffer(slot(&executable, "results"), &mut results);
 		run_at(&executable, &mut descriptors, [0, 0]);
@@ -2721,7 +2721,7 @@ fn sample_indirect_diffuse(
 	// The camera constants of the half-resolution images, as `screen_view_data` builds them.
 	let projection = ssgi_projection();
 	let size = low_extent as f32;
-	let mut view = buffer(&executable, slot(&executable, "ssgi_view"));
+	let mut view = buffer(&executable, slot(&executable, "half_resolution_view"));
 	for (member, value) in [
 		(
 			"pixel_to_ray_mul",
@@ -2740,10 +2740,10 @@ fn sample_indirect_diffuse(
 	let mut results = buffer(&executable, slot(&executable, "results"));
 	let mut descriptors = DescriptorBindings::new();
 	descriptors.bind_buffer(slot(&executable, "inputs"), &mut inputs);
-	descriptors.bind_buffer(slot(&executable, "ssgi_view"), &mut view);
+	descriptors.bind_buffer(slot(&executable, "half_resolution_view"), &mut view);
 	descriptors.bind_texture(slot(&executable, "depth_pyramid"), &mut depth);
-	descriptors.bind_texture(slot(&executable, "ssgi_normals"), &mut normals);
-	descriptors.bind_texture(slot(&executable, "ssgi_history"), &mut history);
+	descriptors.bind_texture(slot(&executable, "indirect_diffuse_normals"), &mut normals);
+	descriptors.bind_texture(slot(&executable, "indirect_diffuse_history"), &mut history);
 	descriptors.bind_buffer(slot(&executable, "results"), &mut results);
 	run_at(&executable, &mut descriptors, [0, 0]);
 	drop(descriptors);
@@ -2833,7 +2833,7 @@ fn tile_indirect_diffuse_reads_what_the_images_hold() {
 					.expect("indirect diffuse source");
 				push_constant
 			});
-			let mut view = buffer(&executable, slot(&executable, "ssgi_view"));
+			let mut view = buffer(&executable, slot(&executable, "half_resolution_view"));
 			view.write("pixel_to_ray_mul", Value::Vec2F([0.1, -0.1])).expect("SSGI view");
 			view.write("pixel_to_ray_add", Value::Vec2F([-0.4, 0.4])).expect("SSGI view");
 			let mut lit = crate::rendering::shader_vm_test::empty_image(full, full);
@@ -2848,11 +2848,11 @@ fn tile_indirect_diffuse_reads_what_the_images_hold() {
 				if let Some(push_constant) = &mut push_constant {
 					descriptors.bind_push_constant(push_constant);
 				}
-				descriptors.bind_buffer(slot(&executable, "ssgi_view"), &mut view);
+				descriptors.bind_buffer(slot(&executable, "half_resolution_view"), &mut view);
 				descriptors.bind_image(slot(&executable, "lit_map"), &mut lit);
 				descriptors.bind_texture(slot(&executable, "depth_pyramid"), &mut depth);
-				descriptors.bind_texture(slot(&executable, "ssgi_normals"), &mut normals);
-				descriptors.bind_texture(slot(&executable, "ssgi_history"), &mut history);
+				descriptors.bind_texture(slot(&executable, "indirect_diffuse_normals"), &mut normals);
+				descriptors.bind_texture(slot(&executable, "indirect_diffuse_history"), &mut history);
 				descriptors.bind_buffer(slot(&executable, "results"), &mut results);
 				descriptors.bind_workgroup_state(&mut workgroup);
 				executable

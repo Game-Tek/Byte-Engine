@@ -189,7 +189,7 @@ main: fn (input: StageInput, scene: Scene, ray_traced_scene: RayTracedScene, lig
 					if (bounce == 0) {
 						escapes = escapes + weight;
 					}
-					let sky: vec4f = texture_lod(lightmap_bake.lightmap_environment, direction, 0.0);
+					let sky: vec4f = texture_lod(lightmap_bake.lightmap_environment_specular, direction, 0.0);
 					radiance = radiance + throughput * vec3f(sky.x, sky.y, sky.z) * lightmap_bake.lightmap_parameters.environment_intensity;
 					break;
 				}

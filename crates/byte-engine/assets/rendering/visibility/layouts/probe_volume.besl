@@ -95,7 +95,7 @@ ProbeVolume: layer {
 	// Each probe's mean distance to what its rays hit around each direction, and the mean squared distance.
 	probe_distance: descriptor<{ type: Texture2D, binding: 3, access: read, sampler: probe_atlas_filter }>;
 	// The environment's roughness-prefiltered specular levels, which the rays that miss bring light back from.
-	probe_environment_radiance: descriptor<{ type: TextureCube, binding: 4, access: read }>;
+	probe_environment_specular: descriptor<{ type: TextureCube, binding: 4, access: read }>;
 	// The environment's irradiance, which lights the pixels no probe reaches.
 	probe_environment_irradiance: descriptor<{ type: TextureCube, binding: 5, access: read }>;
 }

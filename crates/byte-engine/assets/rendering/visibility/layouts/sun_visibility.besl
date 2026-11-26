@@ -12,6 +12,6 @@ SunVisibility: layer {
 	sun_visibility_parameters: descriptor<{ type: SunVisibilityParameters, binding: 3, access: read }>;
 	// The visibility buffer, as `visibility-buffer.besl` declares it: each pixel's meshlet and meshlet triangle, and its
 	// instance. The resolve takes the receiver's plane and normal from that triangle.
-	triangle_index: descriptor<{ type: StorageImage<r32ui>, binding: 4, access: read }>;
-	instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 5, access: read }>;
+	primitive_index: descriptor<{ type: StorageImage<r32ui>, binding: 4, access: read }>;
+	instance_index: descriptor<{ type: StorageImage<r32ui>, binding: 5, access: read }>;
 }

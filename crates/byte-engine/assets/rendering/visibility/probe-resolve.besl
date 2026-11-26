@@ -2,7 +2,7 @@
 // first.
 //
 // Each pixel rebuilds its surface from the linear depth pyramid, as the surfel resolve does, and looks up the probes
-// around it. It writes their light, pre-exposed, to `SSGI History` and its normal to `SSGI Normals`, the images SSGI
+// around it. It writes their light, pre-exposed, to `Indirect Diffuse History` and its normal to `Indirect Diffuse Normals`, the images SSGI
 // writes, so material evaluation reads either source the same way. A pixel no cascade reaches takes the environment's
 // light as if nothing hid the sky. Every other pixel of every other row marks the eight probes around it in each cascade
 // that lights it, with the frame.

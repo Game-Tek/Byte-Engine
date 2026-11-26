@@ -36,7 +36,7 @@ main: fn (input: StageInput, scene: Scene, material_dispatch: MaterialDispatch, 
 	let block_lane: u32 = local_index % 32;
 	let tile_origin: vec2u = input.thread_id - vec2u(local_index % 16, local_index / 16);
 	let coord: vec2u = tile_origin + vec2u((block % 2) * 8 + block_lane % 8, (block / 2) * 4 + block_lane / 8);
-	let extent: vec2u = image_size(material_dispatch.instance_index_render_target);
+	let extent: vec2u = image_size(material_dispatch.instance_index);
 	let evaluation_index: u32 = INVALID_INDEX;
 	// The pixel's rank among its tile's pixels of the same evaluation in the upper bits, and its histogram slot in the low
 	// five. Packing them keeps one value live across barriers.
@@ -45,7 +45,7 @@ main: fn (input: StageInput, scene: Scene, material_dispatch: MaterialDispatch, 
 	let fallback_mapping_index: u32 = INVALID_INDEX;
 
 	if (coord.x < extent.x && coord.y < extent.y) {
-		let pixel_instance_index: u32 = image_load_u32(material_dispatch.instance_index_render_target, coord);
+		let pixel_instance_index: u32 = image_load_u32(material_dispatch.instance_index, coord);
 		if (pixel_instance_index != 4294967295) {
 			evaluation_index = scene.material_evaluations.evaluation_indices[scene.meshes[pixel_instance_index].material & MESH_MATERIAL_MASK];
 		}

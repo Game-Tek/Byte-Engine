@@ -193,7 +193,7 @@ main: fn (input: StageInput, surfel_gi_set: SurfelGi) -> void {
 			let found: vec3f = result.radiance;
 			if (hit == 0.0) {
 				let sky: vec4f = texture_lod(
-					surfel_gi_set.surfel_environment_radiance,
+					surfel_gi_set.surfel_environment_specular,
 					basis_to_world(basis, normal, local),
 					SURFEL_SKY_LEVEL
 				);

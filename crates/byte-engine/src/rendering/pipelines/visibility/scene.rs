@@ -218,7 +218,7 @@ pub struct VisibilityScene {
 	pub(crate) frame_buffer: ghi::BufferHandle<ShaderFrame>,
 	/// One record per instance the frame draws, [`InstanceCapacity::instances`] long.
 	pub(crate) meshes_buffer: ghi::BufferHandle<[ShaderMesh]>,
-	pub(crate) lighting_buffer: ghi::BufferHandle<LightingData>,
+	pub(crate) lighting_data: ghi::BufferHandle<LightingData>,
 	pub(crate) render_info: RenderInfo,
 	pub(crate) sink_states: Vec<SinkState>,
 }
@@ -325,7 +325,7 @@ impl VisibilityScene {
 		environment_intensity: f32,
 		ies_profiles: &[(f32, Option<IesProfileTexture>)],
 	) {
-		let lighting_data = frame.map(self.lighting_buffer);
+		let lighting_data = frame.map(self.lighting_data);
 		// Rewrite the header and every current light, so a recycled frame sequence cannot retain a stale count or
 		// light. Entries past the count are never read, so they are left as they are. The loop writes exactly `count`
 		// lights, so the count is written once instead of after each light.

@@ -275,7 +275,7 @@ pub(crate) struct ResidentLightmap {
 /// The `ResidentEnvironment` struct carries upload-complete image-based lighting handles.
 #[derive(Clone, Copy)]
 pub(crate) struct ResidentEnvironment {
-	pub(crate) diffuse_image: ghi::BaseImageHandle,
+	pub(crate) irradiance_image: ghi::BaseImageHandle,
 	pub(crate) specular_image: ghi::BaseImageHandle,
 	pub(crate) sampler: ghi::SamplerHandle,
 	/// The illuminance, in the map's own units, that the environment delivers to an upward-facing surface. It's what
@@ -322,7 +322,7 @@ pub(crate) enum VisibilityResident {
 	/// Upload-complete image-based lighting whose images the render thread still interns.
 	Environment {
 		id: String,
-		diffuse_image: ghi::implementation::DetachedImage,
+		irradiance_image: ghi::implementation::DetachedImage,
 		specular_image: ghi::implementation::DetachedImage,
 		upward_illuminance: f32,
 	},
@@ -845,14 +845,14 @@ impl VisibilityLoaderClient {
 					resident:
 						VisibilityResident::Environment {
 							id,
-							diffuse_image,
+							irradiance_image,
 							specular_image,
 							upward_illuminance,
 						},
 					..
 				} => {
 					let resident = ResidentEnvironment {
-						diffuse_image: frame.intern_image(diffuse_image).into(),
+						irradiance_image: frame.intern_image(irradiance_image).into(),
 						specular_image: frame.intern_image(specular_image).into(),
 						sampler: self.environment_sampler,
 						upward_illuminance,
@@ -1511,13 +1511,13 @@ impl VisibilityLoader {
 	/// Loads the diffuse and roughness-prefiltered IBL streams and transfers them as one batch.
 	async fn load_environment(&self, id: String, lane: &LoaderLane<Self>) -> Result<VisibilityResident, LoadError> {
 		let EnvironmentMaps {
-			diffuse_image,
+			irradiance_image,
 			specular_image,
 			upward_illuminance,
 		} = load_environment_maps(&self.resource_manager, &id, lane).await?;
 		Ok(VisibilityResident::Environment {
 			id,
-			diffuse_image,
+			irradiance_image,
 			specular_image,
 			upward_illuminance,
 		})
@@ -1527,7 +1527,7 @@ impl VisibilityLoader {
 /// The `EnvironmentMaps` struct is an environment's image-based light once uploaded: its diffuse irradiance cube, its
 /// roughness-prefiltered specular cube, and the illuminance it delivers to an upward-facing surface.
 pub(crate) struct EnvironmentMaps {
-	pub(crate) diffuse_image: ghi::implementation::DetachedImage,
+	pub(crate) irradiance_image: ghi::implementation::DetachedImage,
 	pub(crate) specular_image: ghi::implementation::DetachedImage,
 	/// Lux, or zero when the map can't be calibrated.
 	pub(crate) upward_illuminance: f32,
@@ -1645,7 +1645,7 @@ pub(crate) async fn load_environment_maps<P: LoadPipeline>(
 		},
 		regions,
 	};
-	let [diffuse_image, specular_image] = lane
+	let [irradiance_image, specular_image] = lane
 		.upload(
 			staging,
 			[
@@ -1673,7 +1673,7 @@ pub(crate) async fn load_environment_maps<P: LoadPipeline>(
 		.await?;
 
 	Ok(EnvironmentMaps {
-		diffuse_image,
+		irradiance_image,
 		specular_image,
 		upward_illuminance,
 	})

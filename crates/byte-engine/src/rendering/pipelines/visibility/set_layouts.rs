@@ -49,9 +49,9 @@ layout!(
 	"layouts::material_evaluation::MaterialEvaluation"
 );
 layout!(
-	/// The screen view constants the depth pyramid and GTAO passes share.
-	GTAO_VIEW,
-	"layouts::gtao_view::GtaoView"
+	/// The screen view constants at half the sink resolution, which the min depth pyramid, GTAO, and backdrop passes share.
+	HALF_RESOLUTION_VIEW,
+	"layouts::half_resolution_view::HalfResolutionView"
 );
 layout!(GTAO, "layouts::gtao::Gtao");
 layout!(GTAO_BLUR, "layouts::gtao_blur::GtaoBlur");
@@ -220,7 +220,10 @@ mod tests {
 			stride(MATERIAL_EVALUATION, "reflection_parameters"),
 			size_of::<ReflectionShaderParameters>()
 		);
-		assert_eq!(stride(MATERIAL_EVALUATION, "ssgi_view"), size_of::<ScreenViewData>());
+		assert_eq!(
+			stride(MATERIAL_EVALUATION, "half_resolution_view"),
+			size_of::<ScreenViewData>()
+		);
 		assert_eq!(stride(RAY_TRACED_SCENE, "ray_tracing_geometries"), size_of::<[u32; 2]>());
 	}
 
@@ -233,7 +236,7 @@ mod tests {
 			MATERIAL_DISPATCH,
 			VISIBILITY_BUFFER,
 			MATERIAL_EVALUATION,
-			GTAO_VIEW,
+			HALF_RESOLUTION_VIEW,
 			GTAO,
 			GTAO_BLUR,
 			GTAO_UPSCALE,

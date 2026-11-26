@@ -3,7 +3,7 @@
 //! The camera draws its opaque layer in two passes, each selected by an [`OcclusionPhase`]:
 //!
 //! 1. The early pass draws the meshlets the previous frame's late pass found unoccluded. [`OcclusionCulling`] then
-//!    reduces that depth into a farthest-depth pyramid.
+//!    reduces that depth into a max depth pyramid, which keeps the farthest depth of each texel's footprint.
 //! 2. The late pass projects every instance's and meshlet's bounding sphere into the pyramid, draws the unoccluded
 //!    meshlets the early pass skipped, and records every unoccluded meshlet for the next frame's early pass.
 //!
@@ -22,24 +22,24 @@ use crate::rendering::render_pass::RenderPassFunction;
 
 /// The pyramid has a fixed extent, so its mip count does not depend on the sink's. Culling maps it over the whole
 /// screen, whatever the sink's aspect ratio.
-pub(crate) const OCCLUSION_PYRAMID_WIDTH: u32 = 512;
-pub(crate) const OCCLUSION_PYRAMID_HEIGHT: u32 = 256;
+pub(crate) const MAX_DEPTH_PYRAMID_WIDTH: u32 = 512;
+pub(crate) const MAX_DEPTH_PYRAMID_HEIGHT: u32 = 256;
 /// Mip zero through the 2x1 level. `meshlet-task.besl` spells the last level as `OCCLUSION_PYRAMID_LAST_LEVEL`.
-pub(crate) const OCCLUSION_PYRAMID_MIP_COUNT: u32 = 9;
-const _: () = assert!(OCCLUSION_PYRAMID_WIDTH >> (OCCLUSION_PYRAMID_MIP_COUNT - 1) == 2);
+pub(crate) const MAX_DEPTH_PYRAMID_MIP_COUNT: u32 = 9;
+const _: () = assert!(MAX_DEPTH_PYRAMID_WIDTH >> (MAX_DEPTH_PYRAMID_MIP_COUNT - 1) == 2);
 /// The build's first stage seeds mip zero in 16x16 blocks and reduces each block through workgroup memory to one
 /// texel of mip four, so mip zero must be whole blocks; the second stage takes mip four, 32x16, to the top in one
 /// 16x8 workgroup. `hiz-base.besl` and `hiz-tail.besl` spell these shapes.
 const BASE_LEVELS: usize = 5;
 const BASE_BLOCK: u32 = 16;
 const _: () =
-	assert!(OCCLUSION_PYRAMID_WIDTH.is_multiple_of(BASE_BLOCK) && OCCLUSION_PYRAMID_HEIGHT.is_multiple_of(BASE_BLOCK));
+	assert!(MAX_DEPTH_PYRAMID_WIDTH.is_multiple_of(BASE_BLOCK) && MAX_DEPTH_PYRAMID_HEIGHT.is_multiple_of(BASE_BLOCK));
 const _: () =
-	assert!(OCCLUSION_PYRAMID_WIDTH >> (BASE_LEVELS - 1) == 32 && OCCLUSION_PYRAMID_HEIGHT >> (BASE_LEVELS - 1) == 16);
+	assert!(MAX_DEPTH_PYRAMID_WIDTH >> (BASE_LEVELS - 1) == 32 && MAX_DEPTH_PYRAMID_HEIGHT >> (BASE_LEVELS - 1) == 16);
 
 /// The pyramid's levels, as `layouts/hiz_base.besl` and `layouts/hiz_tail.besl` name the image each one is written
 /// through. The base stage writes the first [`BASE_LEVELS`] and the tail stage the rest.
-const LEVEL_NAMES: [&str; OCCLUSION_PYRAMID_MIP_COUNT as usize] = [
+const LEVEL_NAMES: [&str; MAX_DEPTH_PYRAMID_MIP_COUNT as usize] = [
 	"level_0", "level_1", "level_2", "level_3", "level_4", "level_5", "level_6", "level_7", "level_8",
 ];
 
@@ -60,7 +60,7 @@ pub(crate) enum OcclusionPhase {
 	Pages = 4,
 }
 
-/// The `OcclusionCulling` struct owns one sink's occlusion pyramid, its record of unoccluded meshlets, and the
+/// The `OcclusionCulling` struct owns one sink's max depth pyramid, its record of unoccluded meshlets, and the
 /// descriptor set the camera's visibility passes bind to cull against them.
 ///
 /// Call [`Self::prepare`] each frame, and record the build between the early and the late opaque pass. Every meshlet
@@ -98,17 +98,17 @@ impl OcclusionCulling {
 		let hiz_base_layout = set_layouts::layout(set_layouts::HIZ_BASE);
 		let hiz_tail_layout = set_layouts::layout(set_layouts::HIZ_TAIL);
 		let build_descriptor_sets = [
-			hiz_base_layout.create_set(context, "Occlusion Pyramid Base Descriptor Set"),
-			hiz_tail_layout.create_set(context, "Occlusion Pyramid Tail Descriptor Set"),
+			hiz_base_layout.create_set(context, "Max Depth Pyramid Base Descriptor Set"),
+			hiz_tail_layout.create_set(context, "Max Depth Pyramid Tail Descriptor Set"),
 		];
 		// Each frame builds and reads the pyramid within its own commands, and the queue orders frames, so one copy serves
 		// every frame in flight. The record of unoccluded meshlets carries over to the next frame the same way.
 		// The seed rounds each depth toward the far plane before storing it in 16 bits, so culling stays conservative.
-		let pyramid = context.build_image(
+		let max_depth_pyramid = context.build_image(
 			ghi::image::Builder::new(ghi::Formats::R16F, ghi::Uses::Storage | ghi::Uses::Image)
-				.name("Occlusion Pyramid")
-				.extent(Extent::rectangle(OCCLUSION_PYRAMID_WIDTH, OCCLUSION_PYRAMID_HEIGHT))
-				.mip_levels(OCCLUSION_PYRAMID_MIP_COUNT),
+				.name("Max Depth Pyramid")
+				.extent(Extent::rectangle(MAX_DEPTH_PYRAMID_WIDTH, MAX_DEPTH_PYRAMID_HEIGHT))
+				.mip_levels(MAX_DEPTH_PYRAMID_MIP_COUNT),
 		);
 		// The seed fetches exact texels, so the sampler only completes the descriptor.
 		let point_sampler = context.build_sampler(
@@ -135,17 +135,17 @@ impl OcclusionCulling {
 		let tail = hiz_tail_layout.binder(tail_set);
 		let mut writes = smallvec::SmallVec::<[ghi::DescriptorWrite; 16]>::from_iter([
 			// The layer fixes the pyramid's minimum sampler.
-			culling.texture("occlusion_pyramid", pyramid),
+			culling.texture("occlusion_pyramid", max_depth_pyramid),
 			culling.buffer("occlusion_visibility", visibility),
 			culling.buffer("page_hierarchy", page_hierarchy),
 			culling.buffer("kept_meshlets", kept_meshlets),
 			base.sampled("source_depth", depth, point_sampler),
 			// The tail stage reduces the last level the base stage wrote.
-			tail.image_mip("source_level", pyramid, BASE_LEVELS as u32 - 1),
+			tail.image_mip("source_level", max_depth_pyramid, BASE_LEVELS as u32 - 1),
 		]);
 		for (mip, name) in LEVEL_NAMES.into_iter().enumerate() {
 			let stage = if mip < BASE_LEVELS { base } else { tail };
-			writes.push(stage.image_mip(name, pyramid, mip as u32));
+			writes.push(stage.image_mip(name, max_depth_pyramid, mip as u32));
 		}
 		context.write(&writes);
 
@@ -188,22 +188,22 @@ impl OcclusionCulling {
 		let [base_set, tail_set] = self.build_descriptor_sets;
 		let stages = [
 			ComputeStage {
-				label: "Occlusion Pyramid Base",
+				label: "Max Depth Pyramid Base",
 				pipeline: base,
 				descriptor_sets: [base_set],
-				extent: Extent::rectangle(OCCLUSION_PYRAMID_WIDTH, OCCLUSION_PYRAMID_HEIGHT),
+				extent: Extent::rectangle(MAX_DEPTH_PYRAMID_WIDTH, MAX_DEPTH_PYRAMID_HEIGHT),
 				workgroup: Extent::new(BASE_BLOCK, BASE_BLOCK, 1),
 			},
 			ComputeStage {
-				label: "Occlusion Pyramid Tail",
+				label: "Max Depth Pyramid Tail",
 				pipeline: tail,
 				descriptor_sets: [tail_set],
-				extent: Extent::rectangle(OCCLUSION_PYRAMID_WIDTH, OCCLUSION_PYRAMID_HEIGHT).mip(BASE_LEVELS as u32),
-				workgroup: Extent::rectangle(OCCLUSION_PYRAMID_WIDTH, OCCLUSION_PYRAMID_HEIGHT).mip(BASE_LEVELS as u32),
+				extent: Extent::rectangle(MAX_DEPTH_PYRAMID_WIDTH, MAX_DEPTH_PYRAMID_HEIGHT).mip(BASE_LEVELS as u32),
+				workgroup: Extent::rectangle(MAX_DEPTH_PYRAMID_WIDTH, MAX_DEPTH_PYRAMID_HEIGHT).mip(BASE_LEVELS as u32),
 			},
 		];
 		Some(move |c: &mut ghi::implementation::CommandBufferRecording| {
-			record_compute_stages(c, Some("Occlusion Pyramid"), &stages)
+			record_compute_stages(c, Some("Max Depth Pyramid"), &stages)
 		})
 	}
 }

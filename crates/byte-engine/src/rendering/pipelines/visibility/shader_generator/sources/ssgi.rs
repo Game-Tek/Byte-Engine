@@ -2,7 +2,7 @@
 // from the half-resolution SSGI history with the pixel's own surface position and normal, so SSGI writes no
 // full-resolution image.
 //
-// The helpers read the `ssgi_view`, `ssgi_history`, and `ssgi_normals` bindings that
+// The helpers read the `half_resolution_view`, `indirect_diffuse_history`, and `indirect_diffuse_normals` bindings that
 // `screen_space_indirect_diffuse_scope` declares, and the shared `depth_pyramid` binding. Each helper only calls
 // helpers declared above it.
 
@@ -109,7 +109,7 @@ weigh_screen_space_indirect_diffuse: fn (
 			min(base.x + f32(tap % 2), f32(source_extent.x - 1)),
 			min(base.y + f32(tap / 2), f32(source_extent.y - 1))
 		);
-		let ray: vec2f = tap_texel * material_evaluation.ssgi_view.pixel_to_ray_mul + material_evaluation.ssgi_view.pixel_to_ray_add;
+		let ray: vec2f = tap_texel * material_evaluation.half_resolution_view.pixel_to_ray_mul + material_evaluation.half_resolution_view.pixel_to_ray_add;
 		let tap_normal: vec3f16 = ssgi_stored_normal(stored_normals[tap]);
 		let bilinear: f32 = mix(1.0 - fraction.x, fraction.x, f32(tap % 2)) * mix(1.0 - fraction.y, fraction.y, f32(tap / 2));
 		// A small floor keeps a texel that lands exactly on the far side of the bilinear footprint eligible. A texel
@@ -169,7 +169,7 @@ sample_screen_space_indirect_diffuse: fn (
 	geometric_normal: vec3f,
 	ray_traced: bool
 ) -> vec4f {
-	let source_extent: vec2u = texture_size(material_evaluation.ssgi_history);
+	let source_extent: vec2u = texture_size(material_evaluation.indirect_diffuse_history);
 	let source_position: vec2f = indirect_diffuse_source_position(pixel, extent, source_extent);
 	let base: vec2f = vec2f(floor(source_position.x), floor(source_position.y));
 	// Every texel is read before any weight is computed, so the gather and eight fetches can overlap instead of
@@ -197,13 +197,13 @@ sample_screen_space_indirect_diffuse: fn (
 			min(base.x + f32(tap % 2), f32(source_extent.x - 1)),
 			min(base.y + f32(tap / 2), f32(source_extent.y - 1))
 		);
-		let ray: vec2f = tap_texel * material_evaluation.ssgi_view.pixel_to_ray_mul + material_evaluation.ssgi_view.pixel_to_ray_add;
+		let ray: vec2f = tap_texel * material_evaluation.half_resolution_view.pixel_to_ray_mul + material_evaluation.half_resolution_view.pixel_to_ray_add;
 		let plane_distance: f32 = (dot(geometric_normal, vec3f(ray.x * z, ray.y * z, z)) - plane_offset) * inverse_depth;
 		on_plane = on_plane && z > 0.0 && abs(plane_distance) < 0.005;
 	}
 	if (on_plane) {
 		// The history is bound with a linear sampler; texel centers sit at half-texel offsets.
-		return sample(material_evaluation.ssgi_history, (source_position + vec2f(0.5, 0.5)) / vec2f(f32(source_extent.x), f32(source_extent.y)));
+		return sample(material_evaluation.indirect_diffuse_history, (source_position + vec2f(0.5, 0.5)) / vec2f(f32(source_extent.x), f32(source_extent.y)));
 	}
 	let zero_pair: vec2f16 = vec2f16(0.0, 0.0);
 	let stored_normals: vec2f16[4] = vec2f16[4](zero_pair, zero_pair, zero_pair, zero_pair);
@@ -214,9 +214,9 @@ sample_screen_space_indirect_diffuse: fn (
 			min(u32(base.x) + tap % 2, source_extent.x - 1),
 			min(u32(base.y) + tap / 2, source_extent.y - 1)
 		);
-		let stored: vec4f = fetch(material_evaluation.ssgi_normals, texel);
+		let stored: vec4f = fetch(material_evaluation.indirect_diffuse_normals, texel);
 		stored_normals[tap] = vec2f16(vec2f(stored.x, stored.y));
-		lights[tap] = vec4f16(fetch(material_evaluation.ssgi_history, texel));
+		lights[tap] = vec4f16(fetch(material_evaluation.indirect_diffuse_history, texel));
 	}
 	let indirect: vec4f = weigh_screen_space_indirect_diffuse(
 		material_evaluation,
@@ -268,7 +268,7 @@ sample_screen_space_indirect_diffuse: fn (
 	geometric_normal: vec3f,
 	ray_traced: bool
 ) -> vec4f {
-	let source_extent: vec2u = texture_size(material_evaluation.ssgi_history);
+	let source_extent: vec2u = texture_size(material_evaluation.indirect_diffuse_history);
 	let source_position: vec2f = indirect_diffuse_source_position(pixel, extent, source_extent);
 	let base: vec2f = vec2f(floor(source_position.x), floor(source_position.y));
 	let window_origin: vec2u = indirect_diffuse_window_origin(pixel, extent, source_extent);

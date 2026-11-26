@@ -342,7 +342,7 @@ impl SceneBackground for IdleBackground {
 			)
 		};
 		let maps = EnvironmentMaps {
-			diffuse: cube("diffuse").into(),
+			irradiance: cube("irradiance").into(),
 			specular: cube("specular").into(),
 		};
 		Some((IdlePass, maps))

@@ -28,7 +28,7 @@ main: fn (input: StageInput, scene: Scene, ray_traced_scene: RayTracedScene, pro
 	let direction: vec3f = probe_ray_direction(probe_gi_set, ray % PROBE_RAYS);
 	let hit: Hit = intersect(ray_traced_scene.scene_structure, 255, origin, direction, 0.0, PROBE_RAY_LENGTH);
 	if (hit.distance < 0.0) {
-		let sky: vec4f = texture_lod(probe_volume.probe_environment_radiance, direction, PROBE_SKY_LEVEL);
+		let sky: vec4f = texture_lod(probe_volume.probe_environment_specular, direction, PROBE_SKY_LEVEL);
 		let radiance: vec3f = clamp(
 			vec3f(sky.x, sky.y, sky.z) * probe_volume.probe_volume_parameters.environment_intensity,
 			vec3f(0.0, 0.0, 0.0),

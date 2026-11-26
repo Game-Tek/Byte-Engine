@@ -602,7 +602,7 @@
 			"get": {
 				"operationId": "captureScreenshot",
 				"summary": "Capture a screenshot",
-				"description": "Captures one image from a renderer sink. Without `pass` or `target`, the request reads the final swapchain image. Provide only `target` to read a scene-pipeline target after every scene pipeline has recorded, such as `Diffuse Radiance History`, or add `pass` to read a target right after that render pass. Add `previous=true` with a `target` to read the copy of a history target that the previous frame wrote, which is what the current frame's passes read as history. That copy holds no usable data on a sink's first frame or right after a resize. The request waits up to five seconds for a graphics frame to complete. To capture several images from the same frame, use `POST /screenshots`.",
+				"description": "Captures one image from a renderer sink. Without `pass` or `target`, the request reads the final swapchain image. Provide only `target` to read a scene-pipeline target after every scene pipeline has recorded, such as `Diffuse Radiance`, or add `pass` to read a target right after that render pass. Add `previous=true` with a `target` to read the copy of a history target that the previous frame wrote, which is what the current frame's passes read as history. That copy holds no usable data on a sink's first frame or right after a resize. The request waits up to five seconds for a graphics frame to complete. To capture several images from the same frame, use `POST /screenshots`.",
 				"tags": ["Screenshots"],
 				"parameters": [
 					{
@@ -634,7 +634,7 @@
 							"type": "string",
 							"minLength": 1
 						},
-						"example": "Diffuse Radiance History"
+						"example": "Diffuse Radiance"
 					},
 					{
 						"name": "previous",
@@ -790,12 +790,12 @@
 									},
 									{
 										"sink": 0,
-										"target": "Diffuse Radiance History",
+										"target": "Diffuse Radiance",
 										"format": "exr"
 									},
 									{
 										"sink": 0,
-										"target": "Diffuse Radiance History",
+										"target": "Diffuse Radiance",
 										"previous": true,
 										"format": "exr"
 									}

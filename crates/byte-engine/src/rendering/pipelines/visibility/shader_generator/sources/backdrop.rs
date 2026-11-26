@@ -11,8 +11,8 @@
 pub(crate) const BACKDROP_POSITION_SOURCE: &str = r#"
 backdrop_position: fn (material_evaluation: MaterialEvaluation, inverse_view: mat4x3f, at: vec2f) -> vec3f {
 	let depth: f32 = texture_lod(material_evaluation.backdrop_depth, at, 0.0).x;
-	let corner: vec2f = material_evaluation.ssgi_view.pixel_to_ray_add - material_evaluation.ssgi_view.pixel_to_ray_mul * 0.5;
+	let corner: vec2f = material_evaluation.half_resolution_view.pixel_to_ray_add - material_evaluation.half_resolution_view.pixel_to_ray_mul * 0.5;
 	let ray: vec2f = corner * (vec2f(1.0, 1.0) - at * 2.0) * depth;
-	return inverse_view * vec4f(ray.x, ray.y, depth * material_evaluation.ssgi_view.view_z_sign, 1.0);
+	return inverse_view * vec4f(ray.x, ray.y, depth * material_evaluation.half_resolution_view.view_z_sign, 1.0);
 }
 "#;

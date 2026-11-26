@@ -113,7 +113,7 @@ fn trace_texel(
 	}
 	let mut accumulation = array_buffer(&trace, slot(&trace, "lightmap_accumulation"), 1);
 	let mut escapes = array_buffer(&trace, slot(&trace, "lightmap_escapes"), 1);
-	let mut lights = buffer(&trace, slot(&trace, "scene_lights"));
+	let mut lights = buffer(&trace, slot(&trace, "lighting_data"));
 	lights.write("light_count", Value::U32(0)).expect("light count");
 	let mut environment: Texture = texture_2d(1, 1, &[[sky, sky, sky, 1.0]]);
 	// The texel is its own guide group.
@@ -146,8 +146,8 @@ fn trace_texel(
 		descriptors.bind_buffer(slot(&trace, "lightmap_texel_groups"), &mut texel_groups);
 		descriptors.bind_buffer(slot(&trace, "lightmap_guide_cells"), &mut cells);
 		descriptors.bind_buffer(slot(&trace, "lightmap_guides"), &mut guides);
-		descriptors.bind_buffer(slot(&trace, "scene_lights"), &mut lights);
-		descriptors.bind_texture(slot(&trace, "lightmap_environment"), &mut environment);
+		descriptors.bind_buffer(slot(&trace, "lighting_data"), &mut lights);
+		descriptors.bind_texture(slot(&trace, "lightmap_environment_specular"), &mut environment);
 		descriptors.bind_acceleration_structure(slot(&trace, "scene_structure"), scene);
 		pipeline
 			.trace_rays(&mut descriptors, &[0], [1, 1, 1])

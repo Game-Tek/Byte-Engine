@@ -21,21 +21,21 @@ use ::byte_engine::rendering::visibility::layouts::ray_hits::*;
 probe_direct_light: fn (probe_gi_set: ProbeGi, ray_traced_scene: RayTracedScene, position: vec3f, normal: vec3f) -> vec3f {
 	let shadow_origin: vec3f = position + normal * PROBE_HIT_OFFSET;
 	let light: vec3f = vec3f(0.0, 0.0, 0.0);
-	for (let index: u32 = 0; index < probe_gi_set.probe_scene_lights.light_count; index = index + 1) {
-		if (probe_gi_set.probe_scene_lights.lights[index].type == DIRECTIONAL_LIGHT) {
+	for (let index: u32 = 0; index < probe_gi_set.probe_lighting_data.light_count; index = index + 1) {
+		if (probe_gi_set.probe_lighting_data.lights[index].type == DIRECTIONAL_LIGHT) {
 			// A sun keeps the direction its light travels in `position`.
-			let toward_sun: vec3f = -probe_gi_set.probe_scene_lights.lights[index].position;
+			let toward_sun: vec3f = -probe_gi_set.probe_lighting_data.lights[index].position;
 			let sun_cosine: f32 = dot(normal, toward_sun);
 			if (sun_cosine > 0.0) {
 				if (!trace_occlusion(ray_traced_scene.scene_structure, 255, shadow_origin, toward_sun, 0.0, PROBE_RAY_LENGTH)) {
-					light = light + probe_gi_set.probe_scene_lights.lights[index].color * (sun_cosine / 3.14159265359);
+					light = light + probe_gi_set.probe_lighting_data.lights[index].color * (sun_cosine / 3.14159265359);
 				}
 			}
 			continue;
 		}
-		let to_light: vec3f = probe_gi_set.probe_scene_lights.lights[index].position - position;
+		let to_light: vec3f = probe_gi_set.probe_lighting_data.lights[index].position - position;
 		let distance_squared: f32 = dot(to_light, to_light);
-		let reach: f32 = probe_gi_set.probe_scene_lights.lights[index].reach;
+		let reach: f32 = probe_gi_set.probe_lighting_data.lights[index].reach;
 		if (distance_squared <= 0.0 || distance_squared >= reach * reach) {
 			continue;
 		}
@@ -43,14 +43,14 @@ probe_direct_light: fn (probe_gi_set: ProbeGi, ray_traced_scene: RayTracedScene,
 		let toward_light: vec3f = to_light * (1.0 / distance);
 		let cosine: f32 = dot(normal, toward_light);
 		let falloff: f32 = 1.0 / distance_squared;
-		if (probe_gi_set.probe_scene_lights.lights[index].type == CONE_LIGHT) {
-			let cone: vec2f = probe_gi_set.probe_scene_lights.lights[index].cone_cosines;
-			let along: f32 = 0.0 - dot(probe_gi_set.probe_scene_lights.lights[index].direction, toward_light);
+		if (probe_gi_set.probe_lighting_data.lights[index].type == CONE_LIGHT) {
+			let cone: vec2f = probe_gi_set.probe_lighting_data.lights[index].cone_cosines;
+			let along: f32 = 0.0 - dot(probe_gi_set.probe_lighting_data.lights[index].direction, toward_light);
 			falloff = falloff * clamp((along - cone.y) / (cone.x - cone.y), 0.0, 1.0);
 		}
 		if (cosine > 0.0 && falloff > 0.0) {
 			if (!trace_occlusion(ray_traced_scene.scene_structure, 255, shadow_origin, toward_light, 0.0, distance - PROBE_HIT_OFFSET)) {
-				light = light + probe_gi_set.probe_scene_lights.lights[index].color * (falloff * cosine / 3.14159265359);
+				light = light + probe_gi_set.probe_lighting_data.lights[index].color * (falloff * cosine / 3.14159265359);
 			}
 		}
 	}

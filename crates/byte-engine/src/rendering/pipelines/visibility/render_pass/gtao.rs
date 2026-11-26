@@ -9,7 +9,7 @@ use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
 use utils::Extent;
 
-use super::depth_pyramid::DEPTH_PYRAMID_MIP_COUNT;
+use super::min_depth_pyramid::MIN_DEPTH_PYRAMID_MIP_COUNT;
 use super::{ComputeStage, Pipelines};
 use crate::configuration::{Accepts, Read, Setting};
 use crate::rendering::lookup_textures::blue_noise_slice;
@@ -169,13 +169,13 @@ pub(super) struct GtaoPass {
 impl GtaoPass {
 	/// Wires the three-stage descriptor graph through `targets`, which [`create_gtao_targets`] creates.
 	///
-	/// `depth_pyramid` and `view_descriptor_set`, the set that holds the screen view constants, come from
-	/// [`super::depth_pyramid::DepthPyramidPass`], which must run first.
+	/// `min_depth_pyramid` and `view_descriptor_set`, the set that holds the screen view constants, come from
+	/// [`super::min_depth_pyramid::MinDepthPyramidPass`], which must run first.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
 		depth: ghi::BaseImageHandle,
-		depth_pyramid: ghi::ImageHandle,
+		min_depth_pyramid: ghi::ImageHandle,
 		view_descriptor_set: ghi::DescriptorSetHandle,
 		targets: GtaoTargets,
 		blue_noise: ghi::ImageHandle,
@@ -197,7 +197,7 @@ impl GtaoPass {
 				.filtering_mode(ghi::FilteringModes::Closest)
 				.mip_map_mode(ghi::FilteringModes::Closest)
 				.addressing_mode(ghi::SamplerAddressingModes::Border {})
-				.max_lod((DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
+				.max_lod((MIN_DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
 		let ao_sampler = context.build_sampler(
 			ghi::sampler::Builder::new()
@@ -212,11 +212,11 @@ impl GtaoPass {
 		let upscale = gtao_upscale_layout.binder(upscale_descriptor_set);
 		context.write(&[
 			evaluate.buffer("gtao_parameters", parameters),
-			evaluate.texture("depth_pyramid", depth_pyramid),
+			evaluate.texture("depth_pyramid", min_depth_pyramid),
 			evaluate.image("ao_output", targets.raw),
 			evaluate.image("bent_normal_output", targets.raw_bent_normal),
 			evaluate.sampled("blue_noise", blue_noise, ao_sampler),
-			blur.sampled("linear_depth", depth_pyramid, depth_sampler),
+			blur.sampled("linear_depth", min_depth_pyramid, depth_sampler),
 			blur.sampled("ao_source", targets.raw, ao_sampler),
 			blur.image("ao_output", targets.blurred),
 			blur.sampled("bent_normal_source", targets.raw_bent_normal, ao_sampler),
@@ -224,7 +224,7 @@ impl GtaoPass {
 			upscale.sampled("visibility_depth", depth, depth_sampler),
 			upscale.texture("ao_source", targets.blurred),
 			upscale.image("ao_output", targets.ambient_occlusion),
-			upscale.texture("low_resolution_depth", depth_pyramid),
+			upscale.texture("low_resolution_depth", min_depth_pyramid),
 		]);
 
 		Self {

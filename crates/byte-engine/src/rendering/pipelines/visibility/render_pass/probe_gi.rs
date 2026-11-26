@@ -21,9 +21,9 @@ use utils::Extent;
 
 use super::super::loader::ResidentEnvironment;
 use super::super::shader_data::LightingData;
-use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
+use super::min_depth_pyramid::{MIN_DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
 use super::ray_hits::{RayHits, RayStages, RayTracing, ShadeStage};
-use super::{ComputeStage, Pipelines, SsgiTargets};
+use super::{ComputeStage, IndirectDiffuseTargets, Pipelines};
 use crate::configuration::{Accepts, Read, Setting};
 use crate::rendering::pipelines::visibility::set_layouts;
 use crate::rendering::{PipelineManagerClient, SetBinder, SetLayout, Sink};
@@ -224,14 +224,14 @@ fn random_rotation(seed: u64) -> [[f32; 3]; 3] {
 /// `set`.
 fn environment_writes(set: SetBinder<'_>, environment: ResidentEnvironment) -> [ghi::DescriptorWrite; 2] {
 	let ResidentEnvironment {
-		diffuse_image,
+		irradiance_image,
 		specular_image,
 		sampler,
 		..
 	} = environment;
 	[
-		set.sampled("probe_environment_radiance", specular_image, sampler),
-		set.sampled("probe_environment_irradiance", diffuse_image, sampler),
+		set.sampled("probe_environment_specular", specular_image, sampler),
+		set.sampled("probe_environment_irradiance", irradiance_image, sampler),
 	]
 }
 
@@ -265,7 +265,7 @@ impl ProbeVolume {
 	/// probes stand `spacing` meters apart, and requests the probe GI pipelines.
 	///
 	/// Take both from [`super::super::VisibilityPipelineSettings`], which validated them at startup. `environment` is
-	/// the bound environment; bind the next one with [`Self::environment_writes`]. `lighting_buffer` is the scene's
+	/// the bound environment; bind the next one with [`Self::environment_writes`]. `lighting_data` is the scene's
 	/// light table, whose point and cone lights light what the probes' rays hit.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
@@ -273,7 +273,7 @@ impl ProbeVolume {
 		ray_budget: u32,
 		spacing: f32,
 		environment: ResidentEnvironment,
-		lighting_buffer: ghi::BufferHandle<LightingData>,
+		lighting_data: ghi::BufferHandle<LightingData>,
 	) -> Self {
 		let probe_volume_layout = set_layouts::layout(set_layouts::PROBE_VOLUME);
 		let volume_set = probe_volume_layout.create_set(context, "Probe Volume Descriptor Set");
@@ -340,7 +340,7 @@ impl ProbeVolume {
 			update.buffer("probe_ray_results", ray_results),
 			update.image("probe_irradiance_atlas", irradiance),
 			update.image("probe_distance_atlas", distance),
-			update.buffer("probe_scene_lights", lighting_buffer),
+			update.buffer("probe_lighting_data", lighting_data),
 		]);
 		context.write(&environment_writes(volume, environment));
 		Self {
@@ -480,7 +480,7 @@ pub(crate) struct ProbeFrame {
 
 /// The `ProbeResolvePass` struct lights one sink's opaque pixels from the probe volume, and marks the probes they read.
 ///
-/// It writes the images SSGI writes, so material evaluation reads either source the same way. It runs inside the
+/// It writes the [`IndirectDiffuseTargets`] SSGI writes, so material evaluation reads either source the same way. It runs inside the
 /// screen-space stages, in SSGI's first slot, after the first sink recorded the frame's probe updates.
 pub(super) struct ProbeResolvePass {
 	/// The screen view constants and the depth pyramid the resolve rebuilds surfaces from.
@@ -493,13 +493,13 @@ pub(super) struct ProbeResolvePass {
 impl ProbeResolvePass {
 	/// Wires the resolve descriptor sets of one sink.
 	///
-	/// `depth_pyramid` and `view_data` come from [`super::depth_pyramid::DepthPyramidPass`]. `targets` are the sink's
-	/// SSGI images, which the resolve writes in SSGI's place, and `debug_views` the sink's debug target pool.
+	/// `min_depth_pyramid` and `view_data` come from [`super::min_depth_pyramid::MinDepthPyramidPass`]. `targets` are the sink's
+	/// indirect diffuse images, which the resolve writes, and `debug_views` the sink's debug target pool.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
-		depth_pyramid: ghi::ImageHandle,
+		min_depth_pyramid: ghi::ImageHandle,
 		view_data: ghi::BufferHandle<ScreenViewData>,
-		targets: SsgiTargets,
+		targets: IndirectDiffuseTargets,
 		debug_views: &crate::rendering::DebugViews,
 	) -> Self {
 		let screen_trace_layout = set_layouts::layout(set_layouts::SCREEN_TRACE);
@@ -516,7 +516,7 @@ impl ProbeResolvePass {
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
 				.mip_map_mode(ghi::FilteringModes::Closest)
-				.max_lod((DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
+				.max_lod((MIN_DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
 		let screen_trace = screen_trace_layout.binder(screen_trace_descriptor_set);
 		let resolve = probe_resolve_layout.binder(descriptor_set);
@@ -530,7 +530,7 @@ impl ProbeResolvePass {
 			.collect::<Vec<_>>();
 		writes.extend([
 			screen_trace.buffer("screen_view", view_data),
-			screen_trace.sampled("depth_pyramid", depth_pyramid, point_sampler),
+			screen_trace.sampled("depth_pyramid", min_depth_pyramid, point_sampler),
 			resolve.buffer("probe_resolve_parameters", parameters),
 			resolve.image("history_output", targets.history),
 			resolve.image("normal_output", targets.normals),
@@ -683,7 +683,10 @@ mod tests {
 			stride(set_layouts::PROBE_GI, "probe_ray_results"),
 			size_of::<ProbeRayResult>()
 		);
-		assert_eq!(stride(set_layouts::PROBE_GI, "probe_scene_lights"), size_of::<LightingData>());
+		assert_eq!(
+			stride(set_layouts::PROBE_GI, "probe_lighting_data"),
+			size_of::<LightingData>()
+		);
 		assert_eq!(
 			stride(set_layouts::PROBE_RESOLVE, "probe_resolve_parameters"),
 			size_of::<ProbeResolveParameters>()

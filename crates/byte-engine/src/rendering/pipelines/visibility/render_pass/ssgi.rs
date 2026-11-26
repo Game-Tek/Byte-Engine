@@ -1,7 +1,7 @@
 //! Screen-space diffuse global illumination traced against the linear depth pyramid and last frame's diffuse radiance.
 //!
 //! Each half-resolution pixel shoots one cosine-weighted ray per frame. A ray that hits on-screen geometry takes its
-//! light from the previous frame's [`DIFFUSE_RADIANCE_HISTORY_TARGET`], so bounces accumulate over frames. An edge-aware
+//! light from the previous frame's [`DIFFUSE_RADIANCE_TARGET`], so bounces accumulate over frames. An edge-aware
 //! spatial filter and an exponential moving average over reprojected history remove the noise. Both compare surface
 //! normals rebuilt from depth, because surfaces that touch, such as a foot on a floor, share the same depth at the
 //! contact. Opaque material evaluation reads the half-resolution result and upsamples it with each pixel's own
@@ -17,7 +17,7 @@ use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
 use utils::Extent;
 
-use super::depth_pyramid::{DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
+use super::min_depth_pyramid::{MIN_DEPTH_PYRAMID_MIP_COUNT, ScreenViewData};
 use super::{ComputeStage, Pipelines, SinkHistory};
 use crate::rendering::lookup_textures::BLUE_NOISE_SLICES;
 use crate::rendering::pipelines::visibility::set_layouts;
@@ -32,7 +32,7 @@ pub(in super::super) const SSGI_PIPELINES: [&str; 2] = ["ssgi-trace", "ssgi-temp
 /// a neighbor sends toward it, not the view-dependent highlight the camera sees there. Alpha holds each pixel's view
 /// depth, and zero where no opaque surface was drawn. RGB includes the frame's exposure so daylight light fits in
 /// half-float storage; the trace converts it to the current frame's exposure before filtering.
-pub(crate) const DIFFUSE_RADIANCE_HISTORY_TARGET: &str = "Diffuse Radiance History";
+pub(crate) const DIFFUSE_RADIANCE_TARGET: &str = "Diffuse Radiance";
 /// The render-graph name of the half-resolution trace output: one ray's radiance and hit per pixel.
 pub(crate) const SSGI_RAW_TARGET: &str = "SSGI Raw";
 /// The render-graph name of the half-resolution view-space normals the trace rebuilds from depth.
@@ -40,54 +40,58 @@ pub(crate) const SSGI_RAW_TARGET: &str = "SSGI Raw";
 /// RG holds the normal's octahedral encoding, or zero where the depth neighborhood was degenerate or empty. Zero would
 /// otherwise encode a normal facing away from the camera, which the trace never stores. Material evaluation and the
 /// next frame's denoiser read it to tell whether a texel belongs to a pixel's surface.
-pub(crate) const SSGI_NORMALS_TARGET: &str = "SSGI Normals";
+pub(crate) const INDIRECT_DIFFUSE_NORMALS_TARGET: &str = "Indirect Diffuse Normals";
 /// The render-graph name of the half-resolution accumulated result that material evaluation upsamples and the next
 /// frame blends with.
-pub(crate) const SSGI_HISTORY_TARGET: &str = "SSGI History";
+pub(crate) const INDIRECT_DIFFUSE_HISTORY_TARGET: &str = "Indirect Diffuse History";
 /// SSGI traces and accumulates at half the sink resolution.
 const SSGI_RESOLUTION_DIVISOR: u32 = 2;
 
-/// The `SsgiTargets` struct names the render-graph images SSGI reads and writes for one sink.
+/// The `IndirectDiffuseTargets` struct names one sink's render-graph images that hold half-resolution indirect diffuse light. SSGI, surfel GI, or
+/// probe GI writes them, and material evaluation upsamples them. Only SSGI uses [`raw`](Self::raw).
 ///
 /// They are render targets so the renderer sizes them with the sink and they can be captured by name for debugging.
-/// Create them with [`create_ssgi_targets`].
+/// Create them with [`create_indirect_diffuse_targets`].
 #[derive(Clone, Copy)]
-pub(crate) struct SsgiTargets {
+pub(crate) struct IndirectDiffuseTargets {
+	/// Named [`SSGI_RAW_TARGET`]: one SSGI ray's radiance and hit per pixel.
 	pub(crate) raw: ghi::BaseImageHandle,
-	/// Named [`SSGI_NORMALS_TARGET`]. Bind it in material evaluation with [`history`](Self::history).
+	/// Named [`INDIRECT_DIFFUSE_NORMALS_TARGET`]. Bind it in material evaluation with [`history`](Self::history).
 	pub(crate) normals: ghi::ImageHandle,
-	/// Named [`SSGI_HISTORY_TARGET`]. Bind it in material evaluation, which upsamples it with its pixels' surfaces.
+	/// Named [`INDIRECT_DIFFUSE_HISTORY_TARGET`]. Bind it in material evaluation, which upsamples it with its pixels' surfaces.
 	pub(crate) history: ghi::ImageHandle,
 }
 
-/// Creates the SSGI render-graph targets for the sink that `render_pass_builder` sets up.
+/// Creates the indirect diffuse render-graph targets for the sink that `render_pass_builder` sets up.
 ///
 /// Next, pass them to the visibility render pass, which hands them to [`SsgiPass::new`].
-pub(crate) fn create_ssgi_targets(
+pub(crate) fn create_indirect_diffuse_targets(
 	render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>,
-) -> SsgiTargets {
+) -> IndirectDiffuseTargets {
 	let image = |name, format| ghi::image::Builder::new(format, ghi::Uses::Storage | ghi::Uses::Image).name(name);
 	let radiance_image = |name| image(name, RADIANCE_FORMAT);
-	SsgiTargets {
+	IndirectDiffuseTargets {
 		raw: render_pass_builder
 			.create_scaled_render_target(radiance_image(SSGI_RAW_TARGET), SSGI_RESOLUTION_DIVISOR)
 			.into(),
-		normals: render_pass_builder.create_history_target(image(SSGI_NORMALS_TARGET, NORMAL_FORMAT), SSGI_RESOLUTION_DIVISOR),
-		history: render_pass_builder.create_history_target(radiance_image(SSGI_HISTORY_TARGET), SSGI_RESOLUTION_DIVISOR),
+		normals: render_pass_builder
+			.create_history_target(image(INDIRECT_DIFFUSE_NORMALS_TARGET, NORMAL_FORMAT), SSGI_RESOLUTION_DIVISOR),
+		history: render_pass_builder
+			.create_history_target(radiance_image(INDIRECT_DIFFUSE_HISTORY_TARGET), SSGI_RESOLUTION_DIVISOR),
 	}
 }
 
-/// Creates [`DIFFUSE_RADIANCE_HISTORY_TARGET`], the diffuse light opaque material evaluation leaves for SSGI's rays.
+/// Creates [`DIFFUSE_RADIANCE_TARGET`], the diffuse light opaque material evaluation leaves for SSGI's rays.
 ///
 /// Create it only for a project that builds SSGI in: without SSGI, the shaders drop every statement that writes it.
 /// Next, bind it in material evaluation and pass it to [`SsgiPass::new`].
-pub(crate) fn create_diffuse_radiance_history_target(
+pub(crate) fn create_diffuse_radiance_target(
 	render_pass_builder: &mut crate::rendering::render_pass::RenderPassBuilder<'_>,
 ) -> ghi::ImageHandle {
 	// Clear use lets the renderer clear it on frames the scene records nothing.
 	render_pass_builder.create_history_target(
 		ghi::image::Builder::new(RADIANCE_FORMAT, ghi::Uses::Storage | ghi::Uses::Image | ghi::Uses::Clear)
-			.name(DIFFUSE_RADIANCE_HISTORY_TARGET),
+			.name(DIFFUSE_RADIANCE_TARGET),
 		1,
 	)
 }
@@ -118,8 +122,8 @@ struct SsgiShaderParameters {
 
 /// The `SsgiPass` struct adds bounce light from visible geometry to the diffuse ambient term of opaque surfaces.
 ///
-/// It runs after [`super::depth_pyramid::DepthPyramidPass`] and before opaque material evaluation, which upsamples
-/// the half-resolution result and writes [`DIFFUSE_RADIANCE_HISTORY_TARGET`] for the next frame's rays.
+/// It runs after [`super::min_depth_pyramid::MinDepthPyramidPass`] and before opaque material evaluation, which upsamples
+/// the half-resolution result and writes [`DIFFUSE_RADIANCE_TARGET`] for the next frame's rays.
 pub(super) struct SsgiPass {
 	/// The screen view constants and depth pyramid, then the settings, which both stages read, then each stage's own
 	/// images.
@@ -133,16 +137,16 @@ pub(super) struct SsgiPass {
 impl SsgiPass {
 	/// Wires the trace and temporal descriptor sets.
 	///
-	/// `depth_pyramid` and `view_data` come from [`super::depth_pyramid::DepthPyramidPass`]. Create `targets` with
-	/// [`create_ssgi_targets`], and `diffuse_radiance_history` with [`create_diffuse_radiance_history_target`]. Next,
-	/// bind [`SsgiTargets::history`], [`SsgiTargets::normals`], the pyramid, and `view_data` in material evaluation.
+	/// `min_depth_pyramid` and `view_data` come from [`super::min_depth_pyramid::MinDepthPyramidPass`]. Create `targets` with
+	/// [`create_indirect_diffuse_targets`], and `diffuse_radiance` with [`create_diffuse_radiance_target`]. Next,
+	/// bind [`IndirectDiffuseTargets::history`], [`IndirectDiffuseTargets::normals`], the pyramid, and `view_data` in material evaluation.
 	pub(super) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
-		depth_pyramid: ghi::ImageHandle,
+		min_depth_pyramid: ghi::ImageHandle,
 		view_data: ghi::BufferHandle<ScreenViewData>,
-		targets: SsgiTargets,
-		diffuse_radiance_history: ghi::ImageHandle,
+		targets: IndirectDiffuseTargets,
+		diffuse_radiance: ghi::ImageHandle,
 		blue_noise: ghi::ImageHandle,
 	) -> Self {
 		let screen_trace_layout = set_layouts::layout(set_layouts::SCREEN_TRACE);
@@ -163,27 +167,27 @@ impl SsgiPass {
 			ghi::sampler::Builder::new()
 				.filtering_mode(ghi::FilteringModes::Closest)
 				.mip_map_mode(ghi::FilteringModes::Closest)
-				.max_lod((DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
+				.max_lod((MIN_DEPTH_PYRAMID_MIP_COUNT - 1) as f32),
 		);
-		let SsgiTargets { raw, normals, history } = targets;
+		let IndirectDiffuseTargets { raw, normals, history } = targets;
 		let screen_trace = screen_trace_layout.binder(screen_trace_descriptor_set);
 		let trace = ssgi_trace_layout.binder(trace_descriptor_set);
 		let temporal = ssgi_temporal_layout.binder(temporal_descriptor_set);
 		context.write(&[
 			screen_trace.buffer("screen_view", view_data),
-			screen_trace.sampled("depth_pyramid", depth_pyramid, point_sampler),
+			screen_trace.sampled("depth_pyramid", min_depth_pyramid, point_sampler),
 			ssgi_layout
 				.binder(parameters_descriptor_set)
 				.buffer("ssgi_parameters", parameters),
 			trace.image("raw_output", raw),
 			trace.image("normal_output", normals),
 			// Point sampling keeps a hit's light from blending with the background next to the hit object.
-			trace.sampled_with_frame("previous_radiance_map", diffuse_radiance_history, point_sampler, -1),
+			trace.sampled_with_frame("previous_radiance_map", diffuse_radiance, point_sampler, -1),
 			trace.sampled("blue_noise", blue_noise, point_sampler),
 			temporal.sampled("raw_radiance", raw, point_sampler),
 			temporal.image("history_output", history),
 			temporal.sampled_with_frame("previous_history", history, point_sampler, -1),
-			temporal.sampled_with_frame("previous_depth_pyramid", depth_pyramid, point_sampler, -1),
+			temporal.sampled_with_frame("previous_depth_pyramid", min_depth_pyramid, point_sampler, -1),
 			temporal.sampled("surface_normals", normals, point_sampler),
 			temporal.sampled_with_frame("previous_surface_normals", normals, point_sampler, -1),
 		]);

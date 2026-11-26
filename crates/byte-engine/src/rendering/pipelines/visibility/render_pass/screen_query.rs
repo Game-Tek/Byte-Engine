@@ -48,11 +48,11 @@ pub(crate) struct ScreenQueryStages {
 }
 
 impl ScreenQueryPass {
-	/// Binds `instance_id`, the sink's visibility buffer of instance identifiers, and requests the read pipelines.
+	/// Binds `instance_index`, the sink's visibility buffer of instance identifiers, and requests the read pipelines.
 	pub(crate) fn new(
 		context: &mut ghi::implementation::Context,
 		pipeline_manager: &PipelineManagerClient,
-		instance_id: ghi::BaseImageHandle,
+		instance_index: ghi::BaseImageHandle,
 	) -> Self {
 		let points = context.build_buffer(
 			ghi::buffer::Builder::new(ghi::Uses::Storage)
@@ -76,7 +76,7 @@ impl ScreenQueryPass {
 		context.write(&[
 			set.buffer("points", points),
 			set.buffer("instances", instances),
-			set.image("instance_index_render_target", instance_id),
+			set.image("instance_index", instance_index),
 		]);
 
 		Self {

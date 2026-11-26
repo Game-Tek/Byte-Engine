@@ -6,7 +6,7 @@
 // read a 3x7 footprint, which eight gathers per source cover without shared memory or a barrier.
 
 use ::byte_engine::rendering::visibility::layouts::screen_view::*;
-use ::byte_engine::rendering::visibility::layouts::gtao_view::*;
+use ::byte_engine::rendering::visibility::layouts::half_resolution_view::*;
 use ::byte_engine::rendering::visibility::layouts::gtao_upscale::*;
 
 // The filtered occlusion and total weight of the quad's four pixels, ordered left to right and then top to bottom.
@@ -97,7 +97,7 @@ write_output: fn (gtao_upscale: GtaoUpscale, coordinate: vec2u, extent: vec2u, c
 	write(gtao_upscale.ao_output, coordinate, vec4f(final_ao, 0.0, 0.0, 1.0));
 }
 
-main: fn (input: StageInput, gtao_view: GtaoView, gtao_upscale: GtaoUpscale) -> void {
+main: fn (input: StageInput, view: HalfResolutionView, gtao_upscale: GtaoUpscale) -> void {
 	let quad: vec2u = input.thread_id;
 	let extent: vec2u = image_size(gtao_upscale.ao_output);
 	let origin: vec2u = quad * vec2u(2, 2);
@@ -112,10 +112,10 @@ main: fn (input: StageInput, gtao_view: GtaoView, gtao_upscale: GtaoUpscale) -> 
 		vec2f((f32(origin.x) + 1.0) / f32(extent.x), (f32(origin.y) + 1.0) / f32(extent.y))
 	);
 	let centers: vec4f = vec4f(
-		linearize_depth(gtao_view, quad_depths.w),
-		linearize_depth(gtao_view, quad_depths.z),
-		linearize_depth(gtao_view, quad_depths.x),
-		linearize_depth(gtao_view, quad_depths.y)
+		linearize_depth(view, quad_depths.w),
+		linearize_depth(view, quad_depths.z),
+		linearize_depth(view, quad_depths.x),
+		linearize_depth(view, quad_depths.y)
 	);
 
 	// Every quad pixel's base texel is the quad's coordinate in the half-resolution sources. Each gather reads two

@@ -6,7 +6,7 @@ ShadowDepthPyramid: layer {
 	// Each thread gathers one 4x4 block of a cell, and the cell's four threads combine their blocks with two subgroup
 	// shuffles, so no thread waits at a barrier.
 	source_depth: descriptor<{ type: Texture2DArray, binding: 0, access: read }>;
-	reduced_depth_1: descriptor<{ type: StorageImage<r16>, binding: 1, access: write }>;
+	reduced_max_depth: descriptor<{ type: StorageImage<r16>, binding: 1, access: write }>;
 	// The farthest texel of each cell, which proves a receiver that lies behind every texel of an area fully shadowed.
-	reduced_minimum_1: descriptor<{ type: StorageImage<r16>, binding: 2, access: write }>;
+	reduced_min_depth: descriptor<{ type: StorageImage<r16>, binding: 2, access: write }>;
 }

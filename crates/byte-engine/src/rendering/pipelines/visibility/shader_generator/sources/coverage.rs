@@ -20,7 +20,7 @@ coverage_visibility: fn (
 	},
 ) -> output {
 	primitive_index: u32,
-	instance_id: u32,
+	instance_index: u32,
 } {
 	let material_word: u32 = pipeline_input.material_word;
 	let material_index: u32 = material_word & MESH_MATERIAL_MASK;
@@ -40,7 +40,7 @@ coverage_visibility: fn (
 	}
 	return {
 		primitive_index: pipeline_input.primitive_index,
-		instance_id: pipeline_input.instance_index,
+		instance_index: pipeline_input.instance_index,
 	};
 }
 "#;

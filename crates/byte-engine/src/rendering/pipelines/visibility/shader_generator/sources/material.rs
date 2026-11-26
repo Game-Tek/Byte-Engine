@@ -41,11 +41,11 @@ material_evaluation_pixel_list: fn (input: StageInput) -> void {
 		return;
 	}
 	let pixel_coordinates: vec2u = raw_pixel_coordinates - vec2u(1, 1);
-	let image_extent: vec2u = image_size(visibility_buffer.triangle_index);
+	let image_extent: vec2u = image_size(visibility_buffer.primitive_index);
 	if (pixel_coordinates.x >= image_extent.x || pixel_coordinates.y >= image_extent.y) {
 		return;
 	}
-	let instance_index: u32 = image_load_u32(visibility_buffer.instance_index_render_target, pixel_coordinates);
+	let instance_index: u32 = image_load_u32(visibility_buffer.instance_index, pixel_coordinates);
 	let mesh: Mesh = scene.meshes[instance_index];
 }
 "#;
@@ -62,7 +62,7 @@ pub(crate) const MATERIAL_EVALUATION_TILE_WINDOW_SOURCE: &str = r#"
 material_evaluation_tile_window: fn (input: StageInput) -> void {
 	if (push_constant.indirect_diffuse != 0 && push_constant.indirect_diffuse != 3) {
 		if (input.thread_idx < 36) {
-			let window_extent: vec2u = texture_size(material_evaluation.ssgi_history);
+			let window_extent: vec2u = texture_size(material_evaluation.indirect_diffuse_history);
 			let window_origin: vec2u = indirect_diffuse_window_origin(input.thread_id, image_size(material_evaluation.lit_map), window_extent);
 			let window_texel: vec2u = vec2u(
 				min(window_origin.x + input.thread_idx % 6, window_extent.x - 1),
@@ -70,9 +70,9 @@ material_evaluation_tile_window: fn (input: StageInput) -> void {
 			);
 			// The same three images, at the same precision, as the taps of `sample_screen_space_indirect_diffuse`.
 			tile_indirect_depths[input.thread_idx] = fetch(material_evaluation.depth_pyramid, window_texel).x;
-			let window_normal: vec4f = fetch(material_evaluation.ssgi_normals, window_texel);
+			let window_normal: vec4f = fetch(material_evaluation.indirect_diffuse_normals, window_texel);
 			tile_indirect_normals[input.thread_idx] = vec2f(window_normal.x, window_normal.y);
-			tile_indirect_lights[input.thread_idx] = fetch(material_evaluation.ssgi_history, window_texel);
+			tile_indirect_lights[input.thread_idx] = fetch(material_evaluation.indirect_diffuse_history, window_texel);
 		}
 	}
 	workgroup_barrier();
@@ -86,11 +86,11 @@ material_evaluation_tile_window: fn (input: StageInput) -> void {
 pub(crate) const MATERIAL_EVALUATION_TILE_SOURCE: &str = r#"
 material_evaluation_tile: fn (input: StageInput) -> void {
 	let pixel_coordinates: vec2u = input.thread_id;
-	let image_extent: vec2u = image_size(visibility_buffer.triangle_index);
+	let image_extent: vec2u = image_size(visibility_buffer.primitive_index);
 	if (pixel_coordinates.x >= image_extent.x || pixel_coordinates.y >= image_extent.y) {
 		return;
 	}
-	let instance_index: u32 = image_load_u32(visibility_buffer.instance_index_render_target, pixel_coordinates);
+	let instance_index: u32 = image_load_u32(visibility_buffer.instance_index, pixel_coordinates);
 	if (instance_index == 4294967295) {
 		if (clears_background) {
 			let zero: vec4f = vec4f(0.0, 0.0, 0.0, 0.0);
@@ -121,7 +121,7 @@ material_evaluation_tile_kind: fn () -> void {
 /// `image_extent`, `instance_index`, and `mesh` first.
 pub(crate) const MATERIAL_EVALUATION_PREFIX_SOURCE: &str = r#"
 material_evaluation_prefix: fn (input: StageInput) -> void {
-	let triangle_meshlet_indices: u32 = image_load_u32(visibility_buffer.triangle_index, pixel_coordinates);
+	let triangle_meshlet_indices: u32 = image_load_u32(visibility_buffer.primitive_index, pixel_coordinates);
 	let meshlet_triangle_index: u32 = triangle_meshlet_indices & 255;
 	let meshlet_index: u32 = triangle_meshlet_indices >> 8;
 	let meshlet: Meshlet = scene.meshlets[meshlet_index];

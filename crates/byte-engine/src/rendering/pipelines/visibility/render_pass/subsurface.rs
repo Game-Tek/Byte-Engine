@@ -9,7 +9,7 @@ use ghi::context::{Context as _, ContextCreate as _};
 use ghi::frame::Frame as _;
 use utils::Extent;
 
-use super::depth_pyramid::{ScreenViewData, screen_view_data};
+use super::min_depth_pyramid::{ScreenViewData, screen_view_data};
 use super::{ComputeStage, Pipelines};
 use crate::rendering::lookup_textures::blue_noise_slice;
 use crate::rendering::pipelines::visibility::set_layouts;

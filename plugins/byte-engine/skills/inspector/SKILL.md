@@ -218,7 +218,7 @@ the stream. It reports message ranges by Rust type, not payloads.
 
 ```bash
 curl -s -X POST http://127.0.0.1:6699/screenshots -H 'content-type: application/json' \
-  -d '{"captures":[{"sink":0},{"sink":0,"target":"Diffuse Radiance History","format":"exr"}]}' \
+  -d '{"captures":[{"sink":0},{"sink":0,"target":"Diffuse Radiance","format":"exr"}]}' \
   -o captures.multipart
 ```
 

@@ -34,8 +34,8 @@ Velocity: layer {
 	depth: descriptor<{ type: Texture2D, binding: 1, access: read, sampler: velocity_texel }>;
 	// The visibility buffer, as `visibility-buffer.besl` declares it: each pixel's meshlet and meshlet triangle, and its
 	// instance.
-	triangle_index: descriptor<{ type: StorageImage<r32ui>, binding: 2, access: read }>;
-	instance_index_render_target: descriptor<{ type: StorageImage<r32ui>, binding: 3, access: read }>;
+	primitive_index: descriptor<{ type: StorageImage<r32ui>, binding: 2, access: read }>;
+	instance_index: descriptor<{ type: StorageImage<r32ui>, binding: 3, access: read }>;
 	// Each instance's model matrix as the previous frame drew it, by instance index. The model store copies this frame's
 	// after the velocity is written. A zero matrix marks an instance with no previous frame yet.
 	previous_models: descriptor<{ type: mat4x3f[], binding: 4, access: read_write, memory: device }>;

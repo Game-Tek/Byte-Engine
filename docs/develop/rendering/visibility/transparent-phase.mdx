@@ -47,7 +47,7 @@ divides it by the exposure, so `scenecolor` holds light in `emission` units.
 `sceneposition` scales the view ray at its screen position by the linear depth
 and turns it into world space with the camera's `inverse_view`. The ray comes
 from the same screen view constants the copy unprojects depth with, the ones
-material evaluation binds as `ssgi_view`, so both follow one projection.
+material evaluation binds as `half_resolution_view`, so both follow one projection.
 
 The copy costs a full-resolution read and write of color and depth, so it runs
 only in a frame that admits an instance of a blended material that reads the

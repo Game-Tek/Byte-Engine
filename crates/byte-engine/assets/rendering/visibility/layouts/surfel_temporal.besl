@@ -51,7 +51,7 @@ SurfelTemporal: layer {
 	surfel_previous_weights: descriptor<{ type: Texture2D, binding: 1, access: read }>;
 	// The previous frame's linear depth pyramid, whose mip zero matches the history's texels.
 	surfel_previous_depth: descriptor<{ type: Texture2D, binding: 2, access: read }>;
-	// The previous frame's `SSGI Normals`.
+	// The previous frame's `Indirect Diffuse Normals`.
 	surfel_previous_normals: descriptor<{ type: Texture2D, binding: 3, access: read }>;
 	// This frame's `Surfel History`: pre-exposed light in RGB and the hit fraction in alpha.
 	surfel_history_output: descriptor<{ type: StorageImage<rgba16f>, binding: 4, access: write }>;

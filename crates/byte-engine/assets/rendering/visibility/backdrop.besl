@@ -3,10 +3,10 @@
 // the sky's zero into the view's far depth, so a material finds the sky at the far plane.
 
 use ::byte_engine::rendering::visibility::layouts::screen_view::*;
-use ::byte_engine::rendering::visibility::layouts::gtao_view::*;
+use ::byte_engine::rendering::visibility::layouts::half_resolution_view::*;
 use ::byte_engine::rendering::visibility::layouts::backdrop::*;
 
-main: fn (input: StageInput, gtao_view: GtaoView, backdrop: Backdrop) -> void {
+main: fn (input: StageInput, view: HalfResolutionView, backdrop: Backdrop) -> void {
 	let pixel: vec2u = input.thread_id;
 	let extent: vec2u = image_size(backdrop.depth);
 	if (pixel.x >= extent.x || pixel.y >= extent.y) {
@@ -14,8 +14,8 @@ main: fn (input: StageInput, gtao_view: GtaoView, backdrop: Backdrop) -> void {
 	}
 
 	let device_depth: f32 = fetch(backdrop.source_depth, pixel).x;
-	let view_depth: f32 = gtao_view.gtao_view.depth_unproject_numerator
-		/ (device_depth + gtao_view.gtao_view.depth_unproject_denominator_offset);
+	let view_depth: f32 = view.half_resolution_view.depth_unproject_numerator
+		/ (device_depth + view.half_resolution_view.depth_unproject_denominator_offset);
 
 	write(backdrop.color, pixel, fetch(backdrop.source_lit, pixel));
 	write(backdrop.depth, pixel, vec4f(view_depth, 0.0, 0.0, 1.0));

@@ -843,30 +843,6 @@ mod tests {
 	}
 
 	#[test]
-	fn coincident_spheres_produce_a_finite_stable_contact() {
-		let first: Sphere<WorldSpace> = Sphere::new(Point::origin(), 1.0);
-		let second = Sphere::new(Point::origin(), 1.0);
-		let contact = sphere_vs_sphere(&first, &second).unwrap();
-
-		assert_eq!(contact.normal(), UnitVector::x_axis());
-		assert_eq!(contact.depth(), 2.0);
-		assert_eq!(contact.point_on_a(), Point::new(1.0, 0.0, 0.0));
-		assert_eq!(contact.point_on_b(), Point::new(-1.0, 0.0, 0.0));
-	}
-
-	#[test]
-	fn aabb_contacts_use_stable_surface_points() {
-		let first: AABB<WorldSpace> = AABB::from_center_and_half_extents(Point::origin(), Vector::new(1.0, 1.0, 1.0));
-		let second = AABB::from_center_and_half_extents(Point::new(1.0, 0.0, 0.0), Vector::new(1.0, 1.0, 1.0));
-		let aabb_contact = aabb_vs_aabb(&first, &second).unwrap();
-
-		assert_eq!(aabb_contact.normal(), UnitVector::x_axis());
-		assert_eq!(aabb_contact.depth(), 1.0);
-		assert_eq!(aabb_contact.point_on_a(), Point::new(1.0, 0.0, 0.0));
-		assert_eq!(aabb_contact.point_on_b(), Point::new(0.0, 0.0, 0.0));
-	}
-
-	#[test]
 	fn aabb_contacts_face_the_other_box_along_the_shallowest_axis() {
 		let first: AABB<WorldSpace> = AABB::from_center_and_half_extents(Point::origin(), Vector::new(1.0, 1.0, 1.0));
 		let axes = [UnitVector::x_axis(), UnitVector::y_axis(), UnitVector::z_axis()];
@@ -901,174 +877,190 @@ mod tests {
 		assert_eq!(aabb_vs_aabb(&first, &edge).unwrap().normal(), UnitVector::y_axis());
 	}
 
-	#[test]
-	fn sphere_contacts_include_tangency() {
-		let aabb: AABB<WorldSpace> = AABB::from_center_and_half_extents(Point::origin(), Vector::new(0.5, 0.5, 0.5));
-		let surface_sphere = Sphere::new(Point::new(0.0, 0.9, 0.0), 0.5);
-		let surface_contact = sphere_vs_aabb(&surface_sphere, &aabb).unwrap();
-
-		assert_eq!(surface_contact.normal(), -UnitVector::y_axis());
-		assert_eq!(surface_contact.point_on_b(), Point::new(0.0, 0.5, 0.0));
-		assert_float_eq_with_epsilon!(surface_contact.depth(), 0.1, 0.000001);
-	}
-
-	#[test]
-	fn sphere_contacts_inside_boxes_use_stable_surface_points() {
-		let aabb: AABB<WorldSpace> = AABB::from_center_and_half_extents(Point::origin(), Vector::new(0.5, 0.5, 0.5));
-		let inside_sphere = Sphere::new(Point::new(0.0, 0.49, 0.0), 0.5);
-		let inside_contact = sphere_vs_aabb(&inside_sphere, &aabb).unwrap();
-
-		assert_eq!(inside_contact.normal(), UnitVector::y_axis());
-		assert_eq!(inside_contact.point_on_b(), Point::new(0.0, 0.5, 0.0));
-		assert_float_eq_with_epsilon!(inside_contact.depth(), 0.51, 0.000001);
-	}
-
 	/// Returns a capsule that stands on the origin: 0.5 in radius and 2 tall, so its cap centers are at heights 0.5
 	/// and 1.5.
 	fn standing_capsule() -> Capsule<WorldSpace> {
 		Capsule::new(Point::new(0.0, 0.5, 0.0), Point::new(0.0, 1.5, 0.0), 0.5)
 	}
 
-	#[test]
-	fn a_sphere_beside_a_capsule_touches_its_side() {
-		let sphere = Sphere::new(Point::new(0.9, 1.2, 0.0), 0.5);
-		let contact = capsule_vs_sphere(&standing_capsule(), &sphere).unwrap();
-
-		assert_eq!(contact.normal(), UnitVector::x_axis());
-		assert_float_eq_with_epsilon!(contact.depth(), 0.1, 0.000001);
-		assert_eq!(contact.point_on_a(), Point::new(0.5, 1.2, 0.0));
-		assert_geometry_near!(contact.point_on_b(), Point::<WorldSpace>::new(0.4, 1.2, 0.0));
+	/// Asserts that `contact` has the expected normal, depth, and points, to within a hundred-thousandth, leaving out
+	/// what is `None`.
+	fn assert_contact(
+		case: &str,
+		contact: Option<Intersection<WorldSpace>>,
+		normal: Option<[f32; 3]>,
+		depth: f32,
+		[on_a, on_b]: [Option<[f32; 3]>; 2],
+	) {
+		let contact = contact.unwrap_or_else(|| panic!("{case}: the shapes touch"));
+		let near = |found: [f32; 3], expected: [f32; 3]| {
+			found
+				.iter()
+				.zip(expected)
+				.all(|(found, expected)| (found - expected).abs() <= 1e-5)
+		};
+		assert!(
+			normal.is_none_or(|normal| near(contact.normal().into_vector().to_array(), normal)),
+			"{case}: {contact:?}"
+		);
+		assert!((contact.depth() - depth).abs() <= 1e-5, "{case}: {contact:?}");
+		assert!(
+			on_a.is_none_or(|on_a| near(contact.point_on_a().to_array(), on_a)),
+			"{case}: {contact:?}"
+		);
+		assert!(
+			on_b.is_none_or(|on_b| near(contact.point_on_b().to_array(), on_b)),
+			"{case}: {contact:?}"
+		);
 	}
 
 	#[test]
-	fn a_sphere_past_the_end_of_a_capsule_touches_its_round_cap() {
-		let capsule = standing_capsule();
-		let above = Sphere::new(Point::new(0.0, 2.4, 0.0), 0.5);
-		let contact = capsule_vs_sphere(&capsule, &above).unwrap();
+	fn touching_shapes_get_the_contact_of_their_nearest_parts() {
+		let unit_box = |center: [f32; 3], half: f32| {
+			AABB::<WorldSpace>::from_center_and_half_extents(Point::from_array(center), Vector::new(half, half, half))
+		};
+		let span = |min: [f32; 3], max: [f32; 3]| AABB::<WorldSpace>::new(Point::from_array(min), Point::from_array(max));
+		let capsule =
+			|start: [f32; 3], end: [f32; 3]| Capsule::<WorldSpace>::new(Point::from_array(start), Point::from_array(end), 0.5);
+		let sphere = |center: [f32; 3], radius: f32| Sphere::<WorldSpace>::new(Point::from_array(center), radius);
+		let standing = standing_capsule();
+		// A floor whose top is at height 0.1 or 0, a wall whose near face is 0.4 from the standing capsule's segment from
+		// height 1 up, a capsule that stands half a unit higher beside the standing one, so their segments are side by
+		// side from heights 1 to 1.5, and capsules lying across, above, leaning, sunk 0.3 under a floor's top, and through
+		// a slab whose top and bottom are both 0.1 from the middle of the part inside.
+		let (floor, low_floor, short_floor) = (
+			span([-5.0, -1.0, -5.0], [5.0, 0.1, 5.0]),
+			span([-5.0, -1.0, -5.0], [5.0, 0.0, 5.0]),
+			span([-5.0, -1.0, -5.0], [1.0, 0.0, 5.0]),
+		);
+		let wall = span([0.4, 1.0, -5.0], [1.0, 5.0, 5.0]);
+		let sunk = capsule([0.0, -0.3, 0.0], [0.0, 0.7, 0.0]);
+		let (x, y, z) = (Some([1.0, 0.0, 0.0]), Some([0.0, 1.0, 0.0]), Some([0.0, 0.0, 1.0]));
+		let down = Some([0.0, -1.0, 0.0]);
+		let cases = [
+			// Coincident centers have no direction between them, so they take +x.
+			(
+				"coincident spheres",
+				sphere_vs_sphere(&sphere([0.0; 3], 1.0), &sphere([0.0; 3], 1.0)),
+				x,
+				2.0,
+				[Some([1.0, 0.0, 0.0]), Some([-1.0, 0.0, 0.0])],
+			),
+			(
+				"overlapping boxes",
+				aabb_vs_aabb(&unit_box([0.0; 3], 1.0), &unit_box([1.0, 0.0, 0.0], 1.0)),
+				x,
+				1.0,
+				[Some([1.0, 0.0, 0.0]), Some([0.0; 3])],
+			),
+			(
+				"a sphere on a box",
+				sphere_vs_aabb(&sphere([0.0, 0.9, 0.0], 0.5), &unit_box([0.0; 3], 0.5)),
+				down,
+				0.1,
+				[None, Some([0.0, 0.5, 0.0])],
+			),
+			(
+				"a sphere in a box",
+				sphere_vs_aabb(&sphere([0.0, 0.49, 0.0], 0.5), &unit_box([0.0; 3], 0.5)),
+				y,
+				0.51,
+				[None, Some([0.0, 0.5, 0.0])],
+			),
+			(
+				"a sphere beside a capsule",
+				capsule_vs_sphere(&standing, &sphere([0.9, 1.2, 0.0], 0.5)),
+				x,
+				0.1,
+				[Some([0.5, 1.2, 0.0]), Some([0.4, 1.2, 0.0])],
+			),
+			(
+				"a sphere on a capsule's cap",
+				capsule_vs_sphere(&standing, &sphere([0.0, 2.4, 0.0], 0.5)),
+				y,
+				0.1,
+				[Some([0.0, 2.0, 0.0]), None],
+			),
+			(
+				"capsules side by side",
+				capsule_vs_capsule(&standing, &capsule([0.8, 1.0, 0.0], [0.8, 2.0, 0.0])),
+				x,
+				0.2,
+				[Some([0.5, 1.25, 0.0]), Some([0.3, 1.25, 0.0])],
+			),
+			(
+				"crossed capsules",
+				capsule_vs_capsule(&standing, &capsule([-2.0, 1.0, 0.8], [2.0, 1.0, 0.8])),
+				z,
+				0.2,
+				[Some([0.0, 1.0, 0.5]), Some([0.0, 1.0, 0.3])],
+			),
+			(
+				"capsules end to end",
+				capsule_vs_capsule(&standing, &capsule([0.0, 2.4, 0.0], [0.0, 3.4, 0.0])),
+				y,
+				0.1,
+				[Some([0.0, 2.0, 0.0]), None],
+			),
+			(
+				"a capsule standing on a box",
+				capsule_vs_aabb(&standing, &floor),
+				down,
+				0.1,
+				[Some([0.0; 3]), Some([0.0, 0.1, 0.0])],
+			),
+			(
+				"a capsule beside a box",
+				capsule_vs_aabb(&standing, &wall),
+				x,
+				0.1,
+				[None, Some([0.4, 1.25, 0.0])],
+			),
+			(
+				"a capsule lying on a box's edge",
+				capsule_vs_aabb(&capsule([-1.0, 0.4, 0.0], [3.0, 0.4, 0.0]), &short_floor),
+				down,
+				0.1,
+				[None, Some([0.0; 3])],
+			),
+			(
+				"a capsule leaning over a box",
+				capsule_vs_aabb(&capsule([0.0, 0.4, 0.0], [1.0, 2.0, 0.0]), &low_floor),
+				down,
+				0.1,
+				[None, Some([0.0; 3])],
+			),
+			// Moving the capsule up by the depth leaves it standing on the floor's top.
+			(
+				"a capsule with an end in a box",
+				capsule_vs_aabb(&sunk, &span([-5.0, -4.0, -5.0], [5.0, 0.0, 5.0])),
+				None,
+				0.8,
+				[None, Some([0.0; 3])],
+			),
+			(
+				"a capsule through a box",
+				capsule_vs_aabb(&sunk, &span([-5.0, 0.1, -5.0], [5.0, 0.3, 5.0])),
+				None,
+				0.6,
+				[None, None],
+			),
+		];
+		for (case, contact, normal, depth, points) in cases {
+			assert_contact(case, contact, normal, depth, points);
+		}
+		assert_eq!(
+			capsule_vs_capsule(&capsule([0.8, 1.0, 0.0], [0.8, 2.0, 0.0]), &standing),
+			capsule_vs_capsule(&standing, &capsule([0.8, 1.0, 0.0], [0.8, 2.0, 0.0])).map(Intersection::swap)
+		);
 
-		assert_eq!(contact.normal(), UnitVector::y_axis());
-		assert_float_eq_with_epsilon!(contact.depth(), 0.1, 0.000001);
-		assert_eq!(contact.point_on_a(), Point::new(0.0, 2.0, 0.0));
-
-		// A cylinder of the same size would reach this sphere with its rim. The cap curves away from it.
-		let beside_the_cap = Sphere::new(Point::new(0.8, 2.3, 0.0), 0.5);
-		assert_eq!(capsule_vs_sphere(&capsule, &beside_the_cap), None);
-	}
-
-	#[test]
-	fn capsules_side_by_side_touch_in_the_middle_of_the_stretch_they_share() {
-		let first = standing_capsule();
-		// The second capsule stands half a unit higher, so the segments are side by side from heights 1 to 1.5.
-		let second = Capsule::new(Point::new(0.8, 1.0, 0.0), Point::new(0.8, 2.0, 0.0), 0.5);
-		let contact = capsule_vs_capsule(&first, &second).unwrap();
-
-		assert_eq!(contact.normal(), UnitVector::x_axis());
-		assert_float_eq_with_epsilon!(contact.depth(), 0.2, 0.000001);
-		assert_geometry_near!(contact.point_on_a(), Point::<WorldSpace>::new(0.5, 1.25, 0.0));
-		assert_geometry_near!(contact.point_on_b(), Point::<WorldSpace>::new(0.3, 1.25, 0.0));
-		assert_eq!(capsule_vs_capsule(&second, &first).unwrap(), contact.swap());
-	}
-
-	#[test]
-	fn crossed_capsules_touch_where_their_segments_pass_closest() {
-		let upright = standing_capsule();
-		// Lies across the upright capsule, 0.8 in front of it.
-		let lying = Capsule::new(Point::new(-2.0, 1.0, 0.8), Point::new(2.0, 1.0, 0.8), 0.5);
-		let contact = capsule_vs_capsule(&upright, &lying).unwrap();
-
-		assert_eq!(contact.normal(), UnitVector::z_axis());
-		assert_float_eq_with_epsilon!(contact.depth(), 0.2, 0.000001);
-		assert_geometry_near!(contact.point_on_a(), Point::<WorldSpace>::new(0.0, 1.0, 0.5));
-		assert_geometry_near!(contact.point_on_b(), Point::<WorldSpace>::new(0.0, 1.0, 0.3));
-	}
-
-	#[test]
-	fn capsules_end_to_end_touch_at_their_caps() {
-		let lower = standing_capsule();
-		let upper = Capsule::new(Point::new(0.0, 2.4, 0.0), Point::new(0.0, 3.4, 0.0), 0.5);
-		let contact = capsule_vs_capsule(&lower, &upper).unwrap();
-
-		assert_eq!(contact.normal(), UnitVector::y_axis());
-		assert_float_eq_with_epsilon!(contact.depth(), 0.1, 0.000001);
-		assert_eq!(contact.point_on_a(), Point::new(0.0, 2.0, 0.0));
-
-		let apart = Capsule::new(Point::new(0.0, 2.6, 0.0), Point::new(0.0, 3.6, 0.0), 0.5);
-		assert_eq!(capsule_vs_capsule(&lower, &apart), None);
-	}
-
-	#[test]
-	fn a_capsule_standing_on_a_box_touches_it_under_its_lower_cap() {
-		let floor: AABB<WorldSpace> = AABB::new(Point::new(-5.0, -1.0, -5.0), Point::new(5.0, 0.1, 5.0));
-		let contact = capsule_vs_aabb(&standing_capsule(), &floor).unwrap();
-
-		assert_eq!(contact.normal(), -UnitVector::y_axis());
-		assert_float_eq_with_epsilon!(contact.depth(), 0.1, 0.000001);
-		assert_eq!(contact.point_on_a(), Point::new(0.0, 0.0, 0.0));
-		assert_eq!(contact.point_on_b(), Point::new(0.0, 0.1, 0.0));
-	}
-
-	#[test]
-	fn a_capsule_beside_a_box_touches_it_with_its_side_and_misses_it_past_a_corner() {
-		let capsule = standing_capsule();
-		// A wall whose near face is 0.4 from the capsule's segment, from height 1 up.
-		let wall = AABB::new(Point::new(0.4, 1.0, -5.0), Point::new(1.0, 5.0, 5.0));
-		let contact = capsule_vs_aabb(&capsule, &wall).unwrap();
-
-		assert_eq!(contact.normal(), UnitVector::x_axis());
-		assert_float_eq_with_epsilon!(contact.depth(), 0.1, 0.000001);
-		// The segment runs beside the wall from heights 1 to 1.5.
-		assert_geometry_near!(contact.point_on_b(), Point::<WorldSpace>::new(0.4, 1.25, 0.0));
-
-		// The bounds of the capsule and this box overlap, but the cap curves away from the box's edge.
-		let past_the_cap = AABB::new(Point::new(0.4, 1.9, -5.0), Point::new(1.0, 5.0, 5.0));
-		assert_eq!(capsule_vs_aabb(&capsule, &past_the_cap), None);
-	}
-
-	#[test]
-	fn a_capsule_lying_on_a_box_touches_it_in_the_middle_of_the_stretch_above_it() {
-		// The capsule sticks out past the box's edge at x = 1, so only the stretch from x = -1 to 1 is above the box.
-		let lying: Capsule<WorldSpace> = Capsule::new(Point::new(-1.0, 0.4, 0.0), Point::new(3.0, 0.4, 0.0), 0.5);
-		let floor = AABB::new(Point::new(-5.0, -1.0, -5.0), Point::new(1.0, 0.0, 5.0));
-		let contact = capsule_vs_aabb(&lying, &floor).unwrap();
-
-		assert_eq!(contact.normal(), -UnitVector::y_axis());
-		assert_float_eq_with_epsilon!(contact.depth(), 0.1, 0.000001);
-		assert_geometry_near!(contact.point_on_b(), Point::<WorldSpace>::new(0.0, 0.0, 0.0));
-	}
-
-	#[test]
-	fn a_capsule_leaning_toward_a_box_touches_it_with_its_nearest_end() {
-		// The lower end is the closest point of the segment to the floor, and the upper end leans away over it.
-		let leaning: Capsule<WorldSpace> = Capsule::new(Point::new(0.0, 0.4, 0.0), Point::new(1.0, 2.0, 0.0), 0.5);
-		let floor = AABB::new(Point::new(-5.0, -1.0, -5.0), Point::new(5.0, 0.0, 5.0));
-		let contact = capsule_vs_aabb(&leaning, &floor).unwrap();
-
-		assert_eq!(contact.normal(), -UnitVector::y_axis());
-		assert_float_eq_with_epsilon!(contact.depth(), 0.1, 0.000001);
-		assert_eq!(contact.point_on_b(), Point::new(0.0, 0.0, 0.0));
-	}
-
-	#[test]
-	fn a_capsule_with_an_end_inside_a_box_leaves_by_the_face_nearest_to_that_end() {
-		let floor: AABB<WorldSpace> = AABB::new(Point::new(-5.0, -4.0, -5.0), Point::new(5.0, 0.0, 5.0));
-		// The lower cap center is 0.3 under the floor's top, and the upper one is above it.
-		let sunk = Capsule::new(Point::new(0.0, -0.3, 0.0), Point::new(0.0, 0.7, 0.0), 0.5);
-		let contact = capsule_vs_aabb(&sunk, &floor).unwrap();
-
-		// Moving the capsule up by the depth leaves it standing on the floor's top.
-		assert_float_eq_with_epsilon!(contact.depth(), 0.8, 0.000001);
-		assert_geometry_near!(contact.point_on_b(), Point::<WorldSpace>::new(0.0, 0.0, 0.0));
-	}
-
-	#[test]
-	fn a_capsule_that_passes_through_a_box_leaves_by_the_face_nearest_to_the_middle_of_the_part_inside() {
-		let slab: AABB<WorldSpace> = AABB::new(Point::new(-5.0, 0.1, -5.0), Point::new(5.0, 0.3, 5.0));
-		// Both cap centers are outside the slab, and the segment between them crosses it from one side to the other.
-		let through = Capsule::new(Point::new(0.0, -0.3, 0.0), Point::new(0.0, 0.7, 0.0), 0.5);
-		let contact = capsule_vs_aabb(&through, &slab).unwrap();
-
-		// The middle of the part inside is 0.1 from both the top and the bottom of the slab.
-		assert_float_eq_with_epsilon!(contact.depth(), 0.6, 0.000001);
+		// A cylinder of the same size would reach each of these with its rim. The cap curves away from them.
+		assert_eq!(capsule_vs_sphere(&standing, &sphere([0.8, 2.3, 0.0], 0.5)), None);
+		assert_eq!(
+			capsule_vs_capsule(&standing, &capsule([0.0, 2.6, 0.0], [0.0, 3.6, 0.0])),
+			None
+		);
+		assert_eq!(capsule_vs_aabb(&standing, &span([0.4, 1.9, -5.0], [1.0, 5.0, 5.0])), None);
 	}
 
 	#[test]

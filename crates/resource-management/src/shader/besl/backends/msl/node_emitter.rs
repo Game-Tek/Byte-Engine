@@ -53,30 +53,17 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 
 		let template = match name {
 			// Texture lowerings bypass intrinsic bodies.
-			"sample" => {
-				let accessor = resource_accessor(program, &arguments[0]);
-				match &accessor {
-					Some((kind, resource, index)) => {
-						self.emit_intrinsic_resource_reference(string, resource);
-						if *kind == ResourceAccessorKind::DescriptorArray {
-							string.push('[');
-							self.emit_node_string(string, index);
-							string.push(']');
-						}
-					}
-					None => self.emit_node_string(string, &arguments[0]),
+			// The accessor's resource and index come first, then the call's own arguments.
+			"sample" => match resource_accessor(program, &arguments[0]) {
+				Some((kind, resource, index)) => {
+					let template = match kind {
+						ResourceAccessorKind::DescriptorArray => "$r0[$1].sample($s2, $3)",
+						ResourceAccessorKind::Texture2DArrayLayer => "$r0.sample($s2, $3, $1)",
+					};
+					return self.emit_template(string, template, &[resource, index, arguments[0], arguments[1]]);
 				}
-				string.push_str(".sample(");
-				self.emit_sampler(string, &arguments[0]);
-				string.push_str(", ");
-				self.emit_node_string(string, &arguments[1]);
-				if let Some((ResourceAccessorKind::Texture2DArrayLayer, _, index)) = &accessor {
-					string.push_str(", ");
-					self.emit_node_string(string, index);
-				}
-				string.push(')');
-				return;
-			}
+				None => "$0.sample($s0, $1)",
+			},
 			"sample_texture_2d_array_grad" => {
 				self.emit_template(string, "$r0[$1].sample(", arguments);
 				if !emit_fixed_sampler_name(program, string, &arguments[0]) {

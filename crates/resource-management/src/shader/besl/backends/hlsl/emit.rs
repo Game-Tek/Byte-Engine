@@ -177,20 +177,8 @@ impl<'p> Generator<'p> {
 	/// `image[uint3(coord, layer)]` for a layer of a `StorageImageArray`.
 	pub(crate) fn emit_image_texel(&mut self, string: &mut String, image: &besl::NodeId, coord: &besl::NodeId) {
 		match besl::layered_image_access(self.program, image) {
-			Some((image, layer)) => {
-				self.emit_node_string(string, &image);
-				string.push_str("[uint3(");
-				self.emit_node_string(string, coord);
-				string.push_str(", ");
-				self.emit_node_string(string, &layer);
-				string.push_str(")]");
-			}
-			None => {
-				self.emit_node_string(string, image);
-				string.push('[');
-				self.emit_node_string(string, coord);
-				string.push(']');
-			}
+			Some((image, layer)) => self.emit_template(string, "$0[uint3($1, $2)]", &[image, *coord, layer]),
+			None => self.emit_template(string, "$0[$1]", &[*image, *coord]),
 		}
 	}
 

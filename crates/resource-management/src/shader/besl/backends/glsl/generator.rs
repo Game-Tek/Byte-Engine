@@ -574,26 +574,12 @@ impl<'p> Generator<'p> {
 
 	// Emits ordinary 2D samples, descriptor-array samples, and one selected 2D-array layer.
 	fn emit_sample(&mut self, string: &mut String, arguments: &[besl::NodeId]) {
-		let program = self.program;
-		string.push_str("texture(");
-		let accessor = resource_accessor(program, &arguments[0]);
-		if let Some((ResourceAccessorKind::Texture2DArrayLayer, resource, _)) = &accessor {
-			self.emit_node(string, resource);
-		} else {
-			self.emit_node(string, &arguments[0]);
+		match resource_accessor(self.program, &arguments[0]) {
+			Some((ResourceAccessorKind::Texture2DArrayLayer, resource, layer)) => {
+				self.emit_template(string, "texture($0$,vec3($1$,float($2)))", &[resource, arguments[1], layer])
+			}
+			_ => self.emit_template(string, "texture($0$,$1)", arguments),
 		}
-		self.emit_separator(string);
-		if let Some((ResourceAccessorKind::Texture2DArrayLayer, _, layer)) = accessor {
-			string.push_str("vec3(");
-			self.emit_node(string, &arguments[1]);
-			self.emit_separator(string);
-			string.push_str("float(");
-			self.emit_node(string, &layer);
-			string.push_str("))");
-		} else {
-			self.emit_node(string, &arguments[1]);
-		}
-		string.push(')');
 	}
 
 	/// Writes the extent of `image` as an `ivec2`: `textureSize` for a `sampled` texture and `imageSize` for a storage
@@ -614,22 +600,8 @@ impl<'p> Generator<'p> {
 	/// GLSL declares as one `image2DArray`.
 	fn emit_image_and_coord(&mut self, string: &mut String, image: &besl::NodeId, coord: &besl::NodeId) {
 		match besl::layered_image_access(self.program, image) {
-			Some((image, layer)) => {
-				self.emit_node(string, &image);
-				self.emit_separator(string);
-				string.push_str("ivec3(ivec2(");
-				self.emit_node(string, coord);
-				string.push_str("),int(");
-				self.emit_node(string, &layer);
-				string.push_str("))");
-			}
-			None => {
-				self.emit_node(string, image);
-				self.emit_separator(string);
-				string.push_str("ivec2(");
-				self.emit_node(string, coord);
-				string.push(')');
-			}
+			Some((image, layer)) => self.emit_template(string, "$0$,ivec3(ivec2($1),int($2))", &[image, *coord, layer]),
+			None => self.emit_template(string, "$0$,ivec2($1)", &[*image, *coord]),
 		}
 	}
 }
@@ -1143,11 +1115,8 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 		}
 	}
 
-	// This function appends to the `string` parameter the string representation of the node.
-	//
-	// Example: Node::Literal { value: Literal::Float(3.14) } -> "3.14"
-	// Example: Node::Struct { name: "Camera", fields: vec![Node::Field { name: "position", type: Type::Float }] } -> "struct Camera { float position; };"
-	// Keep the exhaustive node-to-GLSL mapping together so adding a BESL node requires handling its backend contract here.
+	// Lowers the nodes whose GLSL form is this backend's own, such as bindings and stage interfaces, and passes
+	// every other node to `NodeEmitter::emit_common_node`.
 	#[allow(clippy::cognitive_complexity, clippy::too_many_lines)]
 	fn emit_node(&mut self, string: &mut String, this_node: &besl::NodeId) {
 		let program = self.program;
@@ -1158,9 +1127,6 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 		let space_char = formatting.space_str();
 
 		match node.node() {
-			// A `use` and a signature only link names, and a layer's members emit where code reads them.
-			besl::Nodes::Scope { .. } | besl::Nodes::Use { .. } | besl::Nodes::Layer { .. } | besl::Nodes::Signature { .. } => {
-			}
 			besl::Nodes::Function {
 				name,
 				statements,
@@ -1179,11 +1145,6 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				}
 				self.emit_function_node(string, this_node, program.text(*name), statements, return_type, params)
 			}
-			// The ray tracing prelude declares `Hit` before the helpers that return it.
-			besl::Nodes::Struct { name, .. } if program.text(*name) == besl::HIT_STRUCT => {}
-			besl::Nodes::Struct {
-				name, fields, template, ..
-			} => self.emit_struct_node(string, program.text(*name), fields, template),
 			// The sets' base indices come first, and the program's own members start at `PUSH_CONSTANT_OFFSET`.
 			besl::Nodes::PushConstant { members } => {
 				let _ = write!(
@@ -1201,23 +1162,6 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 					self.emit_node(string, member)
 				});
 				let _ = write!(string, "}}{space_char}push_constant;{break_char}");
-			}
-			besl::Nodes::Specialization { name, r#type, id } => {
-				self.emit_specialization_node(string, program.text(*name), r#type, *id)
-			}
-			besl::Nodes::Member { name, r#type, count } => {
-				if let Some(type_name) = program.name(*r#type) {
-					// A member may be a user struct, which is declared under its escaped name.
-					Self::type_identifier(type_name).push_to(string);
-					string.push(' ');
-				}
-				Self::identifier(program.text(*name)).push_to(string);
-				if let Some(count) = count {
-					let _ = write!(string, "[{count}]");
-				}
-			}
-			besl::Nodes::Parameter { name, r#type } => {
-				self.emit_variable_declaration(string, program.text(*name), program.name(*r#type).unwrap())
 			}
 			besl::Nodes::Input {
 				name,
@@ -1303,24 +1247,6 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 			}
 			// Stage validation admits workgroup storage only in compute and task stages.
 			besl::Nodes::Workgroup { .. } => unreachable!("Expected workgroup storage only in compute and task stages"),
-			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
-			besl::Nodes::Conditional {
-				condition,
-				statements,
-				else_branch,
-			} => self.emit_conditional_node(string, condition, statements, else_branch.as_ref()),
-			besl::Nodes::Match {
-				scrutinee,
-				r#type,
-				arms,
-				default,
-			} => self.emit_match_node(string, scrutinee, r#type, arms, default),
-			besl::Nodes::ForLoop {
-				initializer,
-				condition,
-				update,
-				statements,
-			} => self.emit_for_loop_node(string, initializer, condition, update, statements),
 			// Acceleration structures and buffers are declared at their set and first descriptor, which the pipeline maps
 			// to the set's heap range. Read through the heap alias instead, NVIDIA drivers lose the device when a ray query
 			// traverses a structure, and read a buffer's struct members from the buffer's start instead of their offset.
@@ -1445,11 +1371,6 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 
 				self.emit_statement_end(string);
 			}
-			besl::Nodes::Intrinsic { elements, .. } => {
-				for element in elements {
-					self.emit_node(string, element);
-				}
-			}
 			besl::Nodes::Const { name, r#type, value } => {
 				let type_name = program.name(*r#type).unwrap().to_string();
 				string.push_str("const ");
@@ -1468,6 +1389,7 @@ impl<'p> NodeEmitter<'p> for Generator<'p> {
 				}
 				let _ = write!(string, ";{break_char}");
 			}
+			_ => self.emit_common_node(string, this_node),
 		}
 	}
 }

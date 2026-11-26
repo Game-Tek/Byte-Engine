@@ -652,7 +652,82 @@ pub(crate) trait NodeEmitter<'p> {
 	fn match_break_depth(&mut self) -> &mut Option<usize>;
 
 	/// Appends the string representation of a BESL node to the output buffer.
+	///
+	/// Backends match the nodes whose lowering is their own, such as bindings and stage interfaces, and pass every
+	/// other node to [`Self::emit_common_node`].
 	fn emit_node(&mut self, string: &mut String, node: &besl::NodeId);
+
+	/// Writes the nodes every backend lowers alike: declarations that emit nothing, functions, structs,
+	/// specializations, members, parameters, and statements and expressions.
+	///
+	/// Panics on a node that only the backend's [`Self::emit_node`] lowers.
+	fn emit_common_node(&mut self, string: &mut String, this_node: &besl::NodeId) {
+		let program = self.program();
+		match program[this_node].node() {
+			// A `use` and a signature only link names, and a layer's members emit where code reads them.
+			besl::Nodes::Scope { .. } | besl::Nodes::Use { .. } | besl::Nodes::Layer { .. } | besl::Nodes::Signature { .. } => {
+			}
+			besl::Nodes::Function {
+				name,
+				statements,
+				return_type,
+				params,
+				..
+			} => self.emit_function_node(string, this_node, program.text(*name), statements, return_type, params),
+			// The ray tracing prelude declares `Hit` before the helpers that return it.
+			besl::Nodes::Struct { name, .. } if program.text(*name) == besl::HIT_STRUCT => {}
+			besl::Nodes::Struct {
+				name, fields, template, ..
+			} => self.emit_struct_node(string, program.text(*name), fields, template),
+			besl::Nodes::Specialization { name, r#type, id } => {
+				self.emit_specialization_node(string, program.text(*name), r#type, *id)
+			}
+			besl::Nodes::Member { name, r#type, count } => {
+				if let Some(type_name) = program.name(*r#type) {
+					// A member may be a user struct, which is declared under its escaped name.
+					Self::type_identifier(type_name).push_to(string);
+					string.push(' ');
+				}
+				Self::identifier(program.text(*name)).push_to(string);
+				if let Some(count) = count {
+					let _ = write!(string, "[{count}]");
+				}
+			}
+			besl::Nodes::Parameter { name, r#type } => {
+				self.emit_variable_declaration(string, program.text(*name), program.name(*r#type).unwrap())
+			}
+			besl::Nodes::Expression(expression) => self.emit_expression_node(string, expression),
+			besl::Nodes::Conditional {
+				condition,
+				statements,
+				else_branch,
+			} => self.emit_conditional_node(string, condition, statements, else_branch.as_ref()),
+			besl::Nodes::Match {
+				scrutinee,
+				r#type,
+				arms,
+				default,
+			} => self.emit_match_node(string, scrutinee, r#type, arms, default),
+			besl::Nodes::ForLoop {
+				initializer,
+				condition,
+				update,
+				statements,
+			} => self.emit_for_loop_node(string, initializer, condition, update, statements),
+			besl::Nodes::Intrinsic { elements, .. } => {
+				for element in elements {
+					self.emit_node(string, element);
+				}
+			}
+			besl::Nodes::PushConstant { .. }
+			| besl::Nodes::Input { .. }
+			| besl::Nodes::Output { .. }
+			| besl::Nodes::TaskPayload { .. }
+			| besl::Nodes::Workgroup { .. }
+			| besl::Nodes::Binding { .. }
+			| besl::Nodes::Const { .. } => unreachable!("The backend lowers its own declarations in `emit_node`."),
+		}
+	}
 
 	/// Emits a backend intrinsic call.
 	fn emit_intrinsic_call(

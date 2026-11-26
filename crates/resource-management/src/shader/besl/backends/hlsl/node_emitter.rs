@@ -459,27 +459,17 @@ impl<'p> crate::shader::generator::NodeEmitter<'p> for Generator<'p> {
 
 		let template = match name {
 			// Texture samples bypass intrinsic bodies.
-			"sample" => {
-				let accessor = resource_accessor(program, &arguments[0]);
-				self.emit_node_string(string, accessor.as_ref().map_or(&arguments[0], |(_, resource, _)| resource));
-				if let Some((ResourceAccessorKind::DescriptorArray, _, index)) = &accessor {
-					self.emit_descriptor_array_index(string, index);
+			// The accessor's resource and index come first, then the call's own arguments.
+			"sample" => match resource_accessor(program, &arguments[0]) {
+				Some((kind, resource, index)) => {
+					let template = match kind {
+						ResourceAccessorKind::DescriptorArray => "$0$d1.Sample($s2, $3)",
+						ResourceAccessorKind::Texture2DArrayLayer => "$0.Sample($s2, float3($3, float($1)))",
+					};
+					return self.emit_template(string, template, &[resource, index, arguments[0], arguments[1]]);
 				}
-				string.push_str(".Sample(");
-				self.emit_sampler(string, &arguments[0]);
-				string.push_str(", ");
-				if let Some((ResourceAccessorKind::Texture2DArrayLayer, _, index)) = &accessor {
-					string.push_str("float3(");
-					self.emit_node_string(string, &arguments[1]);
-					string.push_str(", float(");
-					self.emit_node_string(string, index);
-					string.push_str("))");
-				} else {
-					self.emit_node_string(string, &arguments[1]);
-				}
-				string.push(')');
-				return;
-			}
+				None => "$0.Sample($s0, $1)",
+			},
 			"sample_texture_2d_array_grad" => "$0$d1.SampleGrad($0_sampler$d1$,$2$,$3$,$4)",
 			// Ray tracing stage values are system values, or members of the hit a closest hit shades. See
 			// `ray_tracing.rs`.

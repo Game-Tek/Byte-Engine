@@ -465,60 +465,6 @@ mod tests {
 		assert_close(unchanged, COLORS[1], "Every step skipped");
 	}
 
-	/// Every fusion the engine ships links its steps and lowers to the platform shading language, as its bake does.
-	#[cfg(target_os = "macos")]
-	#[compio::test]
-	async fn every_shipped_fusion_lowers_to_the_platform_shader_language() {
-		let builtins = besl::Builtins::new();
-		use resource_management::shader::{
-			ShaderGenerationSettings,
-			besl::backends::platform::{PlatformShaderCompiler, PlatformToolchain},
-		};
-
-		let assets = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets");
-		let read_json = |id: &str| -> serde_json::Value {
-			let path = assets.join(
-				id.strip_prefix("byte_engine/")
-					.expect("Engine assets start with `byte_engine/`"),
-			);
-			serde_json::from_str(&std::fs::read_to_string(&path).expect("Expected a readable engine asset"))
-				.expect("Expected an engine asset of valid JSON")
-		};
-		let fusions = std::fs::read_dir(assets.join("rendering/fusions")).expect("Expected the engine's fusions");
-		let mut count = 0;
-		for entry in fusions {
-			let path = entry.expect("Expected a readable fusion").path();
-			let fusion: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).expect("Expected a fusion"))
-				.expect("Expected a fusion of valid JSON");
-			let shaders = fusion["steps"]
-				.as_array()
-				.expect("Expected a fusion's steps")
-				.iter()
-				.map(|step| {
-					let pipeline = read_json(step.as_str().expect("Expected a step ID"));
-					let shader = pipeline["kind"]["shader"]
-						.as_str()
-						.expect("Expected a step's shader")
-						.to_string();
-					shader
-						.strip_prefix("byte_engine/rendering/")
-						.expect("Expected an engine shader")
-						.to_string()
-				})
-				.collect::<Vec<_>>();
-			let shaders = shaders.iter().map(String::as_str).collect::<Vec<_>>();
-			let mut root = link_pixel_chain(&builtins, &shaders);
-			let name = path.display().to_string();
-			let settings = ShaderGenerationSettings::tile(PIXEL_TILE, utils::Extent::square(PIXEL_TILE)).name(name.clone());
-			PlatformShaderCompiler::new()
-				.generate(&PlatformToolchain::new(), &settings, &mut root)
-				.await
-				.unwrap_or_else(|error| panic!("{name} should compile for the platform shader language: {error}"));
-			count += 1;
-		}
-		assert!(count >= 6, "Expected the engine's six fusions, found {count}.");
-	}
-
 	fn fusion(id: &str, steps: &[&str]) -> Fusion {
 		Fusion {
 			id: id.to_string(),

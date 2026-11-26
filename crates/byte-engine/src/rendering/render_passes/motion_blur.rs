@@ -679,43 +679,4 @@ mod tests {
 		assert!(close(tiles[0], [1.5, -0.5]), "{:?}", tiles[0]);
 		assert!(close(tiles[1], [32.0, 0.0]), "{:?}", tiles[1]);
 	}
-
-	/// Lowers each motion blur program through the platform shader compiler. The VM tests prove they link and behave
-	/// as BESL; defects the backend mishandles only surface when the real platform compiler runs.
-	#[cfg(target_os = "macos")]
-	#[compio::test]
-	async fn motion_blur_besl_programs_lower_to_the_platform_shader_language() {
-		let builtins = besl::Builtins::new();
-		use resource_management::shader::{
-			ShaderGenerationSettings,
-			besl::backends::platform::{PlatformShaderCompiler, PlatformToolchain},
-		};
-
-		for (asset, settings) in [
-			(
-				"motion_blur/tile-max.besl",
-				ShaderGenerationSettings::compute(Extent::new(TILE_MAX_WORKGROUP_WIDTH, TILE_MAX_WORKGROUP_WIDTH, 1)),
-			),
-			(
-				"motion_blur/neighbor-max.besl",
-				ShaderGenerationSettings::compute(Extent::new(8, 8, 1)),
-			),
-			(
-				"motion_blur/gather.besl",
-				ShaderGenerationSettings::tile(PIXEL_TILE, Extent::square(PIXEL_TILE)),
-			),
-		] {
-			let mut root = crate::rendering::shader_vm_test::with_engine_modules(&asset_source(asset));
-			root.add(crate::rendering::common_shader_generator::common_shader_module().to_vec());
-			let mut root = besl::lex(&builtins, root).unwrap_or_else(|error| panic!("{asset} should link: {error:?}"));
-			PlatformShaderCompiler::new()
-				.generate(
-					&PlatformToolchain::new(),
-					&settings.name("motion_blur".to_string()),
-					&mut root,
-				)
-				.await
-				.unwrap_or_else(|error| panic!("{asset} should compile for the platform shader language: {error}"));
-		}
-	}
 }

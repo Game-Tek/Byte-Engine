@@ -1358,11 +1358,11 @@ use serde_json::Value;
 use utils::Extent;
 
 use super::{
-	ANIMATION_FRAGMENT_PREFIX, ContainerDefaultResource, DEFAULT_ANIMATION_FRAGMENT, MATERIAL_FRAGMENT_PREFIX, ResourceId,
+	ANIMATION_FRAGMENT_PREFIX, ContainerRequest, DEFAULT_ANIMATION_FRAGMENT, MATERIAL_FRAGMENT_PREFIX, ResourceId,
 	SKELETON_FRAGMENT, commit_mesh, declare_root_bone, generated_skeleton_id,
 	handler::{AssetHandler, BakeContext, LoadErrors},
-	mesh_settings, missing_generated_material, names_generated_material, sanitize_material_name, select_unfragmented_resource,
-	store_imported_image, store_model,
+	mesh_settings, missing_generated_material, names_generated_material, sanitize_material_name, store_imported_image,
+	store_model,
 };
 use crate::asset::handler::implementations::bema::{
 	GeneratedMaterial, MaterialBinding, MaterialSource, TemplateScope, material_binding, resolve_container_materials,

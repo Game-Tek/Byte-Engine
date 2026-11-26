@@ -231,69 +231,54 @@ impl AssetHandler for GLTFAssetHandler {
 		};
 
 		let fragment = url.get_fragment();
-		let fragment = fragment.as_ref().map(|fragment| fragment.as_ref());
+		let request = match ContainerRequest::of(fragment.as_ref().map(|fragment| fragment.as_ref())) {
+			Some(request) => request,
+			None => ContainerRequest::unfragmented(
+				&context,
+				url,
+				spec.as_ref(),
+				gltf.meshes().next().is_some(),
+				gltf.animations().len(),
+				"glTF",
+				"animation clips",
+			)?,
+		};
 
-		if fragment == Some(SKELETON_FRAGMENT) {
-			let mut graph = import_gltf_node_graph(&gltf).map_err(|error| {
-				log::error!("Failed to import glTF skeleton '{}': {error}", url.as_ref());
-
-				LoadErrors::FailedToProcess
-			})?;
-			declare_root_bone(&context, spec.as_ref(), &mut graph.skeleton)?;
-
-			return context.store_primary(ProcessedAsset::new(url, graph.skeleton), &[]).await;
-		}
-
-		// A material fragment bakes that one generated material, its shader, and the images it samples, without the mesh.
-		if let Some(fragment) = fragment
-			&& fragment.starts_with(MATERIAL_FRAGMENT_PREFIX)
-		{
-			let material =
-				generated_material_for_id(&gltf, spec.as_ref(), url).ok_or_else(|| missing_generated_material(context, url))?;
-
-			let (_, primary) = resolve_gltf_materials(context, spec.as_ref(), source_id, &gltf, &[material]).await?;
-			return primary.ok_or_else(|| missing_generated_material(context, url));
-		}
-
-		// Any fragment other than the skeleton, a material, or an animation names an image.
-		if let Some(fragment) = fragment
-			&& fragment != DEFAULT_ANIMATION_FRAGMENT
-			&& !fragment.starts_with(ANIMATION_FRAGMENT_PREFIX)
-		{
-			let image = image_for_gltf_fragment(&gltf, fragment).ok_or(LoadErrors::FailedToProcess)?;
-
-			// Materials decide how an image is sampled; a standalone image falls back to its file name.
-			let semantic =
-				gltf_image_semantics(&gltf)[image.index()].unwrap_or_else(|| guess_semantic_from_name(url.get_base()));
-
-			let image = load_gltf_fragment_image(context, source_id, image, binary_blob.as_deref()).await?;
-			let (channels, encoding) = gltf_image_source_layout(image.format)?;
-			let extent = Extent::rectangle(image.width, image.height);
-			let source = ImageSource::new(extent, channels, encoding, &image.pixels);
-
-			return store_imported_image(context, url, semantic, spec.as_ref(), source).await;
-		}
-
-		// Any fragment left names an animation. An unfragmented request bakes the container's default resource.
-		let animation_fragment = match fragment {
-			Some(fragment) => Some(fragment),
-			None => {
-				let default_resource = select_unfragmented_resource(
-					spec.as_ref(),
-					gltf.meshes().next().is_some(),
-					gltf.animations().len(),
-					"glTF",
-					"animation clips",
-				)
-				.map_err(|error| {
-					log::error!(
-						"Failed to select the default glTF resource '{}': {error}. The most likely cause is an ambiguous container without an explicit fragment or BEAD override.",
-						url.as_ref()
-					);
+		let animation_fragment = match request {
+			ContainerRequest::Skeleton => {
+				let mut graph = import_gltf_node_graph(&gltf).map_err(|error| {
+					log::error!("Failed to import glTF skeleton '{}': {error}", url.as_ref());
 					LoadErrors::FailedToProcess
 				})?;
-				(default_resource == ContainerDefaultResource::Animation).then_some(DEFAULT_ANIMATION_FRAGMENT)
+				declare_root_bone(&context, spec.as_ref(), &mut graph.skeleton)?;
+
+				return context.store_primary(ProcessedAsset::new(url, graph.skeleton), &[]).await;
 			}
+			// A material fragment bakes that one generated material, its shader, and the images it samples, without
+			// the mesh.
+			ContainerRequest::Material => {
+				let material = generated_material_for_id(&gltf, spec.as_ref(), url)
+					.ok_or_else(|| missing_generated_material(context, url))?;
+
+				let (_, primary) = resolve_gltf_materials(context, spec.as_ref(), source_id, &gltf, &[material]).await?;
+				return primary.ok_or_else(|| missing_generated_material(context, url));
+			}
+			ContainerRequest::Image(fragment) => {
+				let image = image_for_gltf_fragment(&gltf, fragment).ok_or(LoadErrors::FailedToProcess)?;
+
+				// Materials decide how an image is sampled; a standalone image falls back to its file name.
+				let semantic =
+					gltf_image_semantics(&gltf)[image.index()].unwrap_or_else(|| guess_semantic_from_name(url.get_base()));
+
+				let image = load_gltf_fragment_image(context, source_id, image, binary_blob.as_deref()).await?;
+				let (channels, encoding) = gltf_image_source_layout(image.format)?;
+				let extent = Extent::rectangle(image.width, image.height);
+				let source = ImageSource::new(extent, channels, encoding, &image.pixels);
+
+				return store_imported_image(context, url, semantic, spec.as_ref(), source).await;
+			}
+			ContainerRequest::Animation(fragment) => Some(fragment),
+			ContainerRequest::Mesh => None,
 		};
 
 		let required_buffers = animation_fragment

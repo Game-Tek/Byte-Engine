@@ -291,14 +291,7 @@ impl RenderPass<FilmGrain> for FilmGrainPass {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		// No grain, or a shader still compiling, records nothing, which leaves `main` unchanged.
-		let ready = if self.settings.level > 0.0 {
-			self.apply_pass.ready(frame)
-		} else {
-			None
-		};
-		let Some(apply) = ready else {
-			return None;
-		};
+		let apply = (self.settings.level > 0.0).then(|| self.apply_pass.ready(frame)).flatten()?;
 		let extent = sink.extent();
 		self.frame = self.frame.wrapping_add(1);
 		*frame.map(self.parameters) = film_grain_shader_data(&self.settings, extent.height(), self.frame);

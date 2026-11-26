@@ -128,12 +128,8 @@ impl RenderPass<DebugSceneManager> for DebugMeshRenderPass {
 		) else {
 			return None;
 		};
-		let Some(source_copy) = self.source_copy.prepare(frame, sink, frame_allocator) else {
-			return None;
-		};
-		let Some(output_copy) = self.output_copy.prepare(frame, sink, frame_allocator) else {
-			return None;
-		};
+		let source_copy = self.source_copy.prepare(frame, sink, frame_allocator)?;
+		let output_copy = self.output_copy.prepare(frame, sink, frame_allocator)?;
 		let extent = sink.extent();
 		let attachments = [
 			ghi::AttachmentInformation::new(

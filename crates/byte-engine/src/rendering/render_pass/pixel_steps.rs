@@ -293,9 +293,7 @@ impl PixelRun {
 		frame_allocator: &'a bumpalo::Bump,
 	) -> Option<RenderPassReturn<'a>> {
 		// With no step to apply, or no pipeline yet, the run records nothing, which leaves `main` unchanged.
-		let Some(pass) = (mask != 0).then(|| self.pass.ready(frame)).flatten() else {
-			return None;
-		};
+		let pass = (mask != 0).then(|| self.pass.ready(frame)).flatten()?;
 		// Only a fused shader reads a step mask.
 		let constant = (self.steps.len() > 1).then_some(mask);
 		let extent = sink.extent();

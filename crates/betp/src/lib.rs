@@ -167,7 +167,7 @@ pub fn write_packet(buffer: &mut [u8], packet: Packets) -> Option<()> {
 		return None;
 	}
 
-	write_packet_header(buffer, packet.header())?;
+	write_packet_header(buffer, PacketHeader::new(packet.packet_type()))?;
 	let mut offset = PACKET_HEADER_SIZE;
 
 	match packet {
@@ -321,7 +321,7 @@ use std::io::Read as _;
 
 use crate::packets::{
 	Acknowledgement, ChallengePacket, ChallengeResponsePacket, ConnectionRequestPacket, DataPacket, DisconnectPacket,
-	KeepAlivePacket, MAX_PAYLOAD_SIZE, MessagePacket, Packet, PacketHeader, PacketType, Packets, Payload,
+	KeepAlivePacket, MAX_PAYLOAD_SIZE, MessagePacket, PacketHeader, PacketType, Packets, Payload,
 };
 
 #[cfg(test)]

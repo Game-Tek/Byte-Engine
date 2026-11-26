@@ -1,12 +1,5 @@
 //! Defines the typed packets used by BETP.
 
-/// The `Packet` trait provides access to the header shared by all BETP packets.
-pub trait Packet: Sized {
-	/// Returns the type of the packet.
-	fn packet_type(&self) -> PacketType;
-	fn header(&self) -> PacketHeader;
-}
-
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 /// A packet type supported by BETP.
@@ -47,40 +40,22 @@ impl PacketHeader {
 			r#type,
 		}
 	}
-
-	pub fn get_type(&self) -> PacketType {
-		self.r#type
-	}
 }
 
 #[repr(C)]
 #[derive(PartialEq, Eq, Debug)]
 /// The `ConnectionRequestPacket` struct starts client connection negotiation.
 pub struct ConnectionRequestPacket {
-	header: PacketHeader,
 	client_salt: u64,
 }
 
 impl ConnectionRequestPacket {
 	pub fn new(client_salt: u64) -> Self {
-		Self {
-			header: PacketHeader::new(PacketType::ConnectionRequest),
-			client_salt,
-		}
+		Self { client_salt }
 	}
 
 	pub fn get_client_salt(&self) -> u64 {
 		self.client_salt
-	}
-}
-
-impl Packet for ConnectionRequestPacket {
-	fn packet_type(&self) -> PacketType {
-		self.header.r#type
-	}
-
-	fn header(&self) -> PacketHeader {
-		self.header
 	}
 }
 
@@ -94,7 +69,6 @@ impl From<ConnectionRequestPacket> for Packets {
 #[derive(PartialEq, Eq, Debug)]
 /// The `ChallengePacket` struct lets a server validate a connection request.
 pub struct ChallengePacket {
-	header: PacketHeader,
 	client_salt: u64,
 	server_salt: u64,
 }
@@ -102,7 +76,6 @@ pub struct ChallengePacket {
 impl ChallengePacket {
 	pub fn new(client_salt: u64, server_salt: u64) -> Self {
 		Self {
-			header: PacketHeader::new(PacketType::Challenge),
 			client_salt,
 			server_salt,
 		}
@@ -117,16 +90,6 @@ impl ChallengePacket {
 	}
 }
 
-impl Packet for ChallengePacket {
-	fn packet_type(&self) -> PacketType {
-		self.header.r#type
-	}
-
-	fn header(&self) -> PacketHeader {
-		self.header
-	}
-}
-
 impl From<ChallengePacket> for Packets {
 	fn from(val: ChallengePacket) -> Self {
 		Packets::Challenge(val)
@@ -137,30 +100,16 @@ impl From<ChallengePacket> for Packets {
 #[derive(PartialEq, Eq, Debug)]
 /// The `ChallengeResponsePacket` struct lets a client answer a server challenge.
 pub struct ChallengeResponsePacket {
-	header: PacketHeader,
 	connection_id: u64,
 }
 
 impl ChallengeResponsePacket {
 	pub fn new(connection_id: u64) -> Self {
-		Self {
-			header: PacketHeader::new(PacketType::ChallengeResponse),
-			connection_id,
-		}
+		Self { connection_id }
 	}
 
 	pub fn get_connection_id(&self) -> u64 {
 		self.connection_id
-	}
-}
-
-impl Packet for ChallengeResponsePacket {
-	fn packet_type(&self) -> PacketType {
-		self.header.r#type
-	}
-
-	fn header(&self) -> PacketHeader {
-		self.header
 	}
 }
 
@@ -295,7 +244,6 @@ impl Acknowledgement {
 /// The `DataPacket` struct carries an unreliable payload, which the session sends once and the peer delivers as it
 /// arrives.
 pub struct DataPacket {
-	header: PacketHeader,
 	connection_id: u64,
 	acknowledgement: Acknowledgement,
 	data: Payload,
@@ -304,7 +252,6 @@ pub struct DataPacket {
 impl DataPacket {
 	pub fn new(connection_id: u64, acknowledgement: Acknowledgement, data: Payload) -> Self {
 		Self {
-			header: PacketHeader::new(PacketType::Data),
 			connection_id,
 			acknowledgement,
 			data,
@@ -324,16 +271,6 @@ impl DataPacket {
 	}
 }
 
-impl Packet for DataPacket {
-	fn packet_type(&self) -> PacketType {
-		self.header.r#type
-	}
-
-	fn header(&self) -> PacketHeader {
-		self.header
-	}
-}
-
 impl From<DataPacket> for Packets {
 	fn from(val: DataPacket) -> Self {
 		Packets::Data(val)
@@ -347,7 +284,6 @@ impl From<DataPacket> for Packets {
 /// Only messages take sequence numbers, so the receiver knows that a gap is a message still to come and delivers
 /// messages in sequence order.
 pub struct MessagePacket {
-	header: PacketHeader,
 	connection_id: u64,
 	sequence: u16,
 	acknowledgement: Acknowledgement,
@@ -357,7 +293,6 @@ pub struct MessagePacket {
 impl MessagePacket {
 	pub fn new(connection_id: u64, sequence: u16, acknowledgement: Acknowledgement, data: Payload) -> Self {
 		Self {
-			header: PacketHeader::new(PacketType::Message),
 			connection_id,
 			sequence,
 			acknowledgement,
@@ -382,16 +317,6 @@ impl MessagePacket {
 	}
 }
 
-impl Packet for MessagePacket {
-	fn packet_type(&self) -> PacketType {
-		self.header.r#type
-	}
-
-	fn header(&self) -> PacketHeader {
-		self.header
-	}
-}
-
 impl From<MessagePacket> for Packets {
 	fn from(val: MessagePacket) -> Self {
 		Packets::Message(val)
@@ -402,30 +327,16 @@ impl From<MessagePacket> for Packets {
 #[derive(PartialEq, Eq, Debug)]
 /// The `DisconnectPacket` struct asks an endpoint to end a connection.
 pub struct DisconnectPacket {
-	header: PacketHeader,
 	connection_id: u64,
 }
 
 impl DisconnectPacket {
 	pub fn new(connection_id: u64) -> Self {
-		Self {
-			header: PacketHeader::new(PacketType::Disconnect),
-			connection_id,
-		}
+		Self { connection_id }
 	}
 
 	pub fn get_connection_id(&self) -> u64 {
 		self.connection_id
-	}
-}
-
-impl Packet for DisconnectPacket {
-	fn packet_type(&self) -> PacketType {
-		self.header.r#type
-	}
-
-	fn header(&self) -> PacketHeader {
-		self.header
 	}
 }
 
@@ -442,7 +353,6 @@ impl From<DisconnectPacket> for Packets {
 /// A connected session sends one when it has sent nothing else for [`crate::KEEPALIVE_INTERVAL`], or when it owes
 /// its peer an acknowledgement. It carries no application data, so applications never see it.
 pub struct KeepAlivePacket {
-	header: PacketHeader,
 	connection_id: u64,
 	acknowledgement: Acknowledgement,
 }
@@ -450,7 +360,6 @@ pub struct KeepAlivePacket {
 impl KeepAlivePacket {
 	pub fn new(connection_id: u64, acknowledgement: Acknowledgement) -> Self {
 		Self {
-			header: PacketHeader::new(PacketType::KeepAlive),
 			connection_id,
 			acknowledgement,
 		}
@@ -462,16 +371,6 @@ impl KeepAlivePacket {
 
 	pub fn get_acknowledgement(&self) -> Acknowledgement {
 		self.acknowledgement
-	}
-}
-
-impl Packet for KeepAlivePacket {
-	fn packet_type(&self) -> PacketType {
-		self.header.r#type
-	}
-
-	fn header(&self) -> PacketHeader {
-		self.header
 	}
 }
 
@@ -511,28 +410,17 @@ impl Packets {
 	}
 }
 
-impl Packet for Packets {
-	fn packet_type(&self) -> PacketType {
+impl Packets {
+	/// Returns the type the packet's header names on the wire.
+	pub fn packet_type(&self) -> PacketType {
 		match self {
-			Packets::ConnectionRequest(packet) => packet.packet_type(),
-			Packets::Challenge(packet) => packet.packet_type(),
-			Packets::ChallengeResponse(packet) => packet.packet_type(),
-			Packets::Data(packet) => packet.packet_type(),
-			Packets::Disconnect(packet) => packet.packet_type(),
-			Packets::KeepAlive(packet) => packet.packet_type(),
-			Packets::Message(packet) => packet.packet_type(),
-		}
-	}
-
-	fn header(&self) -> PacketHeader {
-		match self {
-			Packets::ConnectionRequest(packet) => packet.header(),
-			Packets::Challenge(packet) => packet.header(),
-			Packets::ChallengeResponse(packet) => packet.header(),
-			Packets::Data(packet) => packet.header(),
-			Packets::Disconnect(packet) => packet.header(),
-			Packets::KeepAlive(packet) => packet.header(),
-			Packets::Message(packet) => packet.header(),
+			Packets::ConnectionRequest(_) => PacketType::ConnectionRequest,
+			Packets::Challenge(_) => PacketType::Challenge,
+			Packets::ChallengeResponse(_) => PacketType::ChallengeResponse,
+			Packets::Data(_) => PacketType::Data,
+			Packets::Disconnect(_) => PacketType::Disconnect,
+			Packets::KeepAlive(_) => PacketType::KeepAlive,
+			Packets::Message(_) => PacketType::Message,
 		}
 	}
 }

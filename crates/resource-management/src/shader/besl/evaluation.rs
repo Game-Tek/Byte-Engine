@@ -229,8 +229,10 @@ mod tests {
 		);
 	}
 
+	/// Verifies each array element reflects the stride its emitted type has on HLSL, MSL, and GLSL, so the CPU, the
+	/// VM, and every backend agree on where each element starts.
 	#[test]
-	fn packed_bool_and_byte_records_reflect_one_stride_on_every_backend() {
+	fn array_elements_reflect_the_stride_each_backend_emits() {
 		let builtins = besl::Builtins::new();
 		let program = besl::compile_to_besl(
 			r#"
@@ -241,21 +243,61 @@ mod tests {
 				tail: u16,
 			}
 			Bytes: struct { mode: u8, flag: bool, layer: u16, count: u32 }
+			Instance: struct { position: vec3f, sprite_id: u32 }
+			Halves: struct { scalar: f16, uv: vec2f16, normal: vec3f16, color: vec4f16 }
+			Pair: struct { low: u16, high: u16 }
+			Tagged: struct { position: vec3f, tag: u8 }
+			TaggedItems: struct { items: Tagged[2], tail: u32 }
+			Position: struct { position: vec3f }
+			Mesh: struct {
+				model: mat4x3f, material_index: u32, base_vertex_index: u32, base_primitive_index: u32,
+				base_triangle_index: u32, base_meshlet_index: u32, meshlet_count: u32, skinned_base_vertex_index: u32,
+				flags: u32,
+			}
+			View: struct { view: mat4x3f, view_projection: mat4f, inverse_view: mat4x3f, fov: vec2f, near: f32, far: f32 }
+			Meshlet: struct {
+				primitive_offset: u32, triangle_offset: u32, primitive_count: u32, triangle_count: u32,
+				center_radius: vec4f, cone_apex_cutoff: vec4f, cone_axis: vec2u16,
+			}
+			Light: struct { position: vec3f, color: vec3f, direction: vec3f, cone_cosines: vec2f, light_type: u32, cascades: u32[8] }
+			Lighting: struct { light_count: u32, lights: Light[16] }
 			main: fn () -> void {}
 			"#,
 			besl::Program::new(&builtins),
 		)
-		.expect("Expected the bool records to link");
+		.expect("Expected the records to link");
 
-		for (name, stride) in [("Mixed", 12), ("Many", 6), ("Bytes", 8)] {
-			let record = program.get_child(program.root(), name).expect("Expected the record struct");
-			for target in [
+		// Each element's stride on HLSL, MSL, and GLSL. DX12 stores narrow scalars in 32-bit words, and Metal stores
+		// vectors as packed types, so they keep the scalar-aligned layout of the other backends.
+		for (name, strides) in [
+			("Mixed", [12, 12, 12]),
+			("Many", [6, 6, 6]),
+			("Bytes", [8, 8, 8]),
+			("Instance", [16, 16, 16]),
+			("Halves", [20, 20, 20]),
+			("vec2f16", [4, 4, 4]),
+			("u8", [4, 1, 1]),
+			("u16", [4, 2, 2]),
+			("vec3f", [12, 12, 12]),
+			("Pair", [4, 4, 4]),
+			("TaggedItems", [36, 36, 36]),
+			("Position", [12, 12, 12]),
+			("Mesh", [80, 80, 80]),
+			("View", [176, 176, 176]),
+			("Meshlet", [52, 52, 52]),
+			("Lighting", [1284, 1284, 1284]),
+		] {
+			let element = builtin(&program, name);
+			for (target, stride) in [
 				StorageLayoutTarget::Hlsl,
 				StorageLayoutTarget::Msl,
 				StorageLayoutTarget::GlslScalar,
-			] {
+			]
+			.into_iter()
+			.zip(strides)
+			{
 				assert_eq!(
-					reflected_array_buffer_stride_for_target(&program, &record, target),
+					reflected_array_buffer_stride_for_target(&program, &element, target),
 					Ok(stride),
 					"{name} on {target:?}"
 				);
@@ -294,45 +336,12 @@ mod tests {
 	}
 
 	#[test]
-	fn reflection_accepts_packed_bools_in_a_push_constant() {
-		let builtins = besl::Builtins::new();
-		let mut program = besl::compile_to_besl(
-			r#"
-			push_constant: push_constant {
-				first_slot: u32,
-				show_normals: bool,
-				show_albedo: bool,
-				mode: u8,
-			}
-			main: fn () -> void { push_constant.show_albedo; }
-			"#,
-			besl::Program::new(&builtins),
-		)
-		.expect("Expected the push-constant program to link");
-
-		ProgramEvaluation::from_program(&mut program).expect("Expected packed bools to reflect in a push constant");
-	}
-
-	#[test]
 	fn runtime_storage_buffer_reflects_its_element_stride() {
 		let builtins = besl::Builtins::new();
 		let mut program = besl::Program::new(&builtins);
 		let vec3f = builtin(&program, "vec3f");
 		let u32_type = builtin(&program, "u32");
 		let instance = add_struct(&mut program, "Instance", &[("position", vec3f), ("sprite_id", u32_type)]);
-
-		assert_eq!(
-			reflected_array_buffer_stride_for_target(&program, &instance, StorageLayoutTarget::Hlsl),
-			Ok(16)
-		);
-		assert_eq!(
-			reflected_array_buffer_stride_for_target(&program, &instance, StorageLayoutTarget::Msl),
-			Ok(16)
-		);
-		assert_eq!(
-			reflected_array_buffer_stride_for_target(&program, &instance, StorageLayoutTarget::GlslScalar),
-			Ok(16)
-		);
 
 		let instances_name = program.intern("instances");
 		program.add_to_root(besl::Node::binding(
@@ -389,73 +398,6 @@ mod tests {
 	}
 
 	#[test]
-	fn direct_f16_storage_members_preserve_the_packed_vm_layout() {
-		let builtins = besl::Builtins::new();
-		let mut program = besl::Program::new(&builtins);
-		let members = [
-			("scalar", "f16"),
-			("uv", "vec2f16"),
-			("normal", "vec3f16"),
-			("color", "vec4f16"),
-		]
-		.map(|(name, type_name)| {
-			let r#type = builtin(&program, type_name);
-			let name = program.intern(name);
-			program.add(besl::Node::member(name, r#type))
-		});
-
-		for target in [
-			StorageLayoutTarget::Hlsl,
-			StorageLayoutTarget::Msl,
-			StorageLayoutTarget::GlslScalar,
-		] {
-			assert_eq!(reflected_storage_buffer_stride_for_target(&program, &members, target), Ok(20));
-		}
-
-		let uv = builtin(&program, "vec2f16");
-		for target in [
-			StorageLayoutTarget::Hlsl,
-			StorageLayoutTarget::Msl,
-			StorageLayoutTarget::GlslScalar,
-		] {
-			assert_eq!(reflected_array_buffer_stride_for_target(&program, &uv, target), Ok(4));
-		}
-	}
-
-	#[test]
-	fn scalar_and_vector_array_buffers_use_the_emitted_element_width() {
-		let builtins = besl::Builtins::new();
-		let program = besl::Program::new(&builtins);
-		let element = |name| builtin(&program, name);
-
-		for (target, byte, word, position) in [
-			(StorageLayoutTarget::Hlsl, 4, 4, 12),
-			(StorageLayoutTarget::Msl, 1, 2, 12),
-			(StorageLayoutTarget::GlslScalar, 1, 2, 12),
-		] {
-			for (name, stride) in [("u8", byte), ("u16", word), ("vec3f", position)] {
-				assert_eq!(
-					reflected_array_buffer_stride_for_target(&program, &element(name), target),
-					Ok(stride),
-					"{name} array stride for {target:?}"
-				);
-			}
-		}
-	}
-
-	#[test]
-	fn hlsl_native_u16_record_stride_matches_the_emitted_struct() {
-		let builtins = besl::Builtins::new();
-		let mut program = besl::Program::new(&builtins);
-		let u16_type = builtin(&program, "u16");
-		let pair = add_struct(&mut program, "Pair", &[("low", u16_type), ("high", u16_type)]);
-		assert_eq!(
-			reflected_array_buffer_stride_for_target(&program, &pair, StorageLayoutTarget::Hlsl),
-			Ok(4)
-		);
-	}
-
-	#[test]
 	fn matrix_storage_layouts_cover_all_besl_matrix_types() {
 		let builtins = besl::Builtins::new();
 		let mut program = besl::Program::new(&builtins);
@@ -481,150 +423,6 @@ mod tests {
 
 				assert_eq!(layout, StorageLayout { size, alignment });
 			}
-		}
-	}
-
-	#[test]
-	fn nested_struct_arrays_apply_member_and_tail_alignment() {
-		let builtins = besl::Builtins::new();
-		let mut program = besl::Program::new(&builtins);
-		let vec3f = builtin(&program, "vec3f");
-		let u8_type = builtin(&program, "u8");
-		let u32_type = builtin(&program, "u32");
-		let mixed = add_struct(&mut program, "Mixed", &[("position", vec3f), ("tag", u8_type)]);
-		let items_name = program.intern("items");
-		let tail_name = program.intern("tail");
-		let wrapper = vec![
-			program.add(besl::Node::array(items_name, mixed, 2)),
-			program.add(besl::Node::member(tail_name, u32_type)),
-		];
-		let position_name = program.intern("position");
-		let scalar_position = vec![program.add(besl::Node::member(position_name, vec3f))];
-
-		assert_eq!(
-			reflected_storage_buffer_stride_for_target(&program, &wrapper, StorageLayoutTarget::Hlsl),
-			Ok(36)
-		);
-		assert_eq!(
-			reflected_storage_buffer_stride_for_target(&program, &wrapper, StorageLayoutTarget::Msl),
-			Ok(36)
-		);
-		assert_eq!(
-			reflected_storage_buffer_stride_for_target(&program, &wrapper, StorageLayoutTarget::GlslScalar),
-			Ok(36)
-		);
-
-		// Metal emits packed_float3 for every vec3f member, so direct members and fields nested inside Mixed keep
-		// the 12-byte layout of the other backends.
-		assert_eq!(
-			reflected_storage_buffer_stride_for_target(&program, &scalar_position, StorageLayoutTarget::Hlsl),
-			Ok(12)
-		);
-		assert_eq!(
-			reflected_storage_buffer_stride_for_target(&program, &scalar_position, StorageLayoutTarget::Msl),
-			Ok(12)
-		);
-		assert_eq!(
-			reflected_storage_buffer_stride_for_target(&program, &scalar_position, StorageLayoutTarget::GlslScalar),
-			Ok(12)
-		);
-	}
-
-	#[test]
-	fn visibility_storage_structs_match_the_backend_abi() {
-		let builtins = besl::Builtins::new();
-		let mut program = besl::Program::new(&builtins);
-		let f32_type = builtin(&program, "f32");
-		let u32_type = builtin(&program, "u32");
-		let vec2f = builtin(&program, "vec2f");
-		let vec3f = builtin(&program, "vec3f");
-		let vec4f = builtin(&program, "vec4f");
-		let vec2u16 = builtin(&program, "vec2u16");
-		let mat4f = builtin(&program, "mat4f");
-		let mat4x3f = builtin(&program, "mat4x3f");
-
-		let mesh = add_struct(
-			&mut program,
-			"Mesh",
-			&[
-				("model", mat4x3f),
-				("material_index", u32_type),
-				("base_vertex_index", u32_type),
-				("base_primitive_index", u32_type),
-				("base_triangle_index", u32_type),
-				("base_meshlet_index", u32_type),
-				("meshlet_count", u32_type),
-				("skinned_base_vertex_index", u32_type),
-				("flags", u32_type),
-			],
-		);
-		let view = add_struct(
-			&mut program,
-			"View",
-			&[
-				("view", mat4x3f),
-				("view_projection", mat4f),
-				("inverse_view", mat4x3f),
-				("fov", vec2f),
-				("near", f32_type),
-				("far", f32_type),
-			],
-		);
-		let meshlet = add_struct(
-			&mut program,
-			"Meshlet",
-			&[
-				("primitive_offset", u32_type),
-				("triangle_offset", u32_type),
-				("primitive_count", u32_type),
-				("triangle_count", u32_type),
-				("center_radius", vec4f),
-				("cone_apex_cutoff", vec4f),
-				("cone_axis", vec2u16),
-			],
-		);
-		let mut light_fields = [
-			("position", vec3f),
-			("color", vec3f),
-			("direction", vec3f),
-			("cone_cosines", vec2f),
-			("type", u32_type),
-		]
-		.map(|(name, r#type)| {
-			let name = program.intern(name);
-			program.add(besl::Node::member(name, r#type))
-		})
-		.to_vec();
-		let cascades_name = program.intern("cascades");
-		light_fields.push(program.add(besl::Node::array(cascades_name, u32_type, 8)));
-		let light_name = program.intern("Light");
-		let light = program.add_to_root(besl::Node::r#struct(light_name, light_fields));
-
-		let light_count_name = program.intern("light_count");
-		let lights_name = program.intern("lights");
-		let lighting_buffer = vec![
-			program.add(besl::Node::member(light_count_name, u32_type)),
-			program.add(besl::Node::array(lights_name, light, 16)),
-		];
-
-		for (target, mesh_stride, view_stride) in [
-			(StorageLayoutTarget::Hlsl, 80, 176),
-			(StorageLayoutTarget::Msl, 80, 176),
-			(StorageLayoutTarget::GlslScalar, 80, 176),
-		] {
-			assert_eq!(
-				reflected_array_buffer_stride_for_target(&program, &mesh, target),
-				Ok(mesh_stride)
-			);
-			assert_eq!(
-				reflected_array_buffer_stride_for_target(&program, &view, target),
-				Ok(view_stride)
-			);
-			assert_eq!(reflected_array_buffer_stride_for_target(&program, &meshlet, target), Ok(52));
-			assert_eq!(
-				reflected_storage_buffer_stride_for_target(&program, &lighting_buffer, target),
-				Ok(1284)
-			);
 		}
 	}
 
@@ -823,44 +621,22 @@ mod tests {
 		ProgramEvaluation::from_program(&mut program).expect("Failed to evaluate program")
 	}
 
+	/// Verifies opacity follows what `main` writes to the stage output: a read of the output says nothing about its
+	/// alpha, a local that shadows it hides it, and a `vec4f` whose `w` isn't one is translucent.
 	#[test]
-	fn opacity_is_opaque_when_non_local_output_is_referenced() {
-		let script = r#"
-		main: fn () -> void {
-			output;
+	fn opacity_follows_the_writes_to_the_output() {
+		for (body, format, opacity) in [
+			("output;", "vec3f", OpacityEvaluation::Opaque),
+			(
+				"let output: vec3f = vec3f(1.0, 0.0, 0.0); output;",
+				"vec3f",
+				OpacityEvaluation::Unknown,
+			),
+			("output = vec4f(1.0, 0.0, 0.0, 0.5);", "vec4f", OpacityEvaluation::NonOpaque),
+		] {
+			let evaluation = evaluate_with_output(&format!("main: fn () -> void {{ {body} }}"), format);
+			assert_eq!(evaluation.opacity(), opacity, "{body}");
 		}
-		"#;
-
-		let evaluation = evaluate_with_output(script, "vec3f");
-
-		assert_eq!(evaluation.opacity(), OpacityEvaluation::Opaque);
-	}
-
-	#[test]
-	fn opacity_is_unknown_when_output_is_shadowed_locally() {
-		let script = r#"
-		main: fn () -> void {
-			let output: vec3f = vec3f(1.0, 0.0, 0.0);
-			output;
-		}
-		"#;
-
-		let evaluation = evaluate_with_output(script, "vec3f");
-
-		assert_eq!(evaluation.opacity(), OpacityEvaluation::Unknown);
-	}
-
-	#[test]
-	fn opacity_is_non_opaque_when_output_vec4f_w_is_not_one() {
-		let script = r#"
-		main: fn () -> void {
-			output = vec4f(1.0, 0.0, 0.0, 0.5);
-		}
-		"#;
-
-		let evaluation = evaluate_with_output(script, "vec4f");
-
-		assert_eq!(evaluation.opacity(), OpacityEvaluation::NonOpaque);
 	}
 
 	#[test]

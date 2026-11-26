@@ -27,16 +27,12 @@ fn with_source(source: &str, check: impl FnOnce(&Dag<'_>)) {
 	check(&dag);
 }
 
-/// Reads a document body that should be rejected, handing the failure to `check`.
-fn with_failure(body: &str, check: impl FnOnce(Error)) {
-	failure(&document(body), check);
-}
-
-fn failure(source: &str, check: impl FnOnce(Error)) {
+/// Reads a whole document that should be rejected and returns the failure.
+fn failure(source: &str) -> Error {
 	let arena = Bump::new();
 	let allocator = &&arena;
 
-	check(super::parse(source, allocator).expect_err("The document should be rejected"));
+	super::parse(source, allocator).expect_err("The document should be rejected")
 }
 
 #[test]
@@ -554,119 +550,68 @@ fn reads_an_unplugged_shader_input_as_unconnected() {
 	);
 }
 
+/// Verifies each malformed or invalid document is rejected with the error that names its fault.
 #[test]
-fn rejects_a_cycle_between_nodes() {
-	with_failure(
-		r#"
-		<nodegraph name="NG">
-			<add name="a" type="float">
-				<input name="in1" type="float" nodename="b"/>
-			</add>
-			<add name="b" type="float">
-				<input name="in1" type="float" nodename="a"/>
-			</add>
-			<output name="out" type="float" nodename="a"/>
-		</nodegraph>"#,
-		|error| assert!(matches!(error, Error::Resolve(ResolveError::Cycle { .. }))),
-	);
-}
+fn rejects_documents_that_do_not_describe_a_valid_graph() {
+	let cases: [(&str, fn(&Error) -> bool); 8] = [
+		(
+			r#"<nodegraph name="NG">
+				<add name="a" type="float"><input name="in1" type="float" nodename="b"/></add>
+				<add name="b" type="float"><input name="in1" type="float" nodename="a"/></add>
+				<output name="out" type="float" nodename="a"/>
+			</nodegraph>"#,
+			|error| matches!(error, Error::Resolve(ResolveError::Cycle { .. })),
+		),
+		(
+			r#"<nodegraph name="NG">
+				<constant name="a" type="float"><input name="value" type="float" value="1"/></constant>
+				<add name="b" type="color3"><input name="in1" type="color3" nodename="a"/></add>
+				<output name="out" type="color3" nodename="b"/>
+			</nodegraph>"#,
+			|error| matches!(error, Error::Resolve(ResolveError::TypeMismatch { .. })),
+		),
+		(
+			// A node inside a graph can't reach a node outside it.
+			r#"<constant name="outer" type="float"><input name="value" type="float" value="1"/></constant>
+			<nodegraph name="NG">
+				<add name="a" type="float"><input name="in1" type="float" nodename="outer"/></add>
+				<output name="out" type="float" nodename="a"/>
+			</nodegraph>"#,
+			|error| matches!(error, Error::Resolve(ResolveError::UnknownNode { .. })),
+		),
+		(
+			r#"<image name="i1" type="color3"><parameter name="file" type="filename" value="albedo.png"/></image>"#,
+			|error| matches!(error, Error::Parse(ParseError::RemovedElement { .. })),
+		),
+		(
+			r#"<nodegraph name="NG">
+				<constant name="a" type="float"><input name="value" type="float" value="1"/></constant>
+				<add name="b" type="float"><input name="in1" type="float" nodename="a" nodegraph="NG"/></add>
+				<output name="out" type="float" nodename="b"/>
+			</nodegraph>"#,
+			|error| matches!(error, Error::Parse(ParseError::ConflictingConnection { .. })),
+		),
+		(
+			r#"<constant name="a" type="float"/><constant name="a" type="float"/>"#,
+			|error| matches!(error, Error::Resolve(ResolveError::DuplicateName { .. })),
+		),
+		(
+			r#"<tint name="t1" type="color3" nodedef="ND_tint"/>"#,
+			|error| matches!(error, Error::Resolve(ResolveError::UnknownDeclaration { .. })),
+		),
+		(
+			// The failure reports where the malformed value is.
+			"<constant name=\"a\" type=\"color3\">\n\t<input name=\"value\" type=\"color3\" value=\"1,2\"/>\n</constant>",
+			|error| matches!(error, Error::Parse(error) if error.position().line == 4),
+		),
+	];
 
-#[test]
-fn rejects_a_connection_between_mismatched_types() {
-	with_failure(
-		r#"
-		<nodegraph name="NG">
-			<constant name="a" type="float">
-				<input name="value" type="float" value="1"/>
-			</constant>
-			<add name="b" type="color3">
-				<input name="in1" type="color3" nodename="a"/>
-			</add>
-			<output name="out" type="color3" nodename="b"/>
-		</nodegraph>"#,
-		|error| assert!(matches!(error, Error::Resolve(ResolveError::TypeMismatch { .. }))),
-	);
-}
-
-#[test]
-fn rejects_a_reference_to_a_node_outside_its_scope() {
-	with_failure(
-		r#"
-		<constant name="outer" type="float">
-			<input name="value" type="float" value="1"/>
-		</constant>
-		<nodegraph name="NG">
-			<add name="a" type="float">
-				<input name="in1" type="float" nodename="outer"/>
-			</add>
-			<output name="out" type="float" nodename="a"/>
-		</nodegraph>"#,
-		|error| assert!(matches!(error, Error::Resolve(ResolveError::UnknownNode { .. }))),
-	);
-}
-
-#[test]
-fn rejects_documents_older_than_the_supported_schema() {
-	failure(
-		r#"<materialx version="1.37"><image name="i" type="color3"/></materialx>"#,
-		|error| assert!(matches!(error, Error::Parse(ParseError::UnsupportedVersion { .. }))),
-	);
-}
-
-#[test]
-fn rejects_elements_the_specification_removed() {
-	with_failure(
-		r#"<image name="i1" type="color3">
-			<parameter name="file" type="filename" value="albedo.png"/>
-		</image>"#,
-		|error| assert!(matches!(error, Error::Parse(ParseError::RemovedElement { .. }))),
-	);
-}
-
-#[test]
-fn rejects_inputs_carrying_more_than_one_upstream_reference() {
-	with_failure(
-		r#"
-		<nodegraph name="NG">
-			<constant name="a" type="float">
-				<input name="value" type="float" value="1"/>
-			</constant>
-			<add name="b" type="float">
-				<input name="in1" type="float" nodename="a" nodegraph="NG"/>
-			</add>
-			<output name="out" type="float" nodename="b"/>
-		</nodegraph>"#,
-		|error| assert!(matches!(error, Error::Parse(ParseError::ConflictingConnection { .. }))),
-	);
-}
-
-#[test]
-fn rejects_two_nodes_sharing_a_name_in_one_scope() {
-	with_failure(
-		r#"
-		<constant name="a" type="float"/>
-		<constant name="a" type="float"/>"#,
-		|error| assert!(matches!(error, Error::Resolve(ResolveError::DuplicateName { .. }))),
-	);
-}
-
-#[test]
-fn rejects_a_node_instance_naming_a_declaration_the_document_does_not_carry() {
-	with_failure(r#"<tint name="t1" type="color3" nodedef="ND_tint"/>"#, |error| {
-		assert!(matches!(error, Error::Resolve(ResolveError::UnknownDeclaration { .. })));
-	});
-}
-
-#[test]
-fn reports_where_malformed_values_are() {
-	failure(
-		"<materialx version=\"1.39\">\n\t<constant name=\"a\" type=\"color3\">\n\t\t<input name=\"value\" type=\"color3\" value=\"1,2\"/>\n\t</constant>\n</materialx>",
-		|error| {
-			let Error::Parse(error) = error else {
-				panic!("The failure should come from parsing");
-			};
-
-			assert_eq!(error.position().line, 3);
-		},
-	);
+	for (body, expected) in cases {
+		let error = failure(&document(body));
+		assert!(expected(&error), "{body}: {error:?}");
+	}
+	assert!(matches!(
+		failure(r#"<materialx version="1.37"><image name="i" type="color3"/></materialx>"#),
+		Error::Parse(ParseError::UnsupportedVersion { .. })
+	));
 }

@@ -22,15 +22,15 @@ fn with_conversion(body: &str, check: impl FnOnce(&Conversion<'_>)) {
 	check(&conversion);
 }
 
-/// Wraps a document body and hands the conversion failure to `check`.
-fn with_failure(body: &str, check: impl FnOnce(ConvertError)) {
+/// Wraps a document body and returns the conversion failure.
+fn failure(body: &str) -> ConvertError {
 	let source = document(body);
 	let arena = bumpalo::Bump::new();
 	let allocator = &&arena;
 
 	let dag = materialx::parse(&source, allocator).expect("document should resolve");
 
-	check(super::convert(&dag).expect_err("material should not convert"));
+	super::convert(&dag).expect_err("material should not convert")
 }
 
 /// Wraps a surface shader in the material that selects it.
@@ -106,65 +106,188 @@ fn sampled_textures(graph: &Graph) -> Vec<String> {
 	textures
 }
 
+/// Verifies each surface input resolves to the constant its document writes, the shading model's default, or the
+/// value a node graph or a node built from one computes.
 #[test]
-fn constant_surface_fills_every_surface_input() {
-	with_conversion(
-		&material(
-			r#"<standard_surface name="shader" type="surfaceshader">
-				<input name="base_color" type="color3" value="0.9, 0.5, 0.1"/>
-				<input name="base" type="float" value="0.5"/>
-				<input name="metalness" type="float" value="1"/>
-				<input name="specular_roughness" type="float" value="0.25"/>
-				<input name="opacity" type="color3" value="0.75, 0.5, 0.25"/>
-				<input name="emission" type="float" value="2"/>
-				<input name="emission_color" type="color3" value="1, 0.5, 0"/>
-			</standard_surface>"#,
+fn surface_inputs_resolve_to_their_constants() {
+	// Each case is a document body and the constant of each listed surface input, or `None` for one left unwritten.
+	let cases: [(String, &[(&str, Option<&[f32]>)]); 7] = [
+		(
+			material(
+				r#"<standard_surface name="shader" type="surfaceshader">
+					<input name="base_color" type="color3" value="0.9, 0.5, 0.1"/>
+					<input name="base" type="float" value="0.5"/>
+					<input name="metalness" type="float" value="1"/>
+					<input name="specular_roughness" type="float" value="0.25"/>
+					<input name="opacity" type="color3" value="0.75, 0.5, 0.25"/>
+					<input name="emission" type="float" value="2"/>
+					<input name="emission_color" type="color3" value="1, 0.5, 0"/>
+				</standard_surface>"#,
+			),
+			// The base colour is scaled by the model's weight, and the opacity is the first channel of a colour. A
+			// constant normal leaves the geometric normal alone.
+			&[
+				("base_color", Some(&[0.45, 0.25, 0.05])),
+				("metalness", Some(&[1.0])),
+				("roughness", Some(&[0.25])),
+				("opacity", Some(&[0.75])),
+				("emission", Some(&[2.0, 1.0, 0.0])),
+				("occlusion", None),
+				("normal", None),
+			],
 		),
-		|conversion| {
-			let graph = &conversion.graph;
-			let surface = graph.surface();
+		(
+			material(r#"<gltf_pbr name="shader" type="surfaceshader"/>"#),
+			&[
+				("base_color", Some(&[1.0, 1.0, 1.0])),
+				("metalness", Some(&[1.0])),
+				("roughness", Some(&[1.0])),
+				("occlusion", Some(&[1.0])),
+				("emission", Some(&[0.0, 0.0, 0.0])),
+			],
+		),
+		(
+			// An unlit surface reflects nothing.
+			material(
+				r#"<surface_unlit name="shader" type="surfaceshader">
+					<input name="emission_color" type="color3" value="0.2, 0.4, 0.6"/>
+				</surface_unlit>"#,
+			),
+			&[("base_color", Some(&[0.0, 0.0, 0.0])), ("emission", Some(&[0.2, 0.4, 0.6]))],
+		),
+		(
+			// The graph's interface value reaches the node inside it.
+			material(
+				r#"<nodegraph name="tint">
+					<input name="factor" type="float" value="0.25"/>
+					<multiply name="scaled" type="color3">
+						<input name="in1" type="color3" value="0.4, 0.6, 0.8"/>
+						<input name="in2" type="float" interfacename="factor"/>
+					</multiply>
+					<output name="out" type="color3" nodename="scaled"/>
+				</nodegraph>
+				<standard_surface name="shader" type="surfaceshader">
+					<input name="base_color" type="color3" nodegraph="tint"/>
+				</standard_surface>"#,
+			),
+			&[("base_color", Some(&[0.1, 0.15, 0.2]))],
+		),
+		(
+			// A node definition built from a graph is expanded.
+			material(
+				r#"<nodedef name="ND_tint" node="tint" nodegroup="math">
+					<input name="in" type="color3" value="1, 1, 1"/>
+					<input name="factor" type="float" value="1"/>
+					<output name="out" type="color3"/>
+				</nodedef>
+				<nodegraph name="NG_tint" nodedef="ND_tint">
+					<multiply name="scaled" type="color3">
+						<input name="in1" type="color3" interfacename="in"/>
+						<input name="in2" type="float" interfacename="factor"/>
+					</multiply>
+					<output name="out" type="color3" nodename="scaled"/>
+				</nodegraph>
+				<tint name="tinted" type="color3">
+					<input name="in" type="color3" value="0.4, 0.6, 0.8"/>
+					<input name="factor" type="float" value="0.5"/>
+				</tint>
+				<standard_surface name="shader" type="surfaceshader">
+					<input name="base_color" type="color3" nodename="tinted"/>
+				</standard_surface>"#,
+			),
+			&[("base_color", Some(&[0.2, 0.3, 0.4]))],
+		),
+		(
+			// A shading model built from a graph is expanded.
+			material(
+				r#"<nodedef name="ND_house_surface" node="house_surface" nodegroup="pbr">
+					<input name="tint" type="color3" value="1, 1, 1"/>
+					<output name="out" type="surfaceshader"/>
+				</nodedef>
+				<nodegraph name="NG_house_surface" nodedef="ND_house_surface">
+					<standard_surface name="inner" type="surfaceshader">
+						<input name="base_color" type="color3" interfacename="tint"/>
+						<input name="specular_roughness" type="float" value="0.75"/>
+					</standard_surface>
+					<output name="out" type="surfaceshader" nodename="inner"/>
+				</nodegraph>
+				<house_surface name="shader" type="surfaceshader">
+					<input name="tint" type="color3" value="0.2, 0.3, 0.4"/>
+				</house_surface>"#,
+			),
+			&[("base_color", Some(&[0.2, 0.3, 0.4])), ("roughness", Some(&[0.75]))],
+		),
+		(
+			// A material written inside a node graph is reached.
+			r#"<nodegraph name="wrapper">
+				<standard_surface name="inner" type="surfaceshader">
+					<input name="specular_roughness" type="float" value="0.6"/>
+				</standard_surface>
+				<surfacematerial name="M" type="material">
+					<input name="surfaceshader" type="surfaceshader" nodename="inner"/>
+				</surfacematerial>
+				<output name="out" type="material" nodename="M"/>
+			</nodegraph>"#
+				.to_string(),
+			&[("roughness", Some(&[0.6]))],
+		),
+	];
 
-			// The base colour is scaled by the model's weight, and the opacity is the first channel of a colour.
-			assert_constant(graph, surface.base_color, &[0.45, 0.25, 0.05]);
-			assert_constant(graph, surface.metalness, &[1.0]);
-			assert_constant(graph, surface.roughness, &[0.25]);
-			assert_constant(graph, surface.opacity, &[0.75]);
-			assert_constant(graph, surface.emission, &[2.0, 1.0, 0.0]);
-			assert_eq!(surface.occlusion, None);
-			assert_eq!(surface.normal, None);
+	for (body, expected) in &cases {
+		with_conversion(body, |conversion| {
+			let graph = &conversion.graph;
+			let inputs = graph.surface().inputs();
+			for (name, value) in *expected {
+				let input = inputs.iter().find(|input| input.0 == *name).expect("surface input").1;
+				match value {
+					Some(value) => assert_constant(graph, input, value),
+					None => assert_eq!(input, None, "{name}"),
+				}
+			}
 			assert!(conversion.textures.is_empty());
-		},
+		});
+	}
+}
+
+/// Verifies each material the conversion can't express is reported with what stopped it.
+#[test]
+fn unconvertible_materials_report_what_stopped_them() {
+	assert_eq!(failure("<constant name=\"c\" type=\"color3\"/>"), ConvertError::NoMaterial);
+	assert_eq!(
+		failure(&material(r#"<surface name="shader" type="surfaceshader"/>"#)),
+		ConvertError::UnsupportedShader {
+			material: "M".to_string(),
+			category: "surface".to_string(),
+		}
 	);
-}
-
-#[test]
-fn unwritten_inputs_take_the_shading_model_defaults() {
-	with_conversion(&material(r#"<gltf_pbr name="shader" type="surfaceshader"/>"#), |conversion| {
-		let graph = &conversion.graph;
-		let surface = graph.surface();
-
-		assert_constant(graph, surface.base_color, &[1.0, 1.0, 1.0]);
-		assert_constant(graph, surface.metalness, &[1.0]);
-		assert_constant(graph, surface.roughness, &[1.0]);
-		assert_constant(graph, surface.occlusion, &[1.0]);
-		assert_constant(graph, surface.emission, &[0.0, 0.0, 0.0]);
-	});
-}
-
-#[test]
-fn an_unlit_surface_reflects_nothing() {
-	with_conversion(
-		&material(
-			r#"<surface_unlit name="shader" type="surfaceshader">
-				<input name="emission_color" type="color3" value="0.2, 0.4, 0.6"/>
-			</surface_unlit>"#,
+	assert_eq!(
+		failure(&material(
+			r#"<noise2d name="grain" type="color3"/>
+			<standard_surface name="shader" type="surfaceshader">
+				<input name="base_color" type="color3" nodename="grain"/>
+			</standard_surface>"#,
+		)),
+		ConvertError::UnsupportedNode {
+			node: "grain".to_string(),
+			category: "noise2d".to_string(),
+		}
+	);
+	let error = failure(&material(
+		r#"<dotproduct name="facing" type="float">
+			<input name="in1" type="vector3" value="0, 0, 1"/>
+			<input name="in2" type="vector2" value="0, 1"/>
+		</dotproduct>
+		<standard_surface name="shader" type="surfaceshader">
+			<input name="specular_roughness" type="float" nodename="facing"/>
+		</standard_surface>"#,
+	));
+	assert!(
+		matches!(
+			&error,
+			ConvertError::Graph { node, error: GraphError::TypeMismatch { input: "in2", found: Type::Vector2, .. } }
+				if node == "facing"
 		),
-		|conversion| {
-			let graph = &conversion.graph;
-
-			assert_constant(graph, graph.surface().base_color, &[0.0, 0.0, 0.0]);
-			assert_constant(graph, graph.surface().emission, &[0.2, 0.4, 0.6]);
-		},
+		"{error:?}"
 	);
 }
 
@@ -281,45 +404,6 @@ fn unread_nodes_are_left_out() {
 }
 
 #[test]
-fn node_graph_outputs_are_expanded_in_place() {
-	with_conversion(
-		&material(
-			r#"<nodegraph name="tint">
-				<input name="factor" type="float" value="0.25"/>
-				<multiply name="scaled" type="color3">
-					<input name="in1" type="color3" value="0.4, 0.6, 0.8"/>
-					<input name="in2" type="float" interfacename="factor"/>
-				</multiply>
-				<output name="out" type="color3" nodename="scaled"/>
-			</nodegraph>
-			<standard_surface name="shader" type="surfaceshader">
-				<input name="base_color" type="color3" nodegraph="tint"/>
-			</standard_surface>"#,
-		),
-		|conversion| {
-			let graph = &conversion.graph;
-
-			// The graph's interface value reaches the node inside it.
-			assert_constant(graph, graph.surface().base_color, &[0.1, 0.15, 0.2]);
-		},
-	);
-}
-
-#[test]
-fn a_constant_normal_leaves_the_geometric_normal_alone() {
-	with_conversion(
-		&material(
-			r#"<standard_surface name="shader" type="surfaceshader">
-				<input name="base_color" type="color3" value="1, 1, 1"/>
-			</standard_surface>"#,
-		),
-		|conversion| {
-			assert_eq!(conversion.graph.surface().normal, None);
-		},
-	);
-}
-
-#[test]
 fn a_normal_map_drives_the_world_space_normal() {
 	with_conversion(
 		&material(
@@ -427,76 +511,6 @@ fn missing_switch_inputs_select_zero() {
 }
 
 #[test]
-fn a_document_without_a_material_is_reported() {
-	let arena = bumpalo::Bump::new();
-	let allocator = &&arena;
-	let source = document("<constant name=\"c\" type=\"color3\"/>");
-
-	let dag = materialx::parse(&source, allocator).expect("document should resolve");
-
-	assert_eq!(super::convert(&dag).expect_err("no material"), ConvertError::NoMaterial);
-}
-
-#[test]
-fn an_unsupported_shading_model_is_reported() {
-	with_failure(&material(r#"<surface name="shader" type="surfaceshader"/>"#), |error| {
-		assert_eq!(
-			error,
-			ConvertError::UnsupportedShader {
-				material: "M".to_string(),
-				category: "surface".to_string(),
-			}
-		);
-	});
-}
-
-#[test]
-fn an_unsupported_node_names_itself() {
-	with_failure(
-		&material(
-			r#"<noise2d name="grain" type="color3"/>
-			<standard_surface name="shader" type="surfaceshader">
-				<input name="base_color" type="color3" nodename="grain"/>
-			</standard_surface>"#,
-		),
-		|error| {
-			assert_eq!(
-				error,
-				ConvertError::UnsupportedNode {
-					node: "grain".to_string(),
-					category: "noise2d".to_string(),
-				}
-			);
-		},
-	);
-}
-
-#[test]
-fn mismatched_input_types_name_the_node() {
-	with_failure(
-		&material(
-			r#"<dotproduct name="facing" type="float">
-				<input name="in1" type="vector3" value="0, 0, 1"/>
-				<input name="in2" type="vector2" value="0, 1"/>
-			</dotproduct>
-			<standard_surface name="shader" type="surfaceshader">
-				<input name="specular_roughness" type="float" nodename="facing"/>
-			</standard_surface>"#,
-		),
-		|error| {
-			assert!(
-				matches!(
-					&error,
-					ConvertError::Graph { node, error: GraphError::TypeMismatch { input: "in2", found: Type::Vector2, .. } }
-						if node == "facing"
-				),
-				"{error:?}"
-			);
-		},
-	);
-}
-
-#[test]
 fn transformed_texture_coordinates_drive_the_image() {
 	with_conversion(
 		&material(
@@ -522,86 +536,6 @@ fn transformed_texture_coordinates_drive_the_image() {
 				Node::Image { texcoord: Some(texcoord), .. }
 					if matches!(graph.node(*texcoord), Node::Binary { operator: BinaryOperator::Multiply, .. })
 			)));
-		},
-	);
-}
-
-#[test]
-fn a_node_definition_built_from_a_graph_is_expanded() {
-	with_conversion(
-		&material(
-			r#"<nodedef name="ND_tint" node="tint" nodegroup="math">
-				<input name="in" type="color3" value="1, 1, 1"/>
-				<input name="factor" type="float" value="1"/>
-				<output name="out" type="color3"/>
-			</nodedef>
-			<nodegraph name="NG_tint" nodedef="ND_tint">
-				<multiply name="scaled" type="color3">
-					<input name="in1" type="color3" interfacename="in"/>
-					<input name="in2" type="float" interfacename="factor"/>
-				</multiply>
-				<output name="out" type="color3" nodename="scaled"/>
-			</nodegraph>
-			<tint name="tinted" type="color3">
-				<input name="in" type="color3" value="0.4, 0.6, 0.8"/>
-				<input name="factor" type="float" value="0.5"/>
-			</tint>
-			<standard_surface name="shader" type="surfaceshader">
-				<input name="base_color" type="color3" nodename="tinted"/>
-			</standard_surface>"#,
-		),
-		|conversion| {
-			let graph = &conversion.graph;
-
-			assert_constant(graph, graph.surface().base_color, &[0.2, 0.3, 0.4]);
-		},
-	);
-}
-
-#[test]
-fn a_shading_model_built_from_a_graph_is_expanded() {
-	with_conversion(
-		&material(
-			r#"<nodedef name="ND_house_surface" node="house_surface" nodegroup="pbr">
-				<input name="tint" type="color3" value="1, 1, 1"/>
-				<output name="out" type="surfaceshader"/>
-			</nodedef>
-			<nodegraph name="NG_house_surface" nodedef="ND_house_surface">
-				<standard_surface name="inner" type="surfaceshader">
-					<input name="base_color" type="color3" interfacename="tint"/>
-					<input name="specular_roughness" type="float" value="0.75"/>
-				</standard_surface>
-				<output name="out" type="surfaceshader" nodename="inner"/>
-			</nodegraph>
-			<house_surface name="shader" type="surfaceshader">
-				<input name="tint" type="color3" value="0.2, 0.3, 0.4"/>
-			</house_surface>"#,
-		),
-		|conversion| {
-			let graph = &conversion.graph;
-
-			assert_constant(graph, graph.surface().base_color, &[0.2, 0.3, 0.4]);
-			assert_constant(graph, graph.surface().roughness, &[0.75]);
-		},
-	);
-}
-
-#[test]
-fn a_material_written_inside_a_node_graph_is_reached() {
-	with_conversion(
-		r#"<nodegraph name="wrapper">
-			<standard_surface name="inner" type="surfaceshader">
-				<input name="specular_roughness" type="float" value="0.6"/>
-			</standard_surface>
-			<surfacematerial name="M" type="material">
-				<input name="surfaceshader" type="surfaceshader" nodename="inner"/>
-			</surfacematerial>
-			<output name="out" type="material" nodename="M"/>
-		</nodegraph>"#,
-		|conversion| {
-			let graph = &conversion.graph;
-
-			assert_constant(graph, graph.surface().roughness, &[0.6]);
 		},
 	);
 }

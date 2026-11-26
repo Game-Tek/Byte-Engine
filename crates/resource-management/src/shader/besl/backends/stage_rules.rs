@@ -318,7 +318,7 @@ mod tests {
 	}
 
 	#[test]
-	fn calls_that_a_stage_does_not_allow_are_rejected() {
+	fn shaders_that_break_their_stage_rules_are_rejected() {
 		let cases = [
 			(
 				Stages::Fragment,
@@ -368,32 +368,25 @@ mod tests {
 				"scratch: workgroup<f32, 4>; main: fn () -> void { scratch[0] = 1.0; }",
 				"uses workgroup storage `scratch`",
 			),
+			// Ray tracing entry points must match their stage.
+			(
+				Stages::RayGeneration,
+				"main: fn (payload: SurfaceHit) -> SurfaceHit { return payload; }",
+				"takes a parameter or returns a value",
+			),
+			(
+				Stages::ClosestHit,
+				"main: fn () -> void {}",
+				"doesn't take and return its payload",
+			),
+			(
+				Stages::ClosestHit,
+				"albedos: descriptor<{ type: vec4f[], binding: 0, access: read }>; main: fn (input: StageInput, payload: SurfaceHit) -> SurfaceHit { let surface: SurfaceHit = payload; surface.distance = albedos[input.hit_geometry_index].x; return surface; }",
+				"declares descriptor `",
+			),
 		];
 		for (stage, source, expected) in cases {
 			assert_rejected(stage, source, expected);
 		}
-	}
-
-	#[test]
-	fn ray_tracing_entry_points_must_match_their_stage() {
-		assert_rejected(
-			Stages::RayGeneration,
-			"main: fn (payload: SurfaceHit) -> SurfaceHit { return payload; }",
-			"takes a parameter or returns a value",
-		);
-		assert_rejected(
-			Stages::ClosestHit,
-			"main: fn () -> void {}",
-			"doesn't take and return its payload",
-		);
-	}
-
-	#[test]
-	fn closest_hits_that_declare_descriptors_are_rejected() {
-		assert_rejected(
-			Stages::ClosestHit,
-			"albedos: descriptor<{ type: vec4f[], binding: 0, access: read }>; main: fn (input: StageInput, payload: SurfaceHit) -> SurfaceHit { let surface: SurfaceHit = payload; surface.distance = albedos[input.hit_geometry_index].x; return surface; }",
-			"declares descriptor `",
-		);
 	}
 }

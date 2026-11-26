@@ -321,11 +321,6 @@ impl<A: Allocator + Clone> InputSink<A> {
 		self.drags = self.actions.iter().any(|action| matches!(action.mode, Mode::Drag(_)));
 	}
 
-	/// Returns the channel this sink publishes its action events through.
-	pub fn event_channel(&self) -> &DefaultChannel<ActionEvent> {
-		&self.channel
-	}
-
 	/// Returns the latest resolved value of one action for a seat and device.
 	pub fn action_state(&self, seat: SeatHandle, action: ActionHandle, device: DeviceHandle) -> Value {
 		let action = &self.actions[action.index() as usize];

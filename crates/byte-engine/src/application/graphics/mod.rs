@@ -349,43 +349,25 @@ impl GraphicsApplication {
 							Arc::clone(&metrics),
 						);
 						inspector.set_debug_views(Arc::clone(&debug_views));
+						inspector.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms.clone());
+						// The renderer replaces a camera or a light created again under its handle, so an update is a
+						// creation.
+						let scope = &world_messages;
+						inspector.register_message(CAMERA_UPDATE_MESSAGE_TYPE, scope.channel::<rendering::CameraUpdate>());
+						inspector.register_message(
+							POINT_LIGHT_UPDATE_MESSAGE_TYPE,
+							scope.channel::<rendering::PointLightUpdate>(),
+						);
 						inspector
-							.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms.clone())
-							.unwrap_or_else(|error| panic!("{error}"));
-						// The renderer replaces a camera created again under its handle, so an update is a creation.
-						inspector
-							.register_message(
-								CAMERA_UPDATE_MESSAGE_TYPE,
-								world_messages.channel::<rendering::CameraUpdate>(),
-							)
-							.unwrap_or_else(|error| panic!("{error}"));
-						// So does a light, created again under its handle.
-						inspector
-							.register_message(
-								POINT_LIGHT_UPDATE_MESSAGE_TYPE,
-								world_messages.channel::<rendering::PointLightUpdate>(),
-							)
-							.unwrap_or_else(|error| panic!("{error}"));
-						inspector
-							.register_message(
-								CONE_LIGHT_UPDATE_MESSAGE_TYPE,
-								world_messages.channel::<rendering::ConeLightUpdate>(),
-							)
-							.unwrap_or_else(|error| panic!("{error}"));
-						inspector
-							.register_message(
-								DIRECTIONAL_LIGHT_UPDATE_MESSAGE_TYPE,
-								world_messages.channel::<rendering::DirectionalLightUpdate>(),
-							)
-							.unwrap_or_else(|error| panic!("{error}"));
+							.register_message(CONE_LIGHT_UPDATE_MESSAGE_TYPE, scope.channel::<rendering::ConeLightUpdate>());
+						inspector.register_message(
+							DIRECTIONAL_LIGHT_UPDATE_MESSAGE_TYPE,
+							scope.channel::<rendering::DirectionalLightUpdate>(),
+						);
 						for message_type in [DELETE_MESSAGE_TYPE, DESTROY_MESSAGE_TYPE] {
-							inspector
-								.register_message(message_type, world_messages.channel::<DeleteMessage>())
-								.unwrap_or_else(|error| panic!("{error}"));
+							inspector.register_message(message_type, scope.channel::<DeleteMessage>());
 						}
-						inspector
-							.register_message(TRIGGER_ACTION_MESSAGE_TYPE, action_events)
-							.unwrap_or_else(|error| panic!("{error}"));
+						inspector.register_message(TRIGGER_ACTION_MESSAGE_TYPE, action_events);
 						let inspector = EntityHandle::from(inspector);
 						let screenshot_broker = inspector.screenshot_broker();
 						let inspector_events = inspector.event_signal();
@@ -1823,24 +1805,16 @@ mod tests {
 	}
 
 	#[test]
-	fn unattended_period_is_one_frame_at_the_given_rate() {
+	fn unattended_period_is_one_frame_at_the_given_rate_and_a_missing_rate_stops_startup() {
 		assert_eq!(unattended_period(None), None);
 		assert_eq!(
 			unattended_period(Some(&Parameter::new("unattended", "50"))),
 			Some(std::time::Duration::from_millis(20))
 		);
-	}
-
-	#[test]
-	#[should_panic(expected = "rendering rate")]
-	fn unattended_without_a_rate_stops_startup() {
-		unattended_period(Some(&Parameter::new("unattended", "")));
-	}
-
-	#[test]
-	#[should_panic(expected = "rendering rate")]
-	fn unattended_with_a_non_positive_rate_stops_startup() {
-		unattended_period(Some(&Parameter::new("unattended", "0")));
+		for rate in ["", "0"] {
+			let stopped = std::panic::catch_unwind(|| unattended_period(Some(&Parameter::new("unattended", rate))));
+			assert!(stopped.is_err(), "{rate:?} is no rendering rate");
+		}
 	}
 
 	#[test]
@@ -1872,7 +1846,7 @@ mod tests {
 	}
 
 	#[test]
-	fn simulation_steps_accumulate_without_drift() {
+	fn simulation_steps_accumulate_without_drift_and_drop_the_debt_past_the_frame_budget() {
 		let step = MediaTime::from_frames(1, 60).expect("expected test value");
 		let delta = MediaTime::from_frames(1, 144).expect("expected test value");
 		let mut pending = MediaTime::ZERO;
@@ -1887,16 +1861,9 @@ mod tests {
 
 		// Every frame's delta ends up either simulated or still pending, however the frame rate divides the step.
 		assert_eq!(simulated + pending, delta * 1_000);
-	}
 
-	#[test]
-	fn simulation_steps_drop_the_debt_past_the_frame_budget() {
-		let step = MediaTime::from_frames(1, 60).expect("expected test value");
-
-		let (steps, remainder) = simulation_steps(step * 20 + step / 2, step, 8);
-
-		assert_eq!(steps, 8);
-		assert_eq!(remainder, step / 2);
+		// Debt past the frame budget is dropped.
+		assert_eq!(simulation_steps(step * 20 + step / 2, step, 8), (8, step / 2));
 	}
 
 	#[test]
@@ -2024,5 +1991,3 @@ pub use defaults::{
 	setup_default_audio, setup_default_input, setup_default_resource_and_asset_management, setup_default_window,
 };
 pub use integrations::process_default_window_input;
-#[cfg(feature = "dmx")]
-pub use integrations::setup_default_dmx;

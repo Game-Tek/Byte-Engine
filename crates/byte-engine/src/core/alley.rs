@@ -399,15 +399,7 @@ impl<'dispatch> ConcreteLane<'dispatch> {
 	///
 	/// Every lane must pass the same slice so the partitions cover it exactly once.
 	pub fn share<'values, T>(&self, values: &'values [T]) -> &'values [T] {
-		&values[self.share_range(values.len())]
-	}
-
-	/// Returns this lane's balanced range of `len` items, the indices [`Self::share`] covers in a slice of that length.
-	///
-	/// Use it to partition data that is not one slice, such as parallel arrays. Every lane must pass the same length
-	/// so the ranges cover it exactly once.
-	pub fn share_range(&self, len: usize) -> Range<usize> {
-		shared_range(len, self.lane_idx, self.lane_count)
+		&values[shared_range(values.len(), self.lane_idx, self.lane_count)]
 	}
 
 	/// Runs `f` on the first lane to reach this section and returns its value to every lane once it finished.
@@ -900,56 +892,11 @@ impl<'lane, 'dispatch> Stage<'lane, 'dispatch> {
 	}
 }
 
-/// The `SharedLane` struct provides lane-local access to one exclusive partition of shared mutable data.
-pub struct SharedLane<'dispatch, 'values, T> {
-	lane: &'values mut ConcreteLane<'dispatch>,
-	values: &'values mut [T],
-}
-
-impl<'dispatch, 'values, T> SharedLane<'dispatch, 'values, T> {
-	fn new(lane: &'values mut ConcreteLane<'dispatch>, values: &'values mut [T]) -> Self {
-		Self { lane, values }
-	}
-
-	/// Mutates this lane's partition and returns all lane results after publication.
-	///
-	/// Every lane must encounter this collective in the same order and with the same result type.
-	pub fn each_shared_mut<R, F>(&mut self, f: F) -> LaneValues<'dispatch, R>
-	where
-		R: Copy + Send + Sync + 'static,
-		F: FnOnce(&mut [T]) -> R,
-	{
-		let values = &mut *self.values;
-		self.lane.each(move || f(values))
-	}
-}
-
-impl<'dispatch, T> Deref for SharedLane<'dispatch, '_, T> {
-	type Target = ConcreteLane<'dispatch>;
-
-	fn deref(&self) -> &Self::Target {
-		self.lane
-	}
-}
-
-impl<T> DerefMut for SharedLane<'_, '_, T> {
-	fn deref_mut(&mut self) -> &mut Self::Target {
-		self.lane
-	}
-}
-
 impl Lane for ConcreteLane<'_> {
 	fn idx(&self) -> usize {
 		self.lane_idx
 	}
 }
-
-impl<T> Lane for SharedLane<'_, '_, T> {
-	fn idx(&self) -> usize {
-		self.lane.idx()
-	}
-}
-
 /// Returns the balanced index range assigned to one lane out of `value_count` values.
 fn shared_range(value_count: usize, lane_idx: usize, lane_count: usize) -> Range<usize> {
 	let minimum_len = value_count / lane_count;
@@ -1529,24 +1476,6 @@ impl Alley {
 		self.dispatch(lanes, true, f, || ()).map(|(values, ())| values)
 	}
 
-	/// Executes `f` once on every lane alongside work confined to the calling thread, then returns both results.
-	///
-	/// Lanes follow the rules of [`Self::execute`], except that every lane runs on a worker. The caller and its result
-	/// stay on this thread and need not be `Send`, as with [`Self::join`]. Every lane and the caller finish before a
-	/// captured panic is returned, so their borrowed inputs remain valid. Use this to overlap lane work with a caller
-	/// that owns thread-bound state; without one, [`Self::execute`] lets the calling thread run a lane instead.
-	pub fn execute_with_caller<R, C>(
-		&mut self,
-		f: impl AlleyFunction<R>,
-		caller: impl FnOnce() -> C,
-	) -> std::thread::Result<(Vec<R>, C)>
-	where
-		R: Send,
-	{
-		let lanes = self.parallelism();
-		self.dispatch(lanes, false, f, caller)
-	}
-
 	/// Executes every lane with mutable resources assigned to stable owner lanes.
 	///
 	/// Resources are assigned by tuple position in round-robin order across this alley's
@@ -1620,37 +1549,6 @@ impl Alley {
 		let active_lanes = resource_count.min(parallelism);
 		self.dispatch(active_lanes, false, move |lane| f(lane, resources), caller)
 			.map(|(_, caller)| caller)
-	}
-
-	/// Executes every lane with exclusive access to a balanced mutable partition.
-	///
-	/// Mutable access prevents overlapping or nested dispatches on this `Alley`. Gang-scheduled
-	/// lane collectives require exclusive access to its worker set and could otherwise deadlock.
-	#[allow(unsafe_code, reason = "Each lane borrows its own balanced range of the values.")]
-	pub fn execute_shared_mut<T, F>(&mut self, values: &mut [T], f: F)
-	where
-		T: Send,
-		F: for<'dispatch, 'values> Fn(&mut SharedLane<'dispatch, 'values, T>) + Sync,
-	{
-		let lane_count = self.parallelism();
-		let len = values.len();
-		let parts = LaneParts(values.as_mut_ptr());
-		// Every lane runs, including lanes whose partition is empty when there are fewer values than lanes, so that
-		// every lane reaches the collectives.
-		let executed = self.dispatch(
-			lane_count,
-			true,
-			|lane| {
-				// SAFETY: Balanced ranges of different lanes do not overlap and stay within `values`, which this
-				// dispatch borrows mutably until every lane finished.
-				let partition = unsafe { parts.slice(shared_range(len, lane.idx(), lane_count)) };
-				f(&mut SharedLane::new(lane, partition));
-			},
-			|| (),
-		);
-		if let Err(panic) = executed {
-			resume_unwind(panic);
-		}
 	}
 
 	/// Distributes `items` evenly over up to `lanes` lanes and gives each lane exclusive access to one partition.
@@ -1783,7 +1681,7 @@ mod tests {
 		time::{Duration, Instant},
 	};
 
-	use crate::core::alley::{Alley, Lane};
+	use crate::core::alley::{Alley, ConcreteLane, Lane};
 
 	/// A value that can't leave its thread, which the caller's closure captures and returns to show it may be `!Send`.
 	#[derive(Clone, Copy, Debug, PartialEq)]
@@ -1921,69 +1819,16 @@ mod tests {
 	}
 
 	#[test]
-	fn execute_returns_one_ordered_value_per_lane() {
-		let mut alley = Alley::with_parallelism(4);
-
-		let values = unwrap_dispatch(alley.execute(|lane| lane.idx() * 10));
-
-		assert_eq!(values, [0, 10, 20, 30]);
-	}
-
-	#[test]
-	fn execute_runs_the_first_lane_on_the_calling_thread() {
+	fn execute_returns_one_ordered_value_per_lane_and_runs_the_first_on_the_calling_thread() {
 		let mut alley = Alley::with_parallelism(3);
 		let caller = std::thread::current().id();
 
-		let threads = unwrap_dispatch(alley.execute(|_| std::thread::current().id()));
+		let values = unwrap_dispatch(alley.execute(|lane| (lane.idx() * 10, std::thread::current().id())));
 
-		assert_eq!(threads[0], caller);
-		assert!(threads[1..].iter().all(|thread| *thread != caller));
-		assert_ne!(threads[1], threads[2]);
-	}
-
-	#[test]
-	fn execute_with_caller_overlaps_every_lane_with_caller_bound_work() {
-		let mut alley = Alley::with_parallelism(3);
-		// Every lane and the caller must wait together, so the barrier only opens when all of them overlap.
-		let barrier = Barrier::new(4);
-		let caller_thread = std::thread::current().id();
-		let local = NotSend::new(7);
-
-		let (lanes, returned) = alley
-			.execute_with_caller(
-				|lane| {
-					barrier.wait();
-					assert_ne!(std::thread::current().id(), caller_thread);
-					lane.idx()
-				},
-				|| {
-					barrier.wait();
-					assert_eq!(std::thread::current().id(), caller_thread);
-					local
-				},
-			)
-			.unwrap_or_else(|payload| resume_unwind(payload));
-
-		assert_eq!(lanes, [0, 1, 2]);
-		assert_eq!(returned, NotSend::new(7));
-	}
-
-	#[test]
-	fn execute_with_caller_waits_for_the_caller_after_a_lane_panics() {
-		let mut alley = Alley::with_parallelism(2);
-		let mut finished = false;
-
-		let result = alley.execute_with_caller(
-			|lane| assert_ne!(lane.idx(), 0, "expected lane panic"),
-			|| {
-				sleep(Duration::from_millis(10));
-				finished = true;
-			},
-		);
-
-		assert!(result.is_err());
-		assert!(finished);
-		assert_eq!(unwrap_dispatch(alley.execute(|lane| lane.idx())), [0, 1]);
+		assert_eq!(values.iter().map(|(value, _)| *value).collect::<Vec<_>>(), [0, 10, 20]);
+		assert_eq!(values[0].1, caller);
+		assert!(values[1..].iter().all(|(_, thread)| *thread != caller));
+		assert_ne!(values[1].1, values[2].1);
 	}
 
 	#[test]
@@ -2031,25 +1876,11 @@ mod tests {
 	#[test]
 	fn each_partition_receives_its_lane_index() {
 		let mut alley = Alley::with_parallelism(3);
-		let mut counters = [0; 10];
-
-		alley.for_each_mut(&mut counters, 3, |lane, partition| {
-			partition.fill(lane.idx());
-		});
-
-		assert_eq!(counters, [0, 0, 0, 0, 1, 1, 1, 2, 2, 2]);
-	}
-
-	#[test]
-	fn a_lane_count_splits_the_items_among_that_many_lanes() {
-		let mut alley = Alley::with_parallelism(3);
-		let mut counters = [usize::MAX; 10];
-
-		alley.for_each_mut(&mut counters, 2, |lane, partition| {
-			partition.fill(lane.idx());
-		});
-
-		assert_eq!(counters, [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]);
+		for (lanes, expected) in [(3, [0, 0, 0, 0, 1, 1, 1, 2, 2, 2]), (2, [0, 0, 0, 0, 0, 1, 1, 1, 1, 1])] {
+			let mut counters = [usize::MAX; 10];
+			alley.for_each_mut(&mut counters, lanes, |lane, partition| partition.fill(lane.idx()));
+			assert_eq!(counters, expected);
+		}
 	}
 
 	#[test]
@@ -2289,17 +2120,42 @@ mod tests {
 	}
 
 	#[test]
-	fn collective_operation_mismatch_releases_waiting_lanes() {
-		let mut alley = Alley::with_parallelism(8);
-		let result = alley.execute(|lane| {
-			if lane.idx() == 0 {
-				let _ = lane.broadcast(|| 1usize);
-			} else {
-				let _ = lane.each(|| 1usize);
+	fn lanes_that_disagree_on_their_sections_fail_the_dispatch() {
+		type Sections = for<'lane, 'dispatch> fn(&'lane mut ConcreteLane<'dispatch>);
+		let mut alley = Alley::with_parallelism(4);
+		// Each case runs its first function on one lane and its second on the others.
+		let cases: [(Sections, Sections); 4] = [
+			// A broadcast meets an `each`.
+			(
+				|lane| {
+					let _ = lane.broadcast(|| 1usize);
+				},
+				|lane| drop(lane.each(|| 1usize)),
+			),
+			// The lanes return different types.
+			(|lane| drop(lane.each(|| 1u64)), |lane| drop(lane.each(|| 1usize))),
+			// One lane's section has no value and the others' have one.
+			(
+				|lane| lane.broadcast(|| ()),
+				|lane| {
+					let _ = lane.broadcast(|| 1usize);
+				},
+			),
+			// One lane runs out of sections before the others.
+			(
+				|lane| drop(lane.each(|| ())),
+				|lane| {
+					drop(lane.each(|| ()));
+					drop(lane.each(|| ()));
+				},
+			),
+		];
+		for (odd, rest) in cases {
+			for odd_lane in [0, 2] {
+				let result = alley.execute(|lane| if lane.idx() == odd_lane { odd(lane) } else { rest(lane) });
+				assert!(result.is_err());
 			}
-		});
-
-		assert!(result.is_err());
+		}
 	}
 
 	#[test]
@@ -2341,34 +2197,6 @@ mod tests {
 	}
 
 	#[test]
-	fn lanes_that_disagree_on_a_value_type_fail_the_dispatch() {
-		let mut alley = Alley::with_parallelism(8);
-		let result = alley.execute(|lane| {
-			if lane.idx() == 0 {
-				let _ = lane.each(|| 1u64);
-			} else {
-				let _ = lane.each(|| 1usize);
-			}
-		});
-
-		assert!(result.is_err());
-	}
-
-	#[test]
-	fn lanes_that_disagree_on_whether_a_section_has_a_value_fail_the_dispatch() {
-		let mut alley = Alley::with_parallelism(8);
-		let result = alley.execute(|lane| {
-			if lane.idx() == 0 {
-				lane.broadcast(|| ());
-			} else {
-				let _ = lane.broadcast(|| 1usize);
-			}
-		});
-
-		assert!(result.is_err());
-	}
-
-	#[test]
 	fn a_lane_that_enters_a_broadcast_late_with_another_kind_of_value_fails_the_dispatch() {
 		let mut alley = Alley::with_parallelism(2);
 
@@ -2394,39 +2222,6 @@ mod tests {
 					let _ = lane.broadcast(|| 1usize);
 				} else {
 					lane.broadcast(|| ());
-				}
-			});
-
-			assert!(result.is_err());
-		}
-	}
-
-	#[test]
-	fn a_lane_that_panics_between_sections_fails_the_dispatch() {
-		let mut alley = Alley::with_parallelism(4);
-
-		let result = alley.execute(|lane| {
-			if lane.idx() == 3 {
-				panic!("expected lane panic");
-			}
-			// The other lanes would wait here for the lane that panicked.
-			let _ = lane.each(|| ());
-		});
-
-		assert!(result.is_err());
-		assert_eq!(unwrap_dispatch(alley.execute(|lane| lane.idx())), [0, 1, 2, 3]);
-	}
-
-	#[test]
-	fn lanes_that_run_different_numbers_of_sections_fail_the_dispatch() {
-		let mut alley = Alley::with_parallelism(4);
-
-		// The first lane runs out of sections, and then another lane does.
-		for short_lane in [0, 2] {
-			let result = alley.execute(|lane| {
-				let _ = lane.each(|| ());
-				if lane.idx() != short_lane {
-					let _ = lane.each(|| ());
 				}
 			});
 
@@ -2507,31 +2302,6 @@ mod tests {
 			assert_eq!(lengths.collect::<Vec<_>>(), [1, 1, 1, 0, 0]);
 			assert_eq!(sums.collect::<Vec<_>>(), [1, 2, 3, 0, 0]);
 		}));
-	}
-
-	#[test]
-	fn each_shared_mut() {
-		let value = AtomicUsize::new(0);
-		let mut values = vec![0; 16];
-
-		let mut alley = Alley::with_parallelism(8);
-
-		alley.execute_shared_mut(&mut values, |lane| {
-			let lane_idx = lane.idx();
-			let all = lane.each_shared_mut(|partition| {
-				for (offset, value) in partition.iter_mut().enumerate() {
-					*value = lane_idx * 2 + offset + 1;
-				}
-				partition.iter().sum::<usize>()
-			});
-
-			lane.only_one_runs(|| {
-				value.fetch_add(all.sum::<usize>(), Ordering::Relaxed);
-			});
-		});
-
-		assert_eq!(values, (1..=16).collect::<Vec<_>>());
-		assert_eq!(value.load(Ordering::Relaxed), 136);
 	}
 
 	#[test]
@@ -2683,7 +2453,7 @@ use std::{
 	hint::spin_loop,
 	marker::PhantomData,
 	mem::{MaybeUninit, align_of, size_of},
-	ops::{Deref, DerefMut, Range},
+	ops::Range,
 	panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
 	ptr::NonNull,
 	sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering, fence},

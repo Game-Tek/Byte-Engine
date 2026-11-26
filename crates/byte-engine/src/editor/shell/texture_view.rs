@@ -14,8 +14,8 @@ use resource_management::types::Gamma;
 use super::VALUE_FONT;
 use super::resource_panels::{Drawer, Side, base};
 use super::{
-	FIELD_HEIGHT, MUTED, SQUIRCLE, Shell, TEXT, block, cap, channel, fits, open_room, read_typed, setting_style, solid,
-	typing_style,
+	FIELD_HEIGHT, MUTED, Shell, TEXT, block, cap, channel, fits, labelled_line, open_room, read_typed, setting_style, solid,
+	typing_style, value_well,
 };
 use crate::editor::drawer::arriving;
 use crate::ui::Animation;
@@ -282,23 +282,7 @@ async fn properties_drawer(ctx: &mut EvaluationContext<Shell>) -> Drawer {
 
 /// One property's row: its label, and its value, its switch, or, for the coverage, a field that takes a typed cutoff.
 async fn property_row(ctx: &mut EvaluationContext<Shell>, property: Property, width: f32) {
-	let mut line = ctx
-		.element("line")
-		.container(|c| c.width(width.into()).height(FIELD_HEIGHT.into()).flow(flow::centered_row))
-		.await;
-	let mut label = line
-		.element("label")
-		.container(|c| {
-			c.width((width - CONTROL_WIDTH).into())
-				.height(FIELD_HEIGHT.into())
-				.padding(2.0, 0.0)
-				.flow(flow::centered_row)
-		})
-		.await;
-	label
-		.element("text")
-		.text(property.label(), |t| t.font_size(12.0).style([solid(MUTED)]))
-		.await;
+	let mut line = labelled_line(ctx, property.label(), width, width - CONTROL_WIDTH).await;
 	let mut control = line
 		.element("control")
 		.container(|c| c.width(CONTROL_WIDTH.into()).height(FIELD_HEIGHT.into()))
@@ -376,24 +360,7 @@ async fn switch(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationCont
 
 /// The coverage's field: a well that shows the cutoff, or `off`, and takes a typed one when clicked.
 async fn coverage_field(ctx: &mut EvaluationContext<Shell>, control: &mut EvaluationContext<Shell>) {
-	let mut field = control
-		.element("well")
-		.container(|c| {
-			c.width(CONTROL_WIDTH.into())
-				.height(FIELD_HEIGHT.into())
-				.corner_radius(6.0)
-				.corner_exponent(SQUIRCLE)
-				.clip(true)
-				.padding(8.0, 0.0)
-				.flow(flow::centered_row_with_gap(6))
-				.hit_testable(true)
-				.style(setting_style(true, false))
-		})
-		.await;
-	let mut value = field
-		.element("value")
-		.text("", |t| t.font_size(12.0).font(VALUE_FONT).style([solid(TEXT)]))
-		.await;
+	let (mut field, mut value) = value_well(control, CONTROL_WIDTH).await;
 	let mut shown = None;
 	let mut current = ctx.proactive(|shell: &Shell| shell.layers.texture().and_then(|texture| texture.settings));
 	loop {
@@ -490,7 +457,7 @@ async fn footer(ctx: &mut EvaluationContext<Shell>, width: f32) {
 
 #[cfg(test)]
 mod tests {
-	use super::{ImageSetting, fitted, parse_coverage};
+	use super::{ImageSetting, parse_coverage};
 
 	#[test]
 	fn a_typed_coverage_is_off_or_a_cutoff_from_zero_to_one() {
@@ -499,12 +466,5 @@ mod tests {
 		assert_eq!(parse_coverage("0.5"), Some(ImageSetting::Coverage(Some(0.5))));
 		assert_eq!(parse_coverage("1.5"), None);
 		assert_eq!(parse_coverage("half"), None);
-	}
-
-	#[test]
-	fn a_picture_fills_its_room_as_far_as_its_aspect_lets_it() {
-		assert_eq!(fitted(100, 50, [400.0, 400.0]), [400.0, 200.0]);
-		assert_eq!(fitted(800, 400, [400.0, 400.0]), [400.0, 200.0]);
-		assert_eq!(fitted(400, 800, [400.0, 400.0]), [200.0, 400.0]);
 	}
 }

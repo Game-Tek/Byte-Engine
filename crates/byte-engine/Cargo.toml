@@ -23,7 +23,6 @@ default = ["headed", "network"]
 headed = ["dep:ratatui", "dep:neo_frizbee", "dep:ahi", "dep:ghi", "dep:besl", "dep:base64", "dep:exr", "dep:flate2", "dep:png", "resource-management/gpu-ibl", "resource-management/gpu-mips"]
 network = ["client"]
 client = ["dep:betp"]
-dmx = ["dep:artnet_protocol"]
 tracy = ["dep:tracing-log", "dep:tracing-tracy"]
 ui-render-bench = ["headed"]
 
@@ -152,7 +151,6 @@ fontdue = "0.9.3"
 # Reads glyph outlines for GPU text. Keep fontdue's feature set: with the default features unified into
 # fontdue's copy, the parser's variable font support returns no outlines for the macOS system font.
 ttf-parser = { version = "0.21.1", default-features = false }
-artnet_protocol = { version = "0.4.4", optional = true }
 half = "2.4.1"
 bitflags = "2.11.1"
 bumpalo = { version = "3", features = ["allocator_api", "collections"] }

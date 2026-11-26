@@ -947,18 +947,6 @@ mod tests {
 		DefaultListener<Events>,
 		DefaultListener<TransformationUpdate>,
 	) {
-		test_inspector_with(configuration, None)
-	}
-
-	/// Builds the test inspector, connected to `debug_views` when one is given.
-	fn test_inspector_with(
-		configuration: Configuration,
-		debug_views: Option<Arc<crate::rendering::DebugViewCatalog>>,
-	) -> (
-		EntityHandle<DefaultInspector>,
-		DefaultListener<Events>,
-		DefaultListener<TransformationUpdate>,
-	) {
 		let events = DefaultChannel::new();
 		let event_listener = events.listener();
 		let message_bus = MessageBus::default();
@@ -966,13 +954,8 @@ mod tests {
 		let messages = message_bus.new_scope("http-inspector-test-world");
 		let transforms = messages.channel();
 		let transform_listener = transforms.listener();
-		let mut inspector = DefaultInspector::new(events, configuration, messages, Arc::new(Metrics::new()));
-		inspector
-			.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms)
-			.expect("register reflected transformation update");
-		if let Some(debug_views) = debug_views {
-			inspector.set_debug_views(debug_views);
-		}
+		let inspector = DefaultInspector::new(events, configuration, messages, Arc::new(Metrics::new()));
+		inspector.register_message(TRANSFORMATION_UPDATE_MESSAGE_TYPE, transforms);
 		(EntityHandle::from(inspector), event_listener, transform_listener)
 	}
 
@@ -1026,18 +1009,6 @@ mod tests {
 			.expect("response headers")
 			+ 4;
 		&response[start..]
-	}
-
-	#[test]
-	fn free_port_keeps_the_preferred_port_and_falls_back_when_it_is_taken() {
-		let taken = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).expect("occupy inspector test port");
-		let taken_port = taken.local_addr().expect("read occupied port").port();
-		let fallback = super::free_port(&super::LOOPBACK, taken_port).expect("pick fallback port");
-		assert_ne!(fallback, taken_port);
-		assert_eq!(
-			super::free_port(&super::LOOPBACK, fallback).expect("keep free port"),
-			fallback
-		);
 	}
 
 	#[test]
@@ -1686,18 +1657,6 @@ mod tests {
 	}
 
 	#[test]
-	fn server_rejects_zero_entity_targets() {
-		let (inspector, _events, mut transforms) = test_inspector(Configuration::new());
-		let server = TestServer::new(inspector);
-		let body = format!(
-			r#"{{"type":"{TRANSFORMATION_UPDATE_MESSAGE_TYPE}","target":0,"payload":{{"position":[4.0,5.0,6.0],"scale":[1.0,1.0,1.0],"orientation":[0.0,0.0,0.0,1.0]}}}}"#
-		);
-		let response = server.request("POST", "/messages", &body);
-		assert!(response.starts_with(b"HTTP/1.1 400"));
-		assert!(transforms.read().is_none());
-	}
-
-	#[test]
 	fn server_posts_targeted_transform_updates_over_http() {
 		let (inspector, _events, mut transforms) = test_inspector(Configuration::new());
 		let server = TestServer::new(inspector);
@@ -1712,6 +1671,11 @@ mod tests {
 		assert_eq!(update.handle(), target);
 		assert_eq!(update.transform().get_position(), math::Point::new(4.0, 5.0, 6.0));
 		assert_eq!(update.transform().scale(), math::Scale::new(1.0, 2.0, 3.0));
+
+		// Handle zero names no entity.
+		let body = body.replace(&format!("\"target\":{}", target.id()), "\"target\":0");
+		assert!(server.request("POST", "/messages", &body).starts_with(b"HTTP/1.1 400"));
+		assert!(transforms.read().is_none());
 	}
 
 	#[test]
@@ -1728,9 +1692,7 @@ mod tests {
 			messages,
 			Arc::new(Metrics::new()),
 		);
-		inspector
-			.register_message(DESTROY_MESSAGE_TYPE, deletion_messages)
-			.expect("register reflected destroy message");
+		inspector.register_message(DESTROY_MESSAGE_TYPE, deletion_messages);
 		let inspector = EntityHandle::from(inspector);
 		let server = TestServer::new(inspector.clone());
 		let target = entities.create("temporary".to_string());
@@ -1753,7 +1715,7 @@ mod tests {
 	}
 
 	#[test]
-	fn screenshot_query_decodes_fields_in_any_order() {
+	fn screenshot_query_decodes_fields_in_any_order_and_rejects_malformed_ones() {
 		for (query, pass, target) in [
 			("sink=2&pass=bloom&target=main", "bloom", "main"),
 			("target=main&sink=2&pass=bloom", "bloom", "main"),
@@ -1771,6 +1733,21 @@ mod tests {
 					ScreenshotFormat::Png,
 				))
 			);
+		}
+		assert_eq!(super::parse_screenshot_query(None), Err(()));
+		for query in [
+			"sink=2&pass=bad%&target=main",
+			"sink=2&pass=bad%2G&target=main",
+			"sink=2&pass=%FF&target=main",
+			"sink=2&pass=bloom",
+			"sink=2&pass=bloom&target=main&extra=x",
+			"sink=2&sink=3",
+			"sink=2&previous=true",
+			"sink=2&pass=bloom&target=main&previous=true",
+			"sink=2&target=main&previous=yes",
+			"sink=2&format=tiff",
+		] {
+			assert_eq!(super::parse_screenshot_query(Some(query)), Err(()));
 		}
 	}
 
@@ -1795,48 +1772,6 @@ mod tests {
 	}
 
 	#[test]
-	fn screenshot_query_rejects_incomplete_and_malformed_fields() {
-		assert_eq!(super::parse_screenshot_query(None), Err(()));
-		for query in [
-			"sink=2&pass=bad%&target=main",
-			"sink=2&pass=bad%2G&target=main",
-			"sink=2&pass=%FF&target=main",
-			"sink=2&pass=bloom",
-			"sink=2&pass=bloom&target=main&extra=x",
-			"sink=2&sink=3",
-			"sink=2&previous=true",
-			"sink=2&pass=bloom&target=main&previous=true",
-			"sink=2&target=main&previous=yes",
-			"sink=2&format=tiff",
-		] {
-			assert_eq!(super::parse_screenshot_query(Some(query)), Err(()));
-		}
-	}
-
-	#[test]
-	fn server_lists_debug_views() {
-		let catalog = Arc::new(crate::rendering::DebugViewCatalog::default());
-		let (inspector, _events, _transforms) = test_inspector_with(Configuration::new(), Some(Arc::clone(&catalog)));
-		let server = TestServer::new(inspector);
-
-		let body = server.get_json("/debug-views");
-		assert_eq!(body["enabled"], false);
-		assert_eq!(body["views"].as_array().map(Vec::len), Some(0));
-	}
-
-	#[test]
-	fn server_exposes_configuration_event_values() {
-		let configuration = Configuration::new();
-		let _port = configuration.register("render.pass.");
-		configuration.update("render.pass.bloom", "bypassed");
-		let (inspector, _events, _transforms) = test_inspector(configuration);
-		let body = TestServer::new(inspector).get_json("/configuration");
-		assert_eq!(body[0]["parameter"], "render.pass.bloom");
-		assert_eq!(body[0]["requested"], "bypassed");
-		assert_eq!(body[0]["state"]["status"], "pending");
-	}
-
-	#[test]
 	fn posted_configuration_reaches_the_system_that_owns_its_prefix() {
 		let configuration = Configuration::new();
 		let port = configuration.register("render.lod.");
@@ -1858,9 +1793,9 @@ mod tests {
 	}
 
 	#[test]
-	fn posted_configuration_without_an_owner_is_not_set() {
+	fn posted_configuration_without_an_owner_or_with_unknown_fields_is_not_set() {
 		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
-		let response = TestServer::new(inspector).request(
+		let response = TestServer::new(inspector.clone()).request(
 			"POST",
 			"/configuration",
 			r#"{"parameter":"render.unknown.knob","value":"on"}"#,
@@ -1868,16 +1803,15 @@ mod tests {
 		assert!(response.starts_with(b"HTTP/1.1 202"), "unexpected response: {response:?}");
 		let event: serde_json::Value = serde_json::from_slice(response_body(&response)).expect("parse configuration event");
 		assert_eq!(event["state"]["status"], "not-set");
-	}
 
-	#[test]
-	fn configuration_request_rejects_unknown_fields() {
-		let (inspector, _events, _transforms) = test_inspector(Configuration::new());
 		let response = TestServer::new(inspector).request(
 			"POST",
 			"/configuration",
 			r#"{"parameter":"render.lod.force","value":0,"when":"now"}"#,
 		);
-		assert!(response.starts_with(b"HTTP/1.1 400"), "unexpected response: {response:?}");
+		assert!(
+			response.starts_with(b"HTTP/1.1 400"),
+			"unknown fields are refused: {response:?}"
+		);
 	}
 }

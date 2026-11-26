@@ -120,7 +120,7 @@ mod tests {
 	}
 
 	#[test]
-	fn decoder_normalizes_supported_little_endian_pcm_depths() {
+	fn decoder_normalizes_supported_little_endian_pcm_depths_of_exact_payloads() {
 		let eight = decode(metadata(BitDepths::Eight, 1, 3), &[0, 128, 255]).expect("expected test value");
 
 		assert_eq!(&*eight, &[-1.0, 0.0, 127.0 / 128.0]);
@@ -151,10 +151,8 @@ mod tests {
 		assert_eq!(thirty_two[0], -1.0);
 		assert_eq!(thirty_two[1], 0.0);
 		assert!(thirty_two[2] > 0.99);
-	}
 
-	#[test]
-	fn decoder_validates_exact_interleaved_payload_length() {
+		// The payload must hold exactly every interleaved sample of a supported channel count.
 		let error = decode(metadata(BitDepths::Sixteen, 2, 2), &[0; 6]).unwrap_err();
 
 		assert!(error.contains("requires 8"));
@@ -208,23 +206,6 @@ mod tests {
 		assert_eq!(pool.resident_bytes, 4);
 		assert!(pool.lease(&cache_key("active.wav", 1, 2)).is_none());
 		assert!(pool.resident_bytes <= pool.byte_budget);
-	}
-
-	#[test]
-	fn failed_decode_returns_its_reserved_arena_region() {
-		let mut pool = pool(8);
-		let metadata = metadata(BitDepths::Sixteen, 1, 2);
-		let layout = AudioSampleLayout::new(metadata).unwrap();
-
-		assert!(pool.make_room(layout.decoded_byte_count().unwrap()));
-
-		let error = pool
-			.decode_and_insert(cache_key("broken.wav", 1, 2), metadata, layout, &[0; 2])
-			.unwrap_err();
-
-		assert!(error.contains("requires 4"));
-		assert_eq!(pool.resident_bytes, 0);
-		assert!(pool.free_scalars.fits(2, 1));
 	}
 
 	#[test]

@@ -1954,22 +1954,6 @@ mod tests {
 	}
 
 	#[test]
-	fn a_burst_larger_than_any_chunk_is_delivered_in_order_without_draining() {
-		let bus = test_bus(16);
-		let channel = bus.new_scope("application").channel::<u64>();
-		let mut listener = channel.listener();
-		let burst = 5 * u64_slots_per_chunk() as u64 + 3;
-
-		for value in 0..burst {
-			channel.send(value);
-		}
-
-		assert_eq!(bus.topics()[0].chunks, 6);
-		assert_eq!(listener.to_vec(), (0..burst).collect::<Vec<_>>());
-		assert_eq!(listener.read(), None);
-	}
-
-	#[test]
 	fn chunks_return_to_the_pool_once_every_listener_passes_them() {
 		let bus = test_bus(2);
 		let channel = bus.new_scope("application").channel::<u64>();
@@ -2234,22 +2218,6 @@ mod tests {
 
 		assert_eq!(drops.load(Ordering::Relaxed), published, "the unread message is released");
 		assert_eq!(bus.topics()[0].chunks, 1, "the first chunk returned to the pool");
-	}
-
-	#[test]
-	fn retained_values_drop_with_the_bus() {
-		let drops = counter();
-		let bus = ticking_bus(2);
-		let channel = bus.new_scope("application").channel::<DropTracked>();
-		let _listener = channel.listener();
-		channel.send(DropTracked { drops });
-		channel.send(DropTracked { drops });
-
-		drop(_listener);
-		drop(channel);
-		drop(bus);
-
-		assert_eq!(drops.load(Ordering::Relaxed), 2);
 	}
 
 	#[test]

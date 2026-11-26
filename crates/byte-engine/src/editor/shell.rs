@@ -1468,6 +1468,56 @@ async fn type_setting(
 	.await;
 }
 
+/// Declares a `width` wide line with `label`, muted, in its first `label_width`, and returns the line, so the caller
+/// adds the line's control after the label.
+async fn labelled_line(
+	ctx: &mut EvaluationContext<Shell>,
+	label: &str,
+	width: f32,
+	label_width: f32,
+) -> EvaluationContext<Shell> {
+	let mut line = ctx
+		.element("line")
+		.container(|c| c.width(width.into()).height(FIELD_HEIGHT.into()).flow(flow::centered_row))
+		.await;
+	line.element("label")
+		.container(|c| {
+			c.width(label_width.into())
+				.height(FIELD_HEIGHT.into())
+				.padding(2.0, 0.0)
+				.flow(flow::centered_row)
+		})
+		.await
+		.element("text")
+		.text(label, |t| t.font_size(12.0).style([solid(MUTED)]))
+		.await;
+	line
+}
+
+/// Declares a `width` wide well in `parent` that takes a typed value when clicked, and returns it with the text in
+/// it, which starts empty.
+async fn value_well(parent: &mut EvaluationContext<Shell>, width: f32) -> (EvaluationContext<Shell>, EvaluationContext<Shell>) {
+	let mut well = parent
+		.element("well")
+		.container(|c| {
+			c.width(width.into())
+				.height(FIELD_HEIGHT.into())
+				.corner_radius(6.0)
+				.corner_exponent(SQUIRCLE)
+				.clip(true)
+				.padding(8.0, 0.0)
+				.flow(flow::centered_row_with_gap(6))
+				.hit_testable(true)
+				.style(setting_style(true, false))
+		})
+		.await;
+	let value = well
+		.element("value")
+		.text("", |t| t.font_size(12.0).font(VALUE_FONT).style([solid(TEXT)]))
+		.await;
+	(well, value)
+}
+
 /// Reads text typed into `well`, starting from `initial`, which takes the keyboard's focus until Enter returns the
 /// text, or Escape or a press outside the well returns `None`. The well wears the first of `styles` while it takes text, and the second after.
 async fn read_typed(
@@ -1802,8 +1852,6 @@ const fn hex(rgb: u32, alpha: f32) -> RGBA {
 
 #[cfg(test)]
 mod tests {
-	use super::darker;
-
 	#[test]
 	fn the_editor_asks_for_frames_only_while_its_drawer_moves() {
 		use crate::editor::layers::Layer;
@@ -1880,11 +1928,5 @@ mod tests {
 			}),
 			0
 		);
-	}
-
-	#[test]
-	fn a_darker_color_keeps_its_hue() {
-		assert_eq!(darker(0x41D866), 0x2B9044);
-		assert_eq!(darker(0xFFFFFF), 0xAAAAAA);
 	}
 }

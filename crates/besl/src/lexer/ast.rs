@@ -618,485 +618,156 @@ impl Program<'static> {
 			shared: None,
 		};
 		let program = &mut owned;
-		let void = primitive_type(program, "void");
-		let bool_t = primitive_type(program, "bool");
-		let u8_t = primitive_type(program, "u8");
-		let u16_t = primitive_type(program, "u16");
-		let u32_t = primitive_type(program, "u32");
-		let i32_t = primitive_type(program, "i32");
-		let f16_t = primitive_type(program, "f16");
-		let f32_t = primitive_type(program, "f32");
-
-		let vec2u16 = vector_type(program, "vec2u16", &u16_t, 2);
-		let vec4u16 = vector_type(program, "vec4u16", &u16_t, 4);
-		let vec2u32 = vector_type(program, "vec2u", &u32_t, 2);
-		let vec2i32 = vector_type(program, "vec2i", &i32_t, 2);
-		let vec2f16 = vector_type(program, "vec2f16", &f16_t, 2);
-		let vec2f32 = vector_type(program, "vec2f", &f32_t, 2);
-		let vec3f16 = vector_type(program, "vec3f16", &f16_t, 3);
-		let vec3f32 = vector_type(program, "vec3f", &f32_t, 3);
-		let vec3u32 = vector_type(program, "vec3u", &u32_t, 3);
-		let vec4u32 = vector_type(program, "vec4u", &u32_t, 4);
-		let vec4f16 = vector_type(program, "vec4f16", &f16_t, 4);
-		let vec4f32 = vector_type(program, "vec4f", &f32_t, 4);
-		let mat4f32 = vector_type(program, "mat4f", &vec4f32, 4);
-		let mat4x3f32 = vector_type(program, "mat4x3f", &vec3f32, 4);
-
-		let texture_2d = primitive_type(program, "Texture2D");
-		let texture_3d = primitive_type(program, "Texture3D");
-		let texture_cube = primitive_type(program, "TextureCube");
-		let texture_cube_array = primitive_type(program, "TextureCubeArray");
-		let array_texture_2d = primitive_type(program, "ArrayTexture2D");
-		let atomic_u32 = primitive_type(program, "atomicu32");
-		let atomic_i32 = primitive_type(program, "atomici32");
-		let acceleration_structure = primitive_type(program, "AccelerationStructure");
+		let mut types = BuiltinTypes(Vec::with_capacity(32));
+		for name in ["void", "bool", "u8", "u16", "u32", "i32", "f16", "f32"] {
+			types.declare(program, name, Vec::new());
+		}
+		// Vectors and matrices, as the type name, the component type, and the component count.
+		for (name, component, count) in [
+			("vec2u16", "u16", 2),
+			("vec4u16", "u16", 4),
+			("vec2u", "u32", 2),
+			("vec2i", "i32", 2),
+			("vec2f16", "f16", 2),
+			("vec2f", "f32", 2),
+			("vec3f16", "f16", 3),
+			("vec3f", "f32", 3),
+			("vec3u", "u32", 3),
+			("vec4u", "u32", 4),
+			("vec4f16", "f16", 4),
+			("vec4f", "f32", 4),
+			("mat4f", "vec4f", 4),
+			("mat4x3f", "vec3f", 4),
+		] {
+			let component = types.get(component);
+			let fields = ["x", "y", "z", "w"][..count]
+				.iter()
+				.map(|axis| {
+					let axis = program.intern(axis);
+					program.add(Node::member(axis, component))
+				})
+				.collect();
+			types.declare(program, name, fields);
+		}
+		for name in [
+			"Texture2D",
+			"Texture3D",
+			"TextureCube",
+			"TextureCubeArray",
+			"ArrayTexture2D",
+			"atomicu32",
+			"atomici32",
+			"AccelerationStructure",
+		] {
+			types.declare(program, name, Vec::new());
+		}
 		// A hit is a plain struct, so shaders can store its members and rebuild it with its constructor, which takes the
 		// members in `HIT_MEMBERS` order.
 		let hit_members = crate::HIT_MEMBERS
 			.iter()
 			.map(|(name, r#type)| {
-				let r#type = match *r#type {
-					"u32" => u32_t,
-					"f32" => f32_t,
-					"vec2f" => vec2f32,
-					"vec3f" => vec3f32,
-					r#type => unreachable!("`HIT_MEMBERS` lists a `{type}` member, which the root scope doesn't declare"),
-				};
+				let r#type = types.get(r#type);
 				let name = program.intern(name);
 				program.add(Node::member(name, r#type))
 			})
 			.collect();
-		let hit_name = program.intern(crate::HIT_STRUCT);
-		let hit = program.add(Node::r#struct(hit_name, hit_members));
+		types.declare(program, crate::HIT_STRUCT, hit_members);
 
-		let mut builtins = vec![
-			void,
-			bool_t,
-			u8_t,
-			u16_t,
-			u32_t,
-			i32_t,
-			f16_t,
-			f32_t,
-			vec2u16,
-			vec4u16,
-			vec2u32,
-			vec2i32,
-			vec2f16,
-			vec2f32,
-			vec3u32,
-			vec3f16,
-			vec3f32,
-			vec4u32,
-			vec4f16,
-			vec4f32,
-			mat4f32,
-			mat4x3f32,
-			texture_2d,
-			texture_3d,
-			texture_cube,
-			texture_cube_array,
-			array_texture_2d,
-			atomic_u32,
-			atomic_i32,
-			acceleration_structure,
-			hit,
-			// Vertex invocation indices and the fragment primitive index are implicit BESL values. Their placeholder
-			// locations are never exposed as stage attributes; backends and the VM map them to dedicated built-ins.
-			builtin_input(program, crate::PRIMITIVE_INDEX_BUILTIN, u32_t, u8::MAX - 2),
-			builtin_input(program, crate::VERTEX_INDEX_BUILTIN, u32_t, u8::MAX - 1),
-			builtin_input(program, crate::INSTANCE_INDEX_BUILTIN, u32_t, u8::MAX),
-			builtin_intrinsic(
-				program,
-				"sample",
-				vec![("texture_sampler", texture_2d), ("uv", vec2f32)],
-				vec4f32,
-			),
-			builtin_intrinsic(
-				program,
-				"texture_lod",
-				vec![("texture", texture_2d), ("uv", vec2f32)],
-				vec4f32,
-			),
-			builtin_intrinsic(
-				program,
-				"texture_lod",
-				vec![("texture", texture_2d), ("uv", vec2f32), ("lod", f32_t)],
-				vec4f32,
-			),
-			builtin_intrinsic(
-				program,
-				"texture_lod",
-				vec![("texture", texture_3d), ("uv", vec3f32)],
-				vec4f32,
-			),
-			builtin_intrinsic(
-				program,
-				"texture_lod",
-				vec![("texture", texture_cube), ("direction", vec3f32), ("lod", f32_t)],
-				vec4f32,
-			),
-			builtin_intrinsic(
-				program,
-				"texture_cube_array_lod",
-				vec![
-					("texture", texture_cube_array),
-					("direction", vec3f32),
-					("cube", u32_t),
-					("lod", f32_t),
-				],
-				vec4f32,
-			),
-			builtin_intrinsic(
-				program,
-				"downsample_min",
-				vec![("texture", texture_2d), ("uv", vec2f32), ("lod", f32_t)],
-				f32_t,
-			),
-			builtin_intrinsic(
-				program,
-				"downsample_max",
-				vec![("texture", texture_2d), ("uv", vec2f32), ("lod", f32_t)],
-				f32_t,
-			),
-			builtin_intrinsic(
-				program,
-				"downsample_max",
-				vec![
-					("texture", array_texture_2d),
-					("uv", vec2f32),
-					("layer", u32_t),
-					("lod", f32_t),
-				],
-				f32_t,
-			),
-			// `gather` returns the first channel of the four texels around a normalized UV in mip zero, in the order
-			// every platform shares: x and y are the quad's second row, left then right, and z and w its first row,
-			// right then left, with rows ordered by v.
-			builtin_intrinsic(program, "gather", vec![("texture", texture_2d), ("uv", vec2f32)], vec4f32),
-			builtin_intrinsic(
-				program,
-				"gather",
-				vec![("texture", array_texture_2d), ("uv", vec2f32), ("layer", u32_t)],
-				vec4f32,
-			),
-			builtin_intrinsic(program, "fetch", vec![("texture", texture_2d), ("coord", vec2u32)], vec4f32),
-			builtin_intrinsic(
-				program,
-				"fetch",
-				vec![("texture", array_texture_2d), ("coord", vec2u32), ("layer", u32_t)],
-				vec4f32,
-			),
-			builtin_intrinsic(program, "fetch_u32", vec![("texture", texture_2d), ("coord", vec2u32)], u32_t),
-			builtin_intrinsic(program, "cross", vec![("left", vec3f32), ("right", vec3f32)], vec3f32),
-			builtin_intrinsic(program, "find_lsb", vec![("value", u32_t)], u32_t),
-			builtin_intrinsic(program, "atan2", vec![("y", f32_t), ("x", f32_t)], f32_t),
-			builtin_intrinsic(program, "sincos", vec![("value", f32_t)], vec2f32),
-			builtin_intrinsic(program, "round_to_i32", vec![("value", vec2f32)], vec2i32),
-			builtin_intrinsic(program, "subgroup_ballot", vec![("predicate", bool_t)], vec4u32),
-			builtin_intrinsic(program, "subgroup_ballot_any", vec![("mask", vec4u32)], bool_t),
-			builtin_intrinsic(program, "subgroup_ballot_find_lsb", vec![("mask", vec4u32)], u32_t),
-			builtin_intrinsic(program, "subgroup_ballot_count", vec![("mask", vec4u32)], u32_t),
-			builtin_intrinsic(
-				program,
-				"subgroup_ballot_and_not",
-				vec![("mask", vec4u32), ("removed", vec4u32)],
-				vec4u32,
-			),
-			builtin_intrinsic(
-				program,
-				"subgroup_broadcast_u32",
-				vec![("value", u32_t), ("source_lane", u32_t)],
-				u32_t,
-			),
-			builtin_intrinsic(
-				program,
-				"subgroup_broadcast_f32",
-				vec![("value", f32_t), ("source_lane", u32_t)],
-				f32_t,
-			),
-			builtin_intrinsic(
-				program,
-				"subgroup_shuffle_xor_f32",
-				vec![("value", f32_t), ("mask", u32_t)],
-				f32_t,
-			),
-			builtin_intrinsic(program, "workgroup_barrier", vec![], void),
-			builtin_intrinsic(program, "set_task_mesh_output_count", vec![("count", u32_t)], void),
-			builtin_intrinsic(program, "thread_id", vec![], vec2u32),
-			builtin_intrinsic(
-				program,
-				"set_mesh_output_counts",
-				vec![("vertex_count", u32_t), ("primitive_count", u32_t)],
-				void,
-			),
-			builtin_intrinsic(
-				program,
-				"set_mesh_vertex_position",
-				vec![("vertex_index", u32_t), ("position", vec4f32)],
-				void,
-			),
-			builtin_intrinsic(
-				program,
-				"set_mesh_triangle",
-				vec![("primitive_index", u32_t), ("triangle", vec3u32)],
-				void,
-			),
-			builtin_intrinsic(
-				program,
-				"set_mesh_primitive_render_target_array_index",
-				vec![("primitive_index", u32_t), ("array_index", u32_t)],
-				void,
-			),
-			builtin_intrinsic(
-				program,
-				"image_load",
-				vec![("image", texture_2d), ("coord", vec2u32)],
-				vec4f32,
-			),
-			builtin_intrinsic(
-				program,
-				"image_load_u32",
-				vec![("image", texture_2d), ("coord", vec2u32)],
-				u32_t,
-			),
-			builtin_intrinsic(program, "texture_size", vec![("texture", texture_2d)], vec2u32),
-			builtin_intrinsic(program, "texture_size", vec![("texture", array_texture_2d)], vec2u32),
-			builtin_intrinsic(program, "image_size", vec![("image", texture_2d)], vec2u32),
-			builtin_intrinsic(
-				program,
-				"guard_image_bounds",
-				vec![("image", texture_2d), ("coord", vec2u32)],
-				void,
-			),
-			builtin_intrinsic(
-				program,
-				"write",
-				vec![("image", texture_2d), ("coord", vec2u32), ("value", vec4f32)],
-				void,
-			),
-			// A tile stage writes its `vec4f` `output` declarations at a pixel. This comes after the storage-image
-			// form, which a resource argument of unknown type matches first.
-			builtin_intrinsic(
-				program,
-				"write",
-				vec![("output", vec4f32), ("pixel", vec2u32), ("value", vec4f32)],
-				void,
-			),
-			builtin_intrinsic(program, "output_extent", vec![], vec2u32),
-			// Writes one unsigned texel of an `r32ui` storage image, the counterpart of `image_load_u32`.
-			builtin_intrinsic(
-				program,
-				"write_u32",
-				vec![("image", texture_2d), ("coord", vec2u32), ("value", u32_t)],
-				void,
-			),
-			builtin_intrinsic(
-				program,
-				"image_atomic_or",
-				vec![("image", texture_2d), ("coord", vec2u32), ("value", u32_t)],
-				u32_t,
-			),
-			builtin_intrinsic(
-				program,
-				"image_atomic_max",
-				vec![("image", texture_2d), ("coord", vec2u32), ("value", u32_t)],
-				u32_t,
-			),
-		];
+		let mut builtins: Vec<NodeId> = types.0.iter().map(|(_, id)| *id).collect();
+		// Vertex invocation indices and the fragment primitive index are implicit BESL values. Their placeholder
+		// locations are never exposed as stage attributes; backends and the VM map them to dedicated built-ins.
+		for (name, location) in [
+			(crate::PRIMITIVE_INDEX_BUILTIN, u8::MAX - 2),
+			(crate::VERTEX_INDEX_BUILTIN, u8::MAX - 1),
+			(crate::INSTANCE_INDEX_BUILTIN, u8::MAX),
+		] {
+			let name = program.intern(name);
+			builtins.push(program.add(Node::input(name, types.get("u32"), location)));
+		}
+		for signature in INTRINSICS {
+			builtins.push(types.intrinsic(program, signature, &[]));
+		}
 
-		// Families whose overloads differ only in type. Each list keeps its name's overload order, because call
-		// resolution selects the first overload whose parameters match.
-		builtins.extend(converted_overloads(
-			program,
-			"dot",
-			&["left", "right"],
-			[
-				(&vec2f32, &f32_t),
-				(&vec4f32, &f32_t),
-				(&vec3f32, &f32_t),
-				(&vec2f16, &f16_t),
-				(&vec3f16, &f16_t),
-				(&vec4f16, &f16_t),
-			],
-		));
-		builtins.extend(converted_overloads(
-			program,
-			"length",
-			&["value"],
-			[
-				(&vec4f32, &f32_t),
-				(&vec3f32, &f32_t),
-				(&vec2f32, &f32_t),
-				(&vec2f16, &f16_t),
-				(&vec3f16, &f16_t),
-				(&vec4f16, &f16_t),
-			],
-		));
-		builtins.extend(same_type_overloads(
-			program,
-			"normalize",
-			&["value"],
-			[&vec4f32, &vec3f32, &vec2f32, &vec2f16, &vec3f16, &vec4f16],
-		));
+		// Families whose overloads differ only in type: `T` stands for each operand type of the family's list and `R`
+		// for the result type paired with it. Each list keeps its name's overload order, because call resolution
+		// selects the first overload whose parameters match.
+		let same = |types: &[&'static str]| types.iter().map(|r#type| (*r#type, *r#type)).collect::<Vec<_>>();
+		// Vector reductions return the vector's scalar component type.
+		let reduced =
+			|types: [&'static str; 6]| types.map(|r#type| (r#type, if r#type.ends_with("16") { "f16" } else { "f32" }));
+		let float_vectors = ["vec4f", "vec3f", "vec2f", "vec2f16", "vec3f16", "vec4f16"];
 		// The float types every component-wise intrinsic accepts. Scalars come first so that a call whose arguments
 		// are untyped literals, or a typed scalar and a literal, resolves to a scalar overload.
-		let float_types = [&f32_t, &f16_t, &vec2f32, &vec3f32, &vec4f32, &vec2f16, &vec3f16, &vec4f16];
+		let float_types = same(&["f32", "f16", "vec2f", "vec3f", "vec4f", "vec2f16", "vec3f16", "vec4f16"]);
 		// The ordering intrinsics also accept integers, for index and texel arithmetic.
-		let ordered_types = float_types
-			.into_iter()
-			.chain([&i32_t, &u32_t, &vec2i32, &vec2u32, &vec3u32, &vec4u32]);
-		builtins.extend(same_type_overloads(program, "max", &["left", "right"], ordered_types.clone()));
-		builtins.extend(same_type_overloads(program, "min", &["left", "right"], ordered_types.clone()));
-		builtins.extend(same_type_overloads(
-			program,
-			"clamp",
-			&["value", "minimum", "maximum"],
-			ordered_types,
-		));
-		builtins.extend(same_type_overloads(program, "pow", &["value", "exponent"], float_types));
-		builtins.extend(same_type_overloads(program, "step", &["edge", "value"], float_types));
-		builtins.extend(same_type_overloads(
-			program,
-			"smoothstep",
-			&["edge0", "edge1", "value"],
-			float_types,
-		));
-		builtins.extend(same_type_overloads(
-			program,
-			"fma",
-			&["multiplicand", "multiplier", "addend"],
-			float_types,
-		));
-		for name in [
-			"abs",
-			"sign",
-			"sqrt",
-			"inversesqrt",
-			"exp",
-			"exp2",
-			"log2",
-			"sin",
-			"cos",
-			"tan",
-			"asin",
-			"radians",
-			"floor",
-			"ceil",
-			"round",
-			"fract",
-			"fwidth",
-		] {
-			builtins.extend(same_type_overloads(program, name, &["value"], float_types));
-		}
-		builtins.extend(converted_overloads(
-			program,
-			"distance",
-			&["left", "right"],
+		let mut ordered_types = float_types.clone();
+		ordered_types.extend(same(&["i32", "u32", "vec2i", "vec2u", "vec3u", "vec4u"]));
+		let mut families = vec![
+			(
+				"dot(left: T, right: T) -> R",
+				reduced(["vec2f", "vec4f", "vec3f", "vec2f16", "vec3f16", "vec4f16"]).to_vec(),
+			),
+			("length(value: T) -> R", reduced(float_vectors).to_vec()),
+			("normalize(value: T) -> T", same(&float_vectors)),
+			("max(left: T, right: T) -> T", ordered_types.clone()),
+			("min(left: T, right: T) -> T", ordered_types.clone()),
+			("clamp(value: T, minimum: T, maximum: T) -> T", ordered_types),
+			("pow(value: T, exponent: T) -> T", float_types.clone()),
+			("step(edge: T, value: T) -> T", float_types.clone()),
+			("smoothstep(edge0: T, edge1: T, value: T) -> T", float_types.clone()),
+			("fma(multiplicand: T, multiplier: T, addend: T) -> T", float_types.clone()),
+		];
+		families.extend(UNARY_FLOAT_INTRINSICS.map(|signature| (signature, float_types.clone())));
+		families.extend([
+			(
+				"distance(left: T, right: T) -> R",
+				reduced(["vec2f", "vec3f", "vec4f", "vec2f16", "vec3f16", "vec4f16"]).to_vec(),
+			),
+			("reflect(incident: T, normal: T) -> T", same(&["vec2f", "vec3f", "vec4f"])),
+		]);
+		families.extend(
 			[
-				(&vec2f32, &f32_t),
-				(&vec3f32, &f32_t),
-				(&vec4f32, &f32_t),
-				(&vec2f16, &f16_t),
-				(&vec3f16, &f16_t),
-				(&vec4f16, &f16_t),
-			],
-		));
-		builtins.extend(same_type_overloads(
-			program,
-			"reflect",
-			&["incident", "normal"],
-			[&vec2f32, &vec3f32, &vec4f32],
-		));
-		for predicate in ["is_nan", "is_infinite", "is_finite", "is_normal"] {
-			builtins.extend(converted_overloads(
-				program,
-				predicate,
-				&["value"],
-				[(&f16_t, &bool_t), (&f32_t, &bool_t)],
-			));
-		}
+				"is_nan(value: T) -> bool",
+				"is_infinite(value: T) -> bool",
+				"is_finite(value: T) -> bool",
+				"is_normal(value: T) -> bool",
+			]
+			.map(|signature| (signature, same(&["f16", "f32"]))),
+		);
 		// `mix` blends two same-typed values by one scalar factor.
-		for value in [&f32_t, &vec2f32, &vec3f32, &vec4f32] {
-			builtins.push(builtin_intrinsic(
-				program,
-				"mix",
-				vec![("left", *value), ("right", *value), ("factor", f32_t)],
-				*value,
-			));
-		}
-		// Conversions take one `value` of the source type and return the target type.
-		let conversions: [(&str, &[&NodeId], &NodeId); 10] = [
-			("f16", &[&f32_t, &f16_t, &u32_t, &i32_t], &f16_t),
-			("u16", &[&u32_t], &u16_t),
-			("u8", &[&u32_t], &u8_t),
-			("f32", &[&f16_t, &u32_t, &i32_t], &f32_t),
-			("vec2f16", &[&vec2f32, &vec2f16], &vec2f16),
-			("vec3f16", &[&vec3f32, &vec3f16], &vec3f16),
-			("vec4f16", &[&vec4f32, &vec4f16], &vec4f16),
-			("vec2f", &[&vec2f16], &vec2f32),
-			("vec3f", &[&vec3f16], &vec3f32),
-			("vec4f", &[&vec4f16], &vec4f32),
-		];
-		for (name, sources, target) in conversions {
-			builtins.extend(converted_overloads(
-				program,
-				name,
-				&["value"],
-				sources.iter().map(|source| (*source, target)),
-			));
-		}
-		builtins.extend(converted_overloads(
-			program,
-			"u32",
-			&["value"],
-			[&u32_t, &u8_t, &u16_t, &i32_t, &f16_t, &f32_t].map(|source| (source, &u32_t)),
+		families.push((
+			"mix(left: T, right: T, factor: f32) -> T",
+			same(&["f32", "vec2f", "vec3f", "vec4f"]),
 		));
-		// Invocation builtins take no arguments and read the invocation's coordinates.
-		for name in [
-			"thread_idx",
-			"subgroup_lane_index",
-			"threadgroup_position",
-			"thread_position",
-			"thread_layer",
-		] {
-			builtins.push(builtin_intrinsic(program, name, vec![], u32_t));
+		// Conversions take one `value` of the source type and return the target type.
+		families.extend([
+			("f16(value: T) -> f16", same(&["f32", "f16", "u32", "i32"])),
+			("u16(value: T) -> u16", same(&["u32"])),
+			("u8(value: T) -> u8", same(&["u32"])),
+			("f32(value: T) -> f32", same(&["f16", "u32", "i32"])),
+			("vec2f16(value: T) -> vec2f16", same(&["vec2f", "vec2f16"])),
+			("vec3f16(value: T) -> vec3f16", same(&["vec3f", "vec3f16"])),
+			("vec4f16(value: T) -> vec4f16", same(&["vec4f", "vec4f16"])),
+			("vec2f(value: T) -> vec2f", same(&["vec2f16"])),
+			("vec3f(value: T) -> vec3f", same(&["vec3f16"])),
+			("vec4f(value: T) -> vec4f", same(&["vec4f16"])),
+			("u32(value: T) -> u32", same(&["u32", "u8", "u16", "i32", "f16", "f32"])),
+		]);
+		for (signature, overloads) in families {
+			for (operand, result) in overloads {
+				builtins.push(types.intrinsic(program, signature, &[("T", operand), ("R", result)]));
+			}
 		}
-		// Ray queries share one signature and differ in what they report. `invoke` isn't registered here: its payload
-		// type comes from the program, so the lexer instantiates it per program.
-		for (name, r#return) in [("intersect", hit), ("trace_occlusion", bool_t)] {
-			builtins.push(builtin_intrinsic(
-				program,
-				name,
-				vec![
-					("scene", acceleration_structure),
-					("mask", u32_t),
-					("origin", vec3f32),
-					("direction", vec3f32),
-					("t_min", f32_t),
-					("t_max", f32_t),
-				],
-				r#return,
-			));
+		for signature in INVOCATION_INTRINSICS {
+			builtins.push(types.intrinsic(program, signature, &[]));
 		}
-		// Ray tracing invocation builtins read the launch point of a ray generation shader or the hit a closest-hit
-		// shader shades.
-		let ray_tracing_builtins = [
-			("launch_index", &vec3u32),
-			("launch_size", &vec3u32),
-			("hit_distance", &f32_t),
-			("hit_custom_index", &u32_t),
-			("hit_geometry_index", &u32_t),
-			("hit_primitive_index", &u32_t),
-			("hit_barycentrics", &vec2f32),
-			("ray_origin", &vec3f32),
-			("ray_direction", &vec3f32),
-		];
-		for (name, r#return) in ray_tracing_builtins {
-			builtins.push(builtin_intrinsic(program, name, vec![], *r#return));
+		// The relaxed scalar atomic surface, for the unsigned and the signed 32-bit type: `A` is the atomic type and
+		// `T` its scalar type.
+		for (atomic, scalar) in [("atomicu32", "u32"), ("atomici32", "i32")] {
+			for signature in ATOMIC_INTRINSICS {
+				builtins.push(types.intrinsic(program, signature, &[("A", atomic), ("T", scalar)]));
+			}
 		}
-		builtins.extend(atomic_intrinsics(program, atomic_u32, u32_t, void));
-		builtins.extend(atomic_intrinsics(program, atomic_i32, i32_t, void));
 
 		let builtin_count = builtins.len();
 		let root_name = program.intern("root");
@@ -1109,6 +780,165 @@ impl Program<'static> {
 		owned
 	}
 }
+
+/// The `BuiltinTypes` struct names the built-in types declared so far, so the intrinsic tables can name the types they
+/// take and return.
+struct BuiltinTypes(Vec<(&'static str, NodeId)>);
+
+impl BuiltinTypes {
+	/// Declares the built-in struct `name` with `fields`, which is empty for a primitive or resource type.
+	fn declare(&mut self, program: &mut Program, name: &'static str, fields: Vec<NodeId>) {
+		let interned = program.intern(name);
+		self.0.push((name, program.add(Node::r#struct(interned, fields))));
+	}
+
+	fn get(&self, name: &str) -> NodeId {
+		self.0
+			.iter()
+			.find(|(declared, _)| *declared == name)
+			.map(|(_, id)| *id)
+			.unwrap_or_else(|| panic!("Built-in type `{name}` isn't declared. The most likely cause is an intrinsic table entry that names a type declared after it, or a misspelled type. Declare the type first."))
+	}
+
+	/// Declares the intrinsic `signature` describes, written `name(parameter: type, ...) -> type`. A type named like a
+	/// key of `substitutions` stands for that key's type.
+	fn intrinsic(&self, program: &mut Program, signature: &str, substitutions: &[(&str, &str)]) -> NodeId {
+		let r#type = |name: &str| {
+			let name = substitutions
+				.iter()
+				.find(|(key, _)| *key == name)
+				.map_or(name, |(_, r#type)| r#type);
+			self.get(name)
+		};
+		let malformed =
+			|| format!("Intrinsic signature `{signature}` is malformed. Write it as `name(parameter: type, ...) -> type`.");
+		let (name, rest) = signature.split_once('(').unwrap_or_else(|| panic!("{}", malformed()));
+		let (parameters, result) = rest.split_once(") -> ").unwrap_or_else(|| panic!("{}", malformed()));
+		let parameters = parameters
+			.split(", ")
+			.filter(|parameter| !parameter.is_empty())
+			.map(|parameter| {
+				let (name, type_name) = parameter.split_once(": ").unwrap_or_else(|| panic!("{}", malformed()));
+				(name, r#type(type_name))
+			})
+			.collect();
+		builtin_intrinsic(program, name, parameters, r#type(result))
+	}
+}
+
+/// The built-in intrinsics with one signature each, in overload order, as [`BuiltinTypes::intrinsic`] reads them.
+const INTRINSICS: [&str; 46] = [
+	"sample(texture_sampler: Texture2D, uv: vec2f) -> vec4f",
+	"texture_lod(texture: Texture2D, uv: vec2f) -> vec4f",
+	"texture_lod(texture: Texture2D, uv: vec2f, lod: f32) -> vec4f",
+	"texture_lod(texture: Texture3D, uv: vec3f) -> vec4f",
+	"texture_lod(texture: TextureCube, direction: vec3f, lod: f32) -> vec4f",
+	"texture_cube_array_lod(texture: TextureCubeArray, direction: vec3f, cube: u32, lod: f32) -> vec4f",
+	"downsample_min(texture: Texture2D, uv: vec2f, lod: f32) -> f32",
+	"downsample_max(texture: Texture2D, uv: vec2f, lod: f32) -> f32",
+	"downsample_max(texture: ArrayTexture2D, uv: vec2f, layer: u32, lod: f32) -> f32",
+	// `gather` returns the first channel of the four texels around a normalized UV in mip zero, in the order every
+	// platform shares: x and y are the quad's second row, left then right, and z and w its first row, right then left,
+	// with rows ordered by v.
+	"gather(texture: Texture2D, uv: vec2f) -> vec4f",
+	"gather(texture: ArrayTexture2D, uv: vec2f, layer: u32) -> vec4f",
+	"fetch(texture: Texture2D, coord: vec2u) -> vec4f",
+	"fetch(texture: ArrayTexture2D, coord: vec2u, layer: u32) -> vec4f",
+	"fetch_u32(texture: Texture2D, coord: vec2u) -> u32",
+	"cross(left: vec3f, right: vec3f) -> vec3f",
+	"find_lsb(value: u32) -> u32",
+	"atan2(y: f32, x: f32) -> f32",
+	"sincos(value: f32) -> vec2f",
+	"round_to_i32(value: vec2f) -> vec2i",
+	"subgroup_ballot(predicate: bool) -> vec4u",
+	"subgroup_ballot_any(mask: vec4u) -> bool",
+	"subgroup_ballot_find_lsb(mask: vec4u) -> u32",
+	"subgroup_ballot_count(mask: vec4u) -> u32",
+	"subgroup_ballot_and_not(mask: vec4u, removed: vec4u) -> vec4u",
+	"subgroup_broadcast_u32(value: u32, source_lane: u32) -> u32",
+	"subgroup_broadcast_f32(value: f32, source_lane: u32) -> f32",
+	"subgroup_shuffle_xor_f32(value: f32, mask: u32) -> f32",
+	"workgroup_barrier() -> void",
+	"set_task_mesh_output_count(count: u32) -> void",
+	"thread_id() -> vec2u",
+	"set_mesh_output_counts(vertex_count: u32, primitive_count: u32) -> void",
+	"set_mesh_vertex_position(vertex_index: u32, position: vec4f) -> void",
+	"set_mesh_triangle(primitive_index: u32, triangle: vec3u) -> void",
+	"set_mesh_primitive_render_target_array_index(primitive_index: u32, array_index: u32) -> void",
+	"image_load(image: Texture2D, coord: vec2u) -> vec4f",
+	"image_load_u32(image: Texture2D, coord: vec2u) -> u32",
+	"texture_size(texture: Texture2D) -> vec2u",
+	"texture_size(texture: ArrayTexture2D) -> vec2u",
+	"image_size(image: Texture2D) -> vec2u",
+	"guard_image_bounds(image: Texture2D, coord: vec2u) -> void",
+	"write(image: Texture2D, coord: vec2u, value: vec4f) -> void",
+	// A tile stage writes its `vec4f` `output` declarations at a pixel. This comes after the storage-image form, which a
+	// resource argument of unknown type matches first.
+	"write(output: vec4f, pixel: vec2u, value: vec4f) -> void",
+	"output_extent() -> vec2u",
+	// Writes one unsigned texel of an `r32ui` storage image, the counterpart of `image_load_u32`.
+	"write_u32(image: Texture2D, coord: vec2u, value: u32) -> void",
+	"image_atomic_or(image: Texture2D, coord: vec2u, value: u32) -> u32",
+	"image_atomic_max(image: Texture2D, coord: vec2u, value: u32) -> u32",
+];
+
+/// The component-wise float intrinsics that take one value and return its type, declared for every float type.
+const UNARY_FLOAT_INTRINSICS: [&str; 17] = [
+	"abs(value: T) -> T",
+	"sign(value: T) -> T",
+	"sqrt(value: T) -> T",
+	"inversesqrt(value: T) -> T",
+	"exp(value: T) -> T",
+	"exp2(value: T) -> T",
+	"log2(value: T) -> T",
+	"sin(value: T) -> T",
+	"cos(value: T) -> T",
+	"tan(value: T) -> T",
+	"asin(value: T) -> T",
+	"radians(value: T) -> T",
+	"floor(value: T) -> T",
+	"ceil(value: T) -> T",
+	"round(value: T) -> T",
+	"fract(value: T) -> T",
+	"fwidth(value: T) -> T",
+];
+
+/// The intrinsics that read the invocation: its coordinates, and for ray tracing stages the launch point or the hit
+/// being shaded. The ray queries share one signature and differ in what they report. `invoke` isn't here: its payload
+/// type comes from the program, so the lexer instantiates it per program.
+const INVOCATION_INTRINSICS: [&str; 16] = [
+	"thread_idx() -> u32",
+	"subgroup_lane_index() -> u32",
+	"threadgroup_position() -> u32",
+	"thread_position() -> u32",
+	"thread_layer() -> u32",
+	"intersect(scene: AccelerationStructure, mask: u32, origin: vec3f, direction: vec3f, t_min: f32, t_max: f32) -> Hit",
+	"trace_occlusion(scene: AccelerationStructure, mask: u32, origin: vec3f, direction: vec3f, t_min: f32, t_max: f32) -> bool",
+	"launch_index() -> vec3u",
+	"launch_size() -> vec3u",
+	"hit_distance() -> f32",
+	"hit_custom_index() -> u32",
+	"hit_geometry_index() -> u32",
+	"hit_primitive_index() -> u32",
+	"hit_barycentrics() -> vec2f",
+	"ray_origin() -> vec3f",
+	"ray_direction() -> vec3f",
+];
+
+/// The buffer and workgroup atomics, where `A` is an atomic type and `T` its scalar type.
+const ATOMIC_INTRINSICS: [&str; 11] = [
+	"atomic_load(value: A) -> T",
+	"atomic_store(value: A, stored: T) -> void",
+	"atomic_exchange(value: A, stored: T) -> T",
+	"atomic_compare_exchange(value: A, expected: T, desired: T) -> T",
+	"atomic_add(value: A, increment: T) -> T",
+	"atomic_sub(value: A, decrement: T) -> T",
+	"atomic_min(value: A, candidate: T) -> T",
+	"atomic_max(value: A, candidate: T) -> T",
+	"atomic_and(value: A, mask: T) -> T",
+	"atomic_or(value: A, mask: T) -> T",
+	"atomic_xor(value: A, mask: T) -> T",
+];
 
 impl Node {
 	/// Creates a `use` declaration that brings `target` in by `name`, or, with no `name`, every declaration of the
@@ -2248,86 +2078,5 @@ pub(super) fn builtin_intrinsic(
 	program.add(Node::intrinsic(name, parameters, r#return))
 }
 
-/// Declares the implicit stage input `name` of type `format` at the placeholder `location`.
-fn builtin_input(program: &mut Program, name: &str, format: NodeId, location: u8) -> NodeId {
-	let name = program.intern(name);
-	program.add(Node::input(name, format, location))
-}
-
-/// Builds the relaxed scalar atomic surface for one signed or unsigned 32-bit type.
-fn atomic_intrinsics(program: &mut Program, atomic: NodeId, scalar: NodeId, void: NodeId) -> Vec<NodeId> {
-	fn binary(program: &mut Program, name: &str, operand_name: &str, atomic: NodeId, scalar: NodeId) -> NodeId {
-		builtin_intrinsic(program, name, vec![("value", atomic), (operand_name, scalar)], scalar)
-	}
-
-	vec![
-		builtin_intrinsic(program, "atomic_load", vec![("value", atomic)], scalar),
-		builtin_intrinsic(program, "atomic_store", vec![("value", atomic), ("stored", scalar)], void),
-		binary(program, "atomic_exchange", "stored", atomic, scalar),
-		builtin_intrinsic(
-			program,
-			"atomic_compare_exchange",
-			vec![("value", atomic), ("expected", scalar), ("desired", scalar)],
-			scalar,
-		),
-		binary(program, "atomic_add", "increment", atomic, scalar),
-		binary(program, "atomic_sub", "decrement", atomic, scalar),
-		binary(program, "atomic_min", "candidate", atomic, scalar),
-		binary(program, "atomic_max", "candidate", atomic, scalar),
-		binary(program, "atomic_and", "mask", atomic, scalar),
-		binary(program, "atomic_or", "mask", atomic, scalar),
-		binary(program, "atomic_xor", "mask", atomic, scalar),
-	]
-}
-
-/// Declares one `name` overload per `(operand, result)` signature, in order. Every parameter in `parameters` takes the
-/// operand type. Keep each name's overloads in their intended order, because call resolution picks the first match.
-fn converted_overloads<'a>(
-	program: &mut Program,
-	name: &str,
-	parameters: &[&str],
-	signatures: impl IntoIterator<Item = (&'a NodeId, &'a NodeId)>,
-) -> Vec<NodeId> {
-	signatures
-		.into_iter()
-		.map(|(operand, result)| {
-			builtin_intrinsic(
-				program,
-				name,
-				parameters.iter().map(|parameter| (*parameter, *operand)).collect(),
-				*result,
-			)
-		})
-		.collect()
-}
-
-/// Declares one `name` overload per type in `types`, where every parameter and the result share that type.
-fn same_type_overloads<'a>(
-	program: &mut Program,
-	name: &str,
-	parameters: &[&str],
-	types: impl IntoIterator<Item = &'a NodeId>,
-) -> Vec<NodeId> {
-	converted_overloads(program, name, parameters, types.into_iter().map(|r#type| (r#type, r#type)))
-}
-
 /// Built-in scalar types with a byte representation in storage buffers. `bool`, `void`, and resource handles have none.
 pub(crate) const STORABLE_SCALAR_TYPES: [&str; 6] = ["u8", "u16", "u32", "i32", "f16", "f32"];
-
-fn primitive_type(program: &mut Program, name: &str) -> NodeId {
-	let name = program.intern(name);
-	program.add(Node::r#struct(name, Vec::new()))
-}
-
-/// Builds a vector or matrix type whose first `count` fields of `x`, `y`, `z`, and `w` share the `component` type.
-fn vector_type(program: &mut Program, name: &str, component: &NodeId, count: usize) -> NodeId {
-	let fields = ["x", "y", "z", "w"][..count]
-		.iter()
-		.map(|axis| {
-			let axis = program.intern(axis);
-			program.add(Node::member(axis, *component))
-		})
-		.collect();
-	let name = program.intern(name);
-	program.add(Node::r#struct(name, fields))
-}

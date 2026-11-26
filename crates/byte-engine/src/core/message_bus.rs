@@ -2037,26 +2037,7 @@ mod tests {
 	}
 
 	#[test]
-	fn listeners_created_later_in_a_tick_receive_its_earlier_messages() {
-		let bus = ticking_bus(4);
-		let channel = bus.new_scope("application").channel::<u64>();
-		channel.send(1);
-		channel.send(2);
-
-		let mut same_tick = channel.listener();
-		assert_eq!(same_tick.to_vec(), [1, 2]);
-
-		bus.begin_tick();
-		let mut next_tick = channel.listener();
-		assert_eq!(next_tick.read(), None);
-
-		channel.send(3);
-		assert_eq!(same_tick.to_vec(), [3]);
-		assert_eq!(next_tick.to_vec(), [3]);
-	}
-
-	#[test]
-	fn tick_replay_spans_every_chunk_the_tick_filled() {
+	fn a_late_listener_replays_its_tick_across_every_chunk_only_on_a_ticking_bus() {
 		let bus = ticking_bus(8);
 		let channel = bus.new_scope("application").channel::<u64>();
 		let count = 3 * u64_slots_per_chunk() as u64 + 1;
@@ -2064,20 +2045,21 @@ mod tests {
 			channel.send(value);
 		}
 
-		let mut late = channel.listener();
+		let mut same_tick = channel.listener();
+		assert_eq!(same_tick.to_vec(), (0..count).collect::<Vec<_>>());
 
-		assert_eq!(late.to_vec(), (0..count).collect::<Vec<_>>());
-	}
+		bus.begin_tick();
+		let mut next_tick = channel.listener();
+		assert_eq!(next_tick.read(), None);
+		channel.send(count);
+		assert_eq!(same_tick.to_vec(), [count]);
+		assert_eq!(next_tick.to_vec(), [count]);
 
-	#[test]
-	fn a_bus_without_ticks_keeps_listeners_future_only() {
-		let bus = test_bus(2);
-		let channel = bus.new_scope("application").channel::<u64>();
-		channel.send(1);
-
-		let mut late = channel.listener();
-		channel.send(2);
-
+		// Without ticks, a listener sees only what's sent after it.
+		let tickless = test_bus(2).new_scope("application").channel::<u64>();
+		tickless.send(1);
+		let mut late = tickless.listener();
+		tickless.send(2);
 		assert_eq!(late.to_vec(), [2]);
 	}
 

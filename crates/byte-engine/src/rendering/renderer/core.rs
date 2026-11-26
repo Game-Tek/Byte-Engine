@@ -975,7 +975,7 @@ impl Renderer {
 			return;
 		};
 		let (sender, receiver) = std::sync::mpsc::channel();
-		let spawned = std::thread::Builder::new()
+		std::thread::Builder::new()
 			.name("Fusion Catalog".to_string())
 			.spawn(move || {
 				let runtime = compio::runtime::Runtime::new().expect(
@@ -983,16 +983,9 @@ impl Renderer {
 				);
 				// The renderer may have closed before the catalog was read.
 				let _ = sender.send(runtime.block_on(load_fusions(&resources)));
-			});
-		self.fusions = match spawned {
-			Ok(_) => FusionCatalog::Loading(receiver),
-			Err(error) => {
-				log::error!(
-					"Failed to start reading the fusion catalog: {error}. The most likely cause is that the system ran out of threads. Every pixel step records on its own."
-				);
-				FusionCatalog::Planned(self.plan(&[]))
-			}
-		};
+			})
+			.expect("Failed to start reading the fusion catalog. The most likely cause is that the process ran out of threads. Free some threads, or raise the process's thread limit.");
+		self.fusions = FusionCatalog::Loading(receiver);
 	}
 
 	/// Reports whether the fusion catalog is read and the passes are planned, adopting the catalog when it arrived.

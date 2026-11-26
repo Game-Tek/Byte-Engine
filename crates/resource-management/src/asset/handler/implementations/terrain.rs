@@ -193,8 +193,7 @@ impl NodeMeshes<'_> {
 			},
 			lightmap_uvs: None,
 		};
-		let mut session = MeshProcessorSession::new(node_vertex_layout(), None, Vec::new(), settings)
-			.map_err(|error| format!("Terrain node '{id}' couldn't start mesh processing. {error}"))?;
+		let mut session = MeshProcessorSession::new(node_vertex_layout(), None, Vec::new(), settings);
 		for primitive in geometry.primitives() {
 			session.push_primitive(primitive).map_err(|error| {
 				format!(

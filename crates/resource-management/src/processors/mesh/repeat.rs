@@ -320,7 +320,7 @@ mod tests {
 		let layout = [VertexSemantics::Position, VertexSemantics::Normal, VertexSemantics::Tangent]
 			.map(VertexComponent::canonical)
 			.to_vec();
-		let mut session = MeshProcessorSession::new(layout, None, Vec::new(), MeshSettings::default()).unwrap();
+		let mut session = MeshProcessorSession::new(layout, None, Vec::new(), MeshSettings::default());
 		push(&mut session);
 		let variant = VariantModel {
 			material: ReferenceModel::new_serialized("quad.material", 0, 0, Vec::new(), None),

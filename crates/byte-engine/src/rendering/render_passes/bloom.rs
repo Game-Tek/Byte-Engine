@@ -643,10 +643,12 @@ mod tests {
 			.collect()
 	}
 
-	/// Verifies that the prefilter holds a lone bright texel under one half whatever its brightness, with or without
-	/// pixel weights, because each group of blocks holds it in one block only.
+	/// Verifies that the prefilter, with or without pixel weights, holds a lone bright texel under one half whatever its
+	/// brightness, because each group of blocks holds it in one block only, keeps a uniform field's light, and holds an
+	/// infinite or NaN texel to a finite glow.
 	#[test]
-	fn bloom_extract_besl_vm_holds_back_a_lone_firefly_in_either_mode() {
+	fn bloom_extract_besl_vm_holds_back_fireflies_and_keeps_light() {
+		let uniform = vec![[0.25, 0.5, 0.75, 1.0]; 32 * 32];
 		for pixel_weights in [true, false] {
 			for color in [[1024.0, 1024.0, 1024.0], [0.0, 0.0, 65504.0]] {
 				let result = extract_image(32, &lone_texel_scene(32, 0.0, [17, 14], color), pixel_weights);
@@ -658,15 +660,6 @@ mod tests {
 					);
 				}
 			}
-		}
-	}
-
-	/// Verifies that the prefilter keeps a uniform field's light and holds an infinite or NaN texel to a finite glow,
-	/// with or without pixel weights.
-	#[test]
-	fn bloom_extract_besl_vm_keeps_light_and_survives_non_finite_input() {
-		let uniform = vec![[0.25, 0.5, 0.75, 1.0]; 32 * 32];
-		for pixel_weights in [true, false] {
 			assert_rgba_close(
 				rgba(&extract_image(32, &uniform, pixel_weights), [5, 9]),
 				[0.25, 0.5, 0.75, 1.0],

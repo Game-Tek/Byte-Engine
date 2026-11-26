@@ -1304,17 +1304,13 @@ impl Renderer {
 	/// Makes the window created with `handle` show `pointer` while the pointer is over it. See
 	/// [`ghi::window::App::set_pointer`].
 	pub fn set_window_pointer(&mut self, handle: Handle, pointer: window::Pointer) {
-		let open = self.sink_of(handle).and_then(|sink_id| match &self.sinks[sink_id] {
-			Some(SinkTarget::Window { window, .. }) => Some(window),
-			_ => None,
-		});
-		let (Some(window), Some(app)) = (open, &mut self.app) else {
+		let (Some(window), Some(app)) = (self.window_id(handle), &mut self.app) else {
 			log::warn!(
 				"The window's pointer shape was not changed. The most likely cause is a handle that names no open window, or a window the renderer hasn't opened yet. Send the change after the tick that created the window, with the handle its creation returned."
 			);
 			return;
 		};
-		app.set_pointer(*window, pointer);
+		app.set_pointer(window, pointer);
 	}
 
 	/// Makes the window created with `handle` show `camera` from the next frame on, keeping the passes its sink built.
@@ -2079,13 +2075,8 @@ impl Renderer {
 	///
 	/// A handle that names no open render image is logged and left out.
 	pub fn set_render_image_extent(&mut self, handle: Handle, extent: Extent) {
-		let Some(sink_id) = self.sink_of(handle) else {
-			log::warn!(
-				"The render image was not resized. The most likely cause is a handle that names no open render image, or one the renderer hasn't opened yet. Send the change after the renderer answered with `RenderImageReady`."
-			);
-			return;
-		};
-		let Some(SinkTarget::Image { extent: current, .. }) = &mut self.sinks[sink_id] else {
+		let sink_id = self.sink_of(handle);
+		let Some(SinkTarget::Image { extent: current, .. }) = sink_id.and_then(|sink_id| self.sinks[sink_id].as_mut()) else {
 			log::warn!(
 				"The render image was not resized. The most likely cause is a handle that names no open render image, or one the renderer hasn't opened yet. Send the change after the renderer answered with `RenderImageReady`."
 			);
@@ -2093,7 +2084,7 @@ impl Renderer {
 		};
 		*current = extent;
 		// A frame this tick already decided renders at the new extent too.
-		if let Some(SinkFrame::Image(decided, _)) = self.acquisitions.1.get_mut(sink_id) {
+		if let Some(SinkFrame::Image(decided, _)) = sink_id.and_then(|sink_id| self.acquisitions.1.get_mut(sink_id)) {
 			*decided = extent;
 		}
 		self.redraw_requested = true;

@@ -1,28 +1,13 @@
 use super::super::*;
 
 impl Device {
-	pub(crate) fn dispatch_compute_native(
-		&mut self,
-		command_buffer_handle: CommandBufferHandle,
-		pipeline_handle: Option<PipelineHandle>,
-		dispatch: DispatchExtent,
-	) {
-		let Some(pipeline) = pipeline_handle.and_then(|pipeline_handle| self.pipelines.get(pipeline_handle.index() as usize))
-		else {
-			return;
-		};
-		if !matches!(pipeline.kind, PipelineKind::Compute) {
-			return;
-		}
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
-			return;
-		};
+	pub(crate) fn dispatch_compute_native(&mut self, command_buffer_handle: CommandBufferHandle, dispatch: DispatchExtent) {
+		let command_list = self.command_list(command_buffer_handle);
 		let extent = dispatch.get_extent();
 		unsafe {
 			command_list.Dispatch(extent.width(), extent.height(), extent.depth());
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.native_counters.compute_dispatch_encode_count += 1;
 	}
 
 	/// Encodes a native DX12 indirect compute dispatch command.
@@ -33,44 +18,35 @@ impl Device {
 		entry_index: usize,
 		sequence_index: u8,
 	) {
-		if self.execute_indirect_native(
+		self.execute_indirect_native(
 			command_buffer_handle,
 			base_buffer_handle,
 			sequence_index,
 			D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH,
-			|| crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index),
-		) {
-			self.native_counters.indirect_dispatch_encode_count += 1;
-		}
+			crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index),
+		);
 	}
 
-	/// Encodes one `ExecuteIndirect` of the buffer record that `entry` returns, and returns whether it recorded work.
-	///
-	/// `entry` runs after the command list and buffer lookups, so a command without either records nothing and checks
-	/// nothing. Each argument type caches its own command signature, whose stride is one record.
+	/// Encodes one `ExecuteIndirect` of the `entry` byte range of a GPU buffer. Each argument type caches its own
+	/// command signature, whose stride is one record.
 	pub(crate) fn execute_indirect_native(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
 		base_buffer_handle: BaseBufferHandle,
 		sequence_index: u8,
 		argument_type: D3D12_INDIRECT_ARGUMENT_TYPE,
-		entry: impl FnOnce() -> std::ops::Range<usize>,
-	) -> bool {
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return false;
-		};
-		let Some(buffer_size) = self.buffer(base_buffer_handle).map(|buffer| buffer.size) else {
-			return false;
-		};
-		let entry = entry();
+		entry: std::ops::Range<usize>,
+	) {
+		let command_list = self.command_list(command_buffer_handle);
+		let buffer_size = self.buffer(base_buffer_handle).size;
 		assert!(
 			entry.end <= buffer_size,
 			"DX12 indirect entry exceeds the buffer. The most likely cause is that the typed buffer metadata does not match its native allocation. entry_end={}, buffer_size={buffer_size}",
 			entry.end,
 		);
-		let Some(resource) = self.buffer_resource_for_sequence(base_buffer_handle, sequence_index) else {
-			return false;
-		};
+		let resource = self.buffer_resource_for_sequence(base_buffer_handle, sequence_index).expect(
+			"Missing DX12 indirect argument buffer. The most likely cause is that the buffer is empty. Build indirect buffers with at least one record.",
+		);
 		let command_signature = if argument_type == D3D12_INDIRECT_ARGUMENT_TYPE_DRAW {
 			&mut self.indirect_draw_signature
 		} else if argument_type == D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH {
@@ -89,14 +65,11 @@ impl Device {
 				pArgumentDescs: &argument,
 				NodeMask: 0,
 			};
-			// A failed creation leaves the cache empty, so the next indirect command tries again.
-			if unsafe { self.device.CreateCommandSignature(&description, None, command_signature) }.is_err() {
-				return false;
-			}
+			unsafe { self.device.CreateCommandSignature(&description, None, command_signature) }.expect(
+				"Failed to create a DX12 command signature. The most likely cause is that the device was removed or is out of memory.",
+			);
 		}
-		let Some(command_signature) = command_signature.clone() else {
-			return false;
-		};
+		let command_signature = command_signature.clone().expect("The command signature was created above.");
 
 		// Draw and dispatch records are 16 and 12 bytes, so every selected offset is on DX12's required four-byte boundary.
 		unsafe {
@@ -104,6 +77,5 @@ impl Device {
 			command_list.ExecuteIndirect(&command_signature, 1, &resource, entry.start as u64, None, 0);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		true
 	}
 }

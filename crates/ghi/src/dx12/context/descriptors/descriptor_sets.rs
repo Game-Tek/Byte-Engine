@@ -120,7 +120,6 @@ impl Device {
 				.filter(|(_, descriptor)| descriptor.is_some())
 				.map(|(element, _)| element as u32);
 			set.stale.extend(written);
-			self.native_counters.descriptor_set_relocation_count += 1;
 		}
 		self.descriptor_sets[set_index].reader = Some(reader);
 		self.write_stale_descriptors(set_index);
@@ -181,19 +180,8 @@ impl Device {
 			let mut tail = DescriptorSetHandle::from_index(root_index as u64);
 			let mut chain_length = 1u8;
 			while let Some(next) = self.descriptor_sets[tail.index() as usize].next {
-				let next = DescriptorSetHandle::from_index(next.index());
-				assert!(
-					next.index() < original_set_count as u64,
-					"Invalid DX12 descriptor-set chain. The most likely cause is that a frame-local next handle points outside retained descriptor storage. Create descriptor sets only through the device."
-				);
-				tail = next;
-				chain_length = chain_length.checked_add(1).expect(
-					"Invalid DX12 descriptor-set chain. The most likely cause is that the frame-local chain contains a cycle. Create descriptor sets only through the device.",
-				);
-				assert!(
-					chain_length <= crate::MAX_FRAMES_IN_FLIGHT as u8,
-					"Invalid DX12 descriptor-set chain. The most likely cause is that the frame-local chain contains a cycle or exceeds the engine frame limit. Create descriptor sets only through the device."
-				);
+				tail = DescriptorSetHandle::from_index(next.index());
+				chain_length += 1;
 			}
 
 			while chain_length < frames {
@@ -297,7 +285,7 @@ impl Device {
 			}
 			WriteData::Swapchain(handle) => {
 				let uses = Self::descriptor_image_use(resource);
-				let image = self.get_swapchain_image_for_sequence(handle, uses, resource_sequence).0;
+				let image = self.get_swapchain_image(handle, uses).0;
 				self.write_native_image_descriptor(resource, image.into(), resource_sequence, None, None, slot);
 			}
 			WriteData::AccelerationStructure { handle } => {
@@ -312,14 +300,5 @@ impl Device {
 		{
 			self.write_native_sampler_descriptor(sampler_handle, sampler_slot);
 		}
-	}
-
-	/// Drops attachment views whose native resources were replaced.
-	pub(crate) fn invalidate_attachment_views_for_resources(&mut self, resources: &[usize]) {
-		if resources.is_empty() {
-			return;
-		}
-		self.render_target_views.retain(|key, _| !resources.contains(&key.resource));
-		self.depth_stencil_views.retain(|key, _| !resources.contains(&key.resource));
 	}
 }

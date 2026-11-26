@@ -214,17 +214,6 @@ impl Device {
 		)
 	}
 
-	pub(crate) fn get_swapchain_image_for_sequence(
-		&mut self,
-		swapchain_handle: SwapchainHandle,
-		uses: Uses,
-		sequence_index: u8,
-	) -> (ImageHandle, Formats) {
-		let image = self.get_swapchain_image(swapchain_handle, uses);
-		debug_assert!(sequence_index < self.frames);
-		image
-	}
-
 	/// Waits for a recorded texture copy and returns its bytes.
 	pub fn get_image_data(
 		&mut self,
@@ -416,9 +405,7 @@ impl Device {
 	pub fn resize_buffer<T: ?Sized + crate::buffer::BufferContents>(&mut self, buffer_handle: BufferHandle<T>, length: usize) {
 		let size = T::layout(Some(length)).size();
 		let buffer_handle: BaseBufferHandle = buffer_handle.into();
-		let buffer = self
-			.buffer(buffer_handle)
-			.expect("Missing DX12 buffer. The most likely cause is that the buffer handle came from another context. Use the buffer only with the context that built it.");
+		let buffer = self.buffer(buffer_handle);
 		let (host_access, uses, name, count) = (
 			buffer.host_access,
 			buffer.uses,
@@ -429,7 +416,7 @@ impl Device {
 		let mut storages = (0..count)
 			.map(|_| self.create_buffer_memory(size, host_access, uses, name.as_deref()))
 			.collect::<Vec<_>>();
-		let buffer = self.buffer_mut(buffer_handle).expect("The buffer was just read.");
+		let buffer = &mut self.buffers[buffer_handle.index() as usize];
 		let first = storages.remove(0);
 		let retired = std::iter::once(std::mem::replace(&mut buffer.memory, first))
 			.chain(std::mem::replace(&mut buffer.frame_copies, storages))
@@ -444,10 +431,7 @@ impl Device {
 				self.retire_resource(resource);
 			}
 		}
-		self.invalidate_clear_uav_descriptors_for_resources(&retired_state_keys);
-		for key in retired_state_keys {
-			self.buffer_states.remove(&key);
-		}
+		self.forget_native_resources(&retired_state_keys);
 		self.mark_stale_descriptors(
 			|descriptor, _| matches!(descriptor, WriteData::Buffer { handle } if handle == buffer_handle),
 		);
@@ -475,31 +459,18 @@ impl Device {
 				}),
 			"DX12 queue-idle wait started during command recording. The most likely cause is that a resource topology change was requested before its execution finished collecting command buffers."
 		);
-		let mut terminal_fences = SmallVec::<[(usize, ID3D12Fence); 4]>::new();
+		// Signal every queue before waiting, so the queues drain together.
+		let mut terminal_fences = SmallVec::<[ID3D12Fence; 4]>::new();
 		for queue in &self.queues {
-			let identity = queue.queue.as_raw() as usize;
-			if terminal_fences.iter().any(|(queued, _)| *queued == identity) {
-				continue;
-			}
 			let fence = unsafe { self.device.CreateFence(0, D3D12_FENCE_FLAGS(0)) }?;
 			unsafe { queue.queue.Signal(&fence, 1) }?;
-			terminal_fences.push((identity, fence));
+			terminal_fences.push(fence);
 		}
-		for (_, fence) in terminal_fences {
-			if let Err(event_error) = unsafe { fence.SetEventOnCompletion(1, HANDLE::default()) } {
-				// Event registration may fail under memory pressure. The queue signal is already ordered, so polling
-				// its value is a safe, allocation-free fallback for this exceptional topology/shutdown path.
-				loop {
-					let completed = unsafe { fence.GetCompletedValue() };
-					if completed == u64::MAX {
-						return Err(unsafe { self.device.GetDeviceRemovedReason() }.err().unwrap_or(event_error));
-					}
-					if completed >= 1 {
-						break;
-					}
-					std::thread::yield_now();
-				}
-			} else if unsafe { fence.GetCompletedValue() } == u64::MAX {
+		for fence in terminal_fences {
+			// SAFETY: A null event makes the call block until the fence reaches the value.
+			unsafe { fence.SetEventOnCompletion(1, HANDLE::default()) }?;
+			// A removed device completes every fence with the maximum value.
+			if unsafe { fence.GetCompletedValue() } == u64::MAX {
 				return unsafe { self.device.GetDeviceRemovedReason() };
 			}
 		}
@@ -518,8 +489,28 @@ impl Device {
 		Ok(fence)
 	}
 
+	/// Waits for every queue, resets the command lists, and runs deferred work, so a resource topology change, which
+	/// `purpose` names for errors, may replace resources that earlier work used.
+	///
+	/// # Panics
+	///
+	/// Panics when the device was removed or a completed command list became invalid.
+	pub(crate) fn idle_for_topology_change(&mut self, purpose: &str) {
+		self.wait_for_all_queues_idle().unwrap_or_else(|error| {
+			panic!(
+				"Failed to wait for DX12 queues before {purpose}: {error:?}. The most likely cause is that the device was removed."
+			)
+		});
+		self.prepare_for_topology_change().unwrap_or_else(|error| {
+			panic!(
+				"Failed to reset DX12 command lists before {purpose}: {error:?}. The most likely cause is that a completed command list became invalid."
+			)
+		});
+		self.process_all_tasks_after_idle();
+	}
+
 	/// Resets completed command lists and releases engine-owned references before a resource topology change.
-	pub(crate) fn prepare_for_topology_change(&mut self) -> windows::core::Result<()> {
+	fn prepare_for_topology_change(&mut self) -> windows::core::Result<()> {
 		assert!(
 			self.active_command_buffer.is_none()
 				&& self.command_buffers.iter().all(|command_buffer| {
@@ -531,22 +522,21 @@ impl Device {
 		);
 		for command_buffer in &mut self.command_buffers {
 			for frame in &mut command_buffer.frames {
-				if let (Some(allocator), Some(command_list)) = (frame.allocator.as_ref(), frame.command_list.as_ref()) {
-					if frame.is_open {
-						if let Err(error) = unsafe { command_list.Close() } {
-							// D3D12 permanently invalidates a command list whose Close call fails.
-							frame.lifecycle = CommandBufferLifecycle::Poisoned;
-							return Err(error);
-						}
-						frame.is_open = false;
-					}
-					unsafe { allocator.Reset() }?;
-					unsafe { command_list.Reset(allocator, None) }?;
+				let (allocator, command_list) = (&frame.allocator, &frame.command_list);
+				if frame.is_open {
 					if let Err(error) = unsafe { command_list.Close() } {
-						// A failed Close permanently retires the list; do not publish it as reusable after topology maintenance.
+						// D3D12 permanently invalidates a command list whose Close call fails.
 						frame.lifecycle = CommandBufferLifecycle::Poisoned;
 						return Err(error);
 					}
+					frame.is_open = false;
+				}
+				unsafe { allocator.Reset() }?;
+				unsafe { command_list.Reset(allocator, None) }?;
+				if let Err(error) = unsafe { command_list.Close() } {
+					// A failed Close permanently retires the list; do not publish it as reusable after topology maintenance.
+					frame.lifecycle = CommandBufferLifecycle::Poisoned;
+					return Err(error);
 				}
 				frame.is_open = false;
 				frame.lifecycle = CommandBufferLifecycle::Idle;
@@ -587,10 +577,8 @@ impl Device {
 	}
 
 	pub(crate) fn wait_for_private_synchronizer(&self, synchronizer_handle: crate::synchronizer::SynchronizerHandle) {
-		let Some(synchronizer) = self.synchronizers.get(synchronizer_handle.index() as usize) else {
-			return;
-		};
-		self.wait_for_private_synchronizer_value(synchronizer_handle, synchronizer.value);
+		let value = self.synchronizers[synchronizer_handle.index() as usize].value;
+		self.wait_for_private_synchronizer_value(synchronizer_handle, value);
 	}
 
 	/// Reports whether a fence reached `value`, and panics when the device was removed.
@@ -616,9 +604,7 @@ impl Device {
 		synchronizer_handle: crate::synchronizer::SynchronizerHandle,
 		value: u64,
 	) {
-		let Some(synchronizer) = self.synchronizers.get(synchronizer_handle.index() as usize) else {
-			return;
-		};
+		let synchronizer = &self.synchronizers[synchronizer_handle.index() as usize];
 		if Self::fence_reached(&self.device, &synchronizer.fence, value) {
 			return;
 		}
@@ -643,6 +629,7 @@ impl Device {
 		self.refresh_readback_texture_copies(Some(sequence_index));
 	}
 
+	#[cfg(test)]
 	pub(crate) fn synchronizer_value(&self, synchronizer_handle: SynchronizerHandle) -> Option<u64> {
 		self.synchronizers
 			.get(synchronizer_handle.index() as usize)
@@ -729,10 +716,7 @@ impl Device {
 
 	pub(crate) fn begin_command_buffer(&mut self, command_buffer_handle: CommandBufferHandle, sequence_index: u8) {
 		self.validate_queue_submission_state();
-		let command_buffer = self
-			.command_buffers
-			.get_mut(command_buffer_handle.index() as usize)
-			.expect("Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.");
+		let command_buffer = &mut self.command_buffers[command_buffer_handle.index() as usize];
 		command_buffer.activate_sequence(sequence_index);
 		let (lifecycle, last_submission) = (command_buffer.lifecycle, command_buffer.last_submission);
 		assert!(
@@ -747,14 +731,10 @@ impl Device {
 		}
 		self.discard_command_buffer_recording(command_buffer_handle);
 
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
-			return;
-		};
+		let command_buffer = &mut self.command_buffers[command_buffer_handle.index() as usize];
 		// One deref selects the active frame, so its fields can be borrowed independently below.
 		let frame: &mut CommandBufferFrame = command_buffer;
-		let (Some(allocator), Some(command_list)) = (frame.allocator.as_ref(), frame.command_list.as_ref()) else {
-			return;
-		};
+		let (allocator, command_list) = (&frame.allocator, &frame.command_list);
 
 		if frame.is_open {
 			if unsafe { command_list.Close() }.is_err() {
@@ -789,25 +769,17 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		synchronizer_handle: SynchronizerHandle,
 	) {
-		let command_buffer = self
-			.command_buffers
-			.get_mut(command_buffer_handle.index() as usize)
-			.expect("Invalid DX12 command buffer handle. The most likely cause is that the handle came from another device.");
+		let command_buffer = &mut self.command_buffers[command_buffer_handle.index() as usize];
 		command_buffer.frame_synchronizer = Some(synchronizer_handle);
 	}
 
-	/// Returns the native list that a command buffer records into, or `None` when the handle or its list is missing.
-	pub(crate) fn command_list(&self, command_buffer_handle: CommandBufferHandle) -> Option<&ID3D12GraphicsCommandList7> {
-		self.command_buffers
-			.get(command_buffer_handle.index() as usize)?
-			.command_list
-			.as_ref()
+	/// Returns the native list that a command buffer records into.
+	pub(crate) fn command_list(&self, command_buffer_handle: CommandBufferHandle) -> ID3D12GraphicsCommandList7 {
+		self.command_buffers[command_buffer_handle.index() as usize].command_list.clone()
 	}
 
 	/// Marks a command buffer as containing GPU-visible work that must be submitted.
 	pub(crate) fn mark_command_buffer_work(&mut self, command_buffer_handle: CommandBufferHandle) {
-		if let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) {
-			command_buffer.recorded_work = true;
-		}
+		self.command_buffers[command_buffer_handle.index() as usize].recorded_work = true;
 	}
 }

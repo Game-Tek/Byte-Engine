@@ -13,24 +13,16 @@ fn validated_texture_source_layout(
 		row_pitch >= row_bytes,
 		"DX12 texture source row pitch is too small. The most likely cause is that upload metadata omits bytes required by one image row.",
 	);
-	let minimum_image_pitch = row_pitch.checked_mul(row_count).expect(
-		"DX12 texture source image pitch overflowed. The most likely cause is that the row pitch or row count exceeds the host address range.",
-	);
+	let minimum_image_pitch = row_pitch * row_count;
 	let image_pitch = if image_pitch == 0 { minimum_image_pitch } else { image_pitch };
 	assert!(
 		image_pitch >= minimum_image_pitch,
 		"DX12 texture source image pitch is too small. The most likely cause is that upload metadata omits rows required by one image or array layer.",
 	);
-	let required_bytes = if image_count == 0 {
-		0
-	} else {
-		(image_count - 1)
-			.checked_mul(image_pitch)
-			.and_then(|offset| offset.checked_add(minimum_image_pitch))
-			.expect(
-				"DX12 texture source range overflowed. The most likely cause is that the image pitch or layer count exceeds the host address range.",
-			)
-	};
+	// Every image but the last spans its full pitch; the last ends after its rows.
+	let required_bytes = image_count
+		.checked_sub(1)
+		.map_or(0, |last| last * image_pitch + minimum_image_pitch);
 	(row_pitch, image_pitch, required_bytes)
 }
 
@@ -58,16 +50,14 @@ impl Device {
 		copy: &crate::BufferImageCopyDescriptor,
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		let destination = self
 			.ensure_image_resource_for_sequence(copy.destination_image, sequence_index)
 			.expect("DX12 image copy destination has no native texture. The most likely cause is an image-group member whose group isn't placed yet. Place the group before copying into its members.");
 		let source = self
 			.buffer_resource_for_sequence(copy.source_buffer, sequence_index)
 			.expect("DX12 image copy source has no native buffer. The most likely cause is an empty or stale source buffer. Copy from a buffer with the staged bytes.");
-		let source_size = self.buffer(copy.source_buffer).map_or(0, |buffer| buffer.size);
+		let source_size = self.buffer(copy.source_buffer).size;
 		let image = &self.images[copy.destination_image.index() as usize];
 		assert!(
 			copy.destination_mip_level < image.mip_levels,
@@ -155,7 +145,6 @@ impl Device {
 		);
 		self.transition_tracked_buffer(&command_list, &source, BufferBarrierState::COMMON);
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.native_counters.texture_copy_count += 1;
 	}
 
 	pub(crate) fn begin_debug_region(&mut self, command_buffer_handle: CommandBufferHandle, name: &str) {
@@ -163,12 +152,7 @@ impl Device {
 			return;
 		}
 
-		let Some(command_list) = self.command_buffers[command_buffer_handle.index() as usize]
-			.command_list
-			.as_ref()
-		else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 
 		// Metadata version zero tells PIX to decode the payload as a null-terminated UTF-16 event
 		// name. Keep the encoded name alive until BeginEvent has copied it into the command list.
@@ -180,7 +164,6 @@ impl Device {
 		unsafe {
 			command_list.BeginEvent(0, Some(encoded_name.as_ptr().cast()), encoded_size);
 		}
-		self.native_counters.debug_region_begin_count += 1;
 	}
 
 	pub(crate) fn end_debug_region(&mut self, command_buffer_handle: CommandBufferHandle) {
@@ -188,16 +171,10 @@ impl Device {
 			return;
 		}
 
-		let Some(command_list) = self.command_buffers[command_buffer_handle.index() as usize]
-			.command_list
-			.as_ref()
-		else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 
 		unsafe {
 			command_list.EndEvent();
 		}
-		self.native_counters.debug_region_end_count += 1;
 	}
 }

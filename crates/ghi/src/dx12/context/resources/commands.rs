@@ -3,35 +3,22 @@ use super::super::*;
 impl Device {
 	/// Creates one closed allocator and command-list pair for a frame sequence.
 	fn create_command_buffer_frame(device: &ID3D12Device10, sequence_index: u8) -> CommandBufferFrame {
-		let allocator = Some(
-			unsafe { device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT) }.expect(
-				"Failed to create a DX12 command allocator. The most likely cause is that the device was removed or is out of memory.",
-			),
+		let allocator = unsafe { device.CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT) }.expect(
+			"Failed to create a DX12 command allocator. The most likely cause is that the device was removed or is out of memory.",
 		);
 		// CreateCommandList1 returns a closed list, avoiding an error-prone create-then-close initialization path.
-		let command_list = Some(
-			unsafe {
-				device.CreateCommandList1::<ID3D12GraphicsCommandList7>(
-					0,
-					D3D12_COMMAND_LIST_TYPE_DIRECT,
-					D3D12_COMMAND_LIST_FLAG_NONE,
-				)
-			}
-			.expect(
-				"Failed to create a DX12 command list. The most likely cause is that the device was removed or is out of memory.",
-			),
-		);
+		let command_list = unsafe {
+			device.CreateCommandList1::<ID3D12GraphicsCommandList7>(0, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_LIST_FLAG_NONE)
+		}
+		.expect("Failed to create a DX12 command list. The most likely cause is that the device was removed or is out of memory.");
 
 		CommandBufferFrame {
 			lifecycle: CommandBufferLifecycle::Idle,
 			allocator,
 			command_list,
-			pending_clear_descriptor_copies: Vec::new(),
-			prepared_clear_descriptors: Vec::new(),
 			retained_descriptor_heaps: Vec::new(),
 			retained_resources: Vec::new(),
 			retained_resource_keys: HashSet::default(),
-			retained_upload_resource_count: 0,
 			descriptor_sync_scratch: SmallVec::new(),
 			present_resources: SmallVec::new(),
 			recorded_readbacks: SmallVec::new(),

@@ -35,100 +35,116 @@ impl Device {
 		handle
 	}
 
-	/// Creates one CPU-readable descriptor heap for reusable command-buffer staging.
+	/// Creates one CPU-only descriptor heap.
 	pub(crate) fn create_cpu_descriptor_heap(
 		&self,
 		heap_type: windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE,
 		descriptor_count: u32,
-	) -> Option<DescriptorHeap> {
+	) -> DescriptorHeap {
 		let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
 			Type: heap_type,
 			NumDescriptors: descriptor_count,
 			Flags: Default::default(),
 			NodeMask: 0,
 		};
-		let heap = match unsafe { self.device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&heap_desc) } {
-			Ok(native) => DescriptorHeap {
-				cpu_start: unsafe { native.GetCPUDescriptorHandleForHeapStart() },
-				gpu_start: None,
-				native,
-			},
-			Err(error) => {
-				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
-				let message = format!(
-					"Failed to create a CPU-only DX12 descriptor heap: {error:?}. The most likely cause is descriptor heap exhaustion or device removal. Heap type: {:?}. Descriptor count: {descriptor_count}. Device removed reason: {removed_reason:?}",
-					heap_type
-				);
-				self.log_dx12_error(&message);
-				panic!("{message}");
-			}
-		};
-		Some(heap)
+		let native = unsafe { self.device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&heap_desc) }.unwrap_or_else(|error| {
+			let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
+			let message = format!(
+				"Failed to create a CPU-only DX12 descriptor heap: {error:?}. The most likely cause is descriptor heap exhaustion or device removal. Heap type: {heap_type:?}. Descriptor count: {descriptor_count}. Device removed reason: {removed_reason:?}"
+			);
+			self.log_dx12_error(&message);
+			panic!("{message}");
+		});
+		DescriptorHeap {
+			cpu_start: unsafe { native.GetCPUDescriptorHandleForHeapStart() },
+			gpu_start: None,
+			native,
+		}
 	}
 
 	/// Allocates one retained CPU descriptor slot from stable, reusable heap pages.
-	pub(crate) fn allocate_retained_cpu_descriptor(&mut self) -> Option<RetainedCpuDescriptor> {
+	fn allocate_retained_cpu_descriptor(&mut self) -> RetainedCpuDescriptor {
 		if let Some((page_index, slot)) = self.free_clear_uav_descriptor_slots.pop() {
-			let heap = self.clear_uav_descriptor_pages.get(page_index)?.heap.clone();
-			return Some(RetainedCpuDescriptor { heap, page_index, slot });
+			let heap = self.clear_uav_descriptor_pages[page_index].heap.clone();
+			return RetainedCpuDescriptor { heap, page_index, slot };
 		}
 
-		let needs_page = self
+		if self
 			.clear_uav_descriptor_pages
 			.last()
-			.map(|page| page.used >= page.capacity)
-			.unwrap_or(true);
-		if needs_page {
+			.is_none_or(|page| page.used >= page.capacity)
+		{
 			let capacity = 256;
-			let heap = self.create_cpu_descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, capacity)?;
+			let heap = self.create_cpu_descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, capacity);
 			self.clear_uav_descriptor_pages
 				.push(DescriptorHeapArena { heap, capacity, used: 0 });
 		}
 
-		let page_index = self.clear_uav_descriptor_pages.len().checked_sub(1)?;
-		let page = self.clear_uav_descriptor_pages.get_mut(page_index)?;
+		let page_index = self.clear_uav_descriptor_pages.len() - 1;
+		let page = &mut self.clear_uav_descriptor_pages[page_index];
 		let slot = page.used;
-		page.used = page.used.saturating_add(1);
-		Some(RetainedCpuDescriptor {
+		page.used += 1;
+		RetainedCpuDescriptor {
 			heap: page.heap.clone(),
 			page_index,
 			slot,
-		})
+		}
 	}
 
-	/// Returns one retained CPU UAV descriptor for a native resource, creating it on first use.
-	pub(crate) fn retained_clear_uav_descriptor(
+	/// Returns the GPU and CPU handles of a UAV over `resource` for one clear.
+	///
+	/// The CPU descriptor is retained per resource in a CPU-only heap, as clears require; its copy takes the next
+	/// descriptor of the command buffer's clear range in the shader-visible heap.
+	pub(crate) fn clear_uav_descriptors(
 		&mut self,
+		command_buffer_handle: CommandBufferHandle,
 		resource: &ID3D12Resource,
 		description: &D3D12_UNORDERED_ACCESS_VIEW_DESC,
-	) -> Option<RetainedCpuDescriptor> {
+	) -> (D3D12_GPU_DESCRIPTOR_HANDLE, D3D12_CPU_DESCRIPTOR_HANDLE) {
 		let resource_key = Self::native_resource_key(resource);
-		if let Some(descriptor) = self.retained_clear_uav_descriptors.get(&resource_key) {
-			return Some(descriptor.clone());
-		}
-
-		let descriptor = self.allocate_retained_cpu_descriptor()?;
-		let cpu_handle = self.descriptor_cpu_handle(&descriptor.heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, descriptor.slot);
+		let descriptor = match self.retained_clear_uav_descriptors.get(&resource_key) {
+			Some(descriptor) => descriptor.clone(),
+			None => {
+				let descriptor = self.allocate_retained_cpu_descriptor();
+				let cpu_handle =
+					self.descriptor_cpu_handle(&descriptor.heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, descriptor.slot);
+				unsafe {
+					self.device
+						.CreateUnorderedAccessView(resource, None::<&ID3D12Resource>, Some(description), cpu_handle);
+				}
+				self.retained_clear_uav_descriptors.insert(resource_key, descriptor.clone());
+				descriptor
+			}
+		};
+		let cpu = self.descriptor_cpu_handle(&descriptor.heap, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, descriptor.slot);
+		let slot = self.reserve_clear_descriptor(command_buffer_handle);
+		let destination = self.shader_visible_cpu_handle(false, slot);
 		unsafe {
 			self.device
-				.CreateUnorderedAccessView(resource, None::<&ID3D12Resource>, Some(description), cpu_handle);
-		}
-		self.retained_clear_uav_descriptors.insert(resource_key, descriptor.clone());
-		Some(descriptor)
+				.CopyDescriptorsSimple(1, destination, cpu, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV)
+		};
+		let gpu = self.descriptor_gpu_handle(
+			&self.shader_visible_heaps.resources,
+			D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+			slot,
+		);
+		(gpu, cpu)
 	}
 
-	/// Releases retained clear descriptors after their native backing resources are replaced.
-	pub(crate) fn invalidate_clear_uav_descriptors_for_resources(&mut self, resources: &[usize]) {
-		// Preserve queued writes before their retained source slots can be recycled for replacement resources.
-		for command_buffer_index in 0..self.command_buffers.len() {
-			self.flush_pending_clear_descriptor_copies(CommandBufferHandle::from_index(command_buffer_index as u64));
+	/// Forgets everything cached by the native resource keys of released or replaced resources: their attachment
+	/// views, clear descriptors, and barrier states. A later resource at the same address would otherwise match them.
+	pub(crate) fn forget_native_resources(&mut self, resources: &[usize]) {
+		if resources.is_empty() {
+			return;
 		}
+		self.attachment_views.retain(|key, _| !resources.contains(&key.resource));
 		for resource in resources {
-			let Some(descriptor) = self.retained_clear_uav_descriptors.remove(resource) else {
-				continue;
-			};
-			self.free_clear_uav_descriptor_slots
-				.push((descriptor.page_index, descriptor.slot));
+			if let Some(descriptor) = self.retained_clear_uav_descriptors.remove(resource) {
+				self.free_clear_uav_descriptor_slots
+					.push((descriptor.page_index, descriptor.slot));
+			}
+			self.image_states.remove(resource);
+			self.buffer_states.remove(resource);
 		}
 	}
 
@@ -272,14 +288,11 @@ impl Device {
 			Some(self.shader_visible_heaps.samplers.native.clone()),
 		];
 		unsafe { command_list.SetDescriptorHeaps(&heaps) };
-		self.native_counters.descriptor_heap_bind_count += 1;
 	}
 
 	/// Retains a descriptor heap until the command buffer's previous submission has completed.
 	pub(crate) fn retain_descriptor_heap(&mut self, command_buffer_handle: CommandBufferHandle, heap: &DescriptorHeap) {
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
-			return;
-		};
+		let command_buffer = &mut self.command_buffers[command_buffer_handle.index() as usize];
 		let identity = heap.native.as_raw();
 		if command_buffer
 			.retained_descriptor_heaps
@@ -297,26 +310,11 @@ impl Device {
 		command_buffer_handle: CommandBufferHandle,
 		resource: &ID3D12Resource,
 	) {
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
-			return;
-		};
+		let command_buffer = &mut self.command_buffers[command_buffer_handle.index() as usize];
 		let identity = resource.as_raw() as usize;
 		if !command_buffer.retained_resource_keys.insert(identity) {
 			return;
 		}
 		command_buffer.retained_resources.push(resource.clone());
-	}
-
-	/// Retains an upload resource and tracks its live command-buffer-scoped allocation.
-	pub(crate) fn retain_command_buffer_upload_resource(
-		&mut self,
-		command_buffer_handle: CommandBufferHandle,
-		resource: ID3D12Resource,
-	) {
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
-			return;
-		};
-		command_buffer.retained_resources.push(resource);
-		command_buffer.retained_upload_resource_count += 1;
 	}
 }

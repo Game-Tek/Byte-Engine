@@ -32,12 +32,8 @@ impl Device {
 		(self.buffers.len() - 1) as u64
 	}
 
-	pub(crate) fn buffer(&self, buffer_handle: BaseBufferHandle) -> Option<&Buffer> {
-		self.buffers.get(buffer_handle.index() as usize)
-	}
-
-	pub(crate) fn buffer_mut(&mut self, buffer_handle: BaseBufferHandle) -> Option<&mut Buffer> {
-		self.buffers.get_mut(buffer_handle.index() as usize)
+	pub(crate) fn buffer(&self, buffer_handle: BaseBufferHandle) -> &Buffer {
+		&self.buffers[buffer_handle.index() as usize]
 	}
 
 	/// Returns the native resource of the copy `sequence_index` uses, and keeps it alive with the recording command
@@ -47,7 +43,7 @@ impl Device {
 		buffer_handle: BaseBufferHandle,
 		sequence_index: u8,
 	) -> Option<ID3D12Resource> {
-		let resource = self.buffer(buffer_handle)?.memory(sequence_index).resource.clone();
+		let resource = self.buffer(buffer_handle).memory(sequence_index).resource.clone();
 		if let (Some(command_buffer), Some(resource)) = (self.active_command_buffer, resource.as_ref()) {
 			self.retain_command_buffer_resource(command_buffer, resource);
 		}
@@ -179,33 +175,25 @@ impl Device {
 {report}"
 			);
 		}
+		let resource = resource.expect("A successful CreateCommittedResource3 returns the resource.");
 
-		let mapped = if cpu_visible {
-			let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
+		let mut mapped: *mut std::ffi::c_void = std::ptr::null_mut();
+		if cpu_visible {
 			let read_range = if heap_kind == BufferHeapKind::Readback {
 				D3D12_RANGE { Begin: 0, End: size }
 			} else {
 				D3D12_RANGE { Begin: 0, End: 0 }
 			};
-			if let Some(resource) = resource.as_ref() {
-				let result = unsafe { resource.Map(0, Some(&read_range), Some(&mut mapped)) };
-				if let Err(error) = result {
-					let report = super::device_removed_report(&self.device);
-					panic!(
-						"Failed to map a {size}-byte DX12 buffer in the {heap_kind:?} heap: {error:?}. The most likely cause is that the device was removed. Check the report below for the command that faulted.
+			if let Err(error) = unsafe { resource.Map(0, Some(&read_range), Some(&mut mapped)) } {
+				let report = super::device_removed_report(&self.device);
+				panic!(
+					"Failed to map a {size}-byte DX12 buffer in the {heap_kind:?} heap: {error:?}. The most likely cause is that the device was removed. Check the report below for the command that faulted.
 {report}"
-					);
-				} else {
-					mapped.cast::<u8>()
-				}
-			} else {
-				std::ptr::null_mut()
+				);
 			}
-		} else {
-			std::ptr::null_mut()
-		};
+		}
 
-		(resource, mapped, heap_kind)
+		(Some(resource), mapped.cast::<u8>(), heap_kind)
 	}
 
 	/// Rejects image metadata that cannot describe one native 2D or 3D texture.
@@ -400,98 +388,53 @@ impl Device {
 			!is_3d || (!format.is_depth() && !uses.intersects(Uses::RenderTarget | Uses::DepthStencil)),
 			"Invalid DX12 3D attachment image. The most likely cause is that the current attachment path requires a 2D render-target or depth-stencil view."
 		);
-		let resource_format = Self::dxgi_resource_format(format, uses).unwrap_or_else(|| {
-			panic!(
-				"Unsupported DX12 image format. The most likely cause is that {format:?} has no exact DXGI representation. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
-			)
-		});
-		let attachment_format = Self::dxgi_format(format).unwrap_or_else(|| {
-			panic!(
-				"Unsupported DX12 image view format. The most likely cause is that {format:?} has no exact typed DXGI view. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
-			)
-		});
-
-		let (dimension_support, dimension_name) = if is_3d {
-			(d3d12::D3D12_FORMAT_SUPPORT1_TEXTURE3D, "3D texture")
-		} else {
-			(d3d12::D3D12_FORMAT_SUPPORT1_TEXTURE2D, "2D texture")
-		};
-		Self::assert_format_support1(
-			self.query_format_support(resource_format),
-			dimension_support,
-			format,
-			dimension_name,
-		);
-		if uses.intersects(Uses::Image) {
-			let shader_format = Self::dxgi_shader_resource_format(format).unwrap_or_else(|| {
+		let exact = |dxgi_format: Option<DXGI_FORMAT>, view: &str| {
+			dxgi_format.unwrap_or_else(|| {
 				panic!(
-					"Unsupported DX12 shader-resource format. The most likely cause is that {format:?} has no exact typed DXGI shader view. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
+					"Unsupported DX12 {view} format. The most likely cause is that {format:?} has no exact DXGI representation. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
 				)
-			});
+			})
+		};
+		let resource_format = exact(Self::dxgi_resource_format(format, uses), "image");
+		let attachment_format = exact(Self::dxgi_format(format), "image view");
+		let shader_format = || exact(Self::dxgi_shader_resource_format(format), "shader view");
+
+		// Each operation the image's uses promise, as the format it runs on and the support it needs.
+		let none = d3d12::D3D12_FORMAT_SUPPORT2_NONE;
+		let mut required = SmallVec::<[(DXGI_FORMAT, d3d12::D3D12_FORMAT_SUPPORT1, d3d12::D3D12_FORMAT_SUPPORT2, &str); 6]>::new();
+		required.push(if is_3d {
+			(resource_format, d3d12::D3D12_FORMAT_SUPPORT1_TEXTURE3D, none, "3D texture")
+		} else {
+			(resource_format, d3d12::D3D12_FORMAT_SUPPORT1_TEXTURE2D, none, "2D texture")
+		});
+		if uses.intersects(Uses::Image) {
 			// Integer formats never filter, so shaders read them with loads and D3D12 reports no sampling support.
-			if format == Formats::U32 {
-				Self::assert_format_support1(
-					self.query_format_support(shader_format),
-					d3d12::D3D12_FORMAT_SUPPORT1_SHADER_LOAD,
-					format,
-					"shader-resource load",
-				);
+			let sample = if format == Formats::U32 {
+				d3d12::D3D12_FORMAT_SUPPORT1_NONE
 			} else {
-				Self::assert_format_support1(
-					self.query_format_support(shader_format),
-					d3d12::D3D12_FORMAT_SUPPORT1_SHADER_LOAD | d3d12::D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE,
-					format,
-					"shader-resource load and sampling",
-				);
-			}
+				d3d12::D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE
+			};
+			let support = d3d12::D3D12_FORMAT_SUPPORT1_SHADER_LOAD | sample;
+			required.push((shader_format(), support, none, "shader-resource load and sampling"));
 		}
 		if uses.intersects(Uses::InputAttachment) {
-			let shader_format = Self::dxgi_shader_resource_format(format).unwrap_or_else(|| {
-				panic!(
-					"Unsupported DX12 input-attachment format. The most likely cause is that {format:?} has no exact typed DXGI shader view. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
-				)
-			});
-			Self::assert_format_support1(
-				self.query_format_support(shader_format),
-				d3d12::D3D12_FORMAT_SUPPORT1_SHADER_LOAD,
-				format,
-				"input-attachment shader load",
-			);
+			required.push((shader_format(), d3d12::D3D12_FORMAT_SUPPORT1_SHADER_LOAD, none, "input-attachment shader load"));
 		}
 		if format.is_depth() {
-			Self::assert_format_support1(
-				self.query_format_support(attachment_format),
-				d3d12::D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL,
-				format,
-				"depth-stencil view",
-			);
+			required.push((attachment_format, d3d12::D3D12_FORMAT_SUPPORT1_DEPTH_STENCIL, none, "depth-stencil view"));
 		} else if uses.intersects(Uses::RenderTarget) {
-			Self::assert_format_support1(
-				self.query_format_support(attachment_format),
-				d3d12::D3D12_FORMAT_SUPPORT1_RENDER_TARGET,
-				format,
-				"render-target view",
-			);
+			required.push((attachment_format, d3d12::D3D12_FORMAT_SUPPORT1_RENDER_TARGET, none, "render-target view"));
 		}
 		if uses.intersects(Uses::Storage) {
-			let storage_format = Self::dxgi_shader_resource_format(format).unwrap_or_else(|| {
-				panic!(
-					"Unsupported DX12 storage-image format. The most likely cause is that {format:?} has no exact typed DXGI shader view. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
-				)
-			});
-			let storage_support = self.query_format_support(storage_format);
-			Self::assert_format_support1(
-				storage_support,
+			required.push((
+				shader_format(),
 				d3d12::D3D12_FORMAT_SUPPORT1_TYPED_UNORDERED_ACCESS_VIEW,
-				format,
-				"typed unordered-access view",
-			);
-			Self::assert_format_support2(
-				storage_support,
 				d3d12::D3D12_FORMAT_SUPPORT2_UAV_TYPED_STORE,
-				format,
-				"typed unordered-access store",
-			);
+				"typed unordered-access view and store",
+			));
+		}
+		for (dxgi_format, support1, support2, operation) in required {
+			self.assert_format_support(dxgi_format, support1, support2, format, operation);
 		}
 	}
 
@@ -505,8 +448,9 @@ impl Device {
 				"Unsupported DX12 storage-image format. The most likely cause is that {format:?} has no exact typed DXGI view. See https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format."
 			)
 		});
-		Self::assert_format_support2(
-			self.query_format_support(native_format),
+		self.assert_format_support(
+			native_format,
+			d3d12::D3D12_FORMAT_SUPPORT1_NONE,
 			d3d12::D3D12_FORMAT_SUPPORT2_UAV_TYPED_LOAD,
 			format,
 			"typed unordered-access load",
@@ -558,28 +502,18 @@ impl Device {
 	}
 
 	/// Rejects a format when its driver support does not cover every required resource operation.
-	fn assert_format_support1(
-		support: d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT,
-		required: d3d12::D3D12_FORMAT_SUPPORT1,
+	fn assert_format_support(
+		&self,
+		dxgi_format: DXGI_FORMAT,
+		support1: d3d12::D3D12_FORMAT_SUPPORT1,
+		support2: d3d12::D3D12_FORMAT_SUPPORT2,
 		format: Formats,
 		operation: &str,
 	) {
+		let support = self.query_format_support(dxgi_format);
 		assert!(
-			support.Support1.contains(required),
-			"Unsupported DX12 image operation. The most likely cause is that {format:?} does not support {operation} on this device. See https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_format_support1."
-		);
-	}
-
-	/// Rejects a format when its driver support does not cover the required typed-UAV operation.
-	fn assert_format_support2(
-		support: d3d12::D3D12_FEATURE_DATA_FORMAT_SUPPORT,
-		required: d3d12::D3D12_FORMAT_SUPPORT2,
-		format: Formats,
-		operation: &str,
-	) {
-		assert!(
-			support.Support2.contains(required),
-			"Unsupported DX12 storage-image operation. The most likely cause is that {format:?} does not support {operation} on this device. See https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_format_support2."
+			support.Support1.contains(support1) && support.Support2.contains(support2),
+			"Unsupported DX12 image operation. The most likely cause is that {format:?} does not support {operation} on this device. Use another format for this image. See https://learn.microsoft.com/en-us/windows/win32/api/d3d12/ne-d3d12-d3d12_format_support1."
 		);
 	}
 
@@ -639,7 +573,6 @@ impl Device {
 		first_layer: u32,
 		layer_count: u32,
 	) -> D3D12_RENDER_TARGET_VIEW_DESC {
-		Self::validate_attachment_layers(array_layers, first_layer, layer_count);
 		let format = Self::dxgi_format(format).expect(
 			"Unsupported DX12 render-target format. The most likely cause is that the attachment uses a format without a native RTV mapping.",
 		);
@@ -678,7 +611,6 @@ impl Device {
 		first_layer: u32,
 		layer_count: u32,
 	) -> D3D12_DEPTH_STENCIL_VIEW_DESC {
-		Self::validate_attachment_layers(array_layers, first_layer, layer_count);
 		D3D12_DEPTH_STENCIL_VIEW_DESC {
 			Format: Self::dxgi_format(format).expect(
 				"Unsupported DX12 depth-stencil format. The most likely cause is that the attachment uses a format without a native DSV mapping.",
@@ -705,23 +637,9 @@ impl Device {
 		}
 	}
 
-	/// Rejects attachment layer ranges that the native image array does not hold.
-	pub(crate) fn validate_attachment_layers(array_layers: u32, first_layer: u32, layer_count: u32) {
-		assert!(
-			layer_count > 0 && first_layer.checked_add(layer_count).is_some_and(|end| end <= array_layers),
-			"Invalid DX12 attachment layer range. The most likely cause is that the render pass requested layers outside the image."
-		);
-	}
-
 	/// Returns the descriptors required for every layer range of an image: one per first layer and layer count.
 	pub(crate) fn attachment_descriptor_count(array_layers: u32) -> u32 {
-		assert!(
-			array_layers > 0,
-			"Invalid DX12 attachment layer count. The most likely cause is an image without array layers."
-		);
-		array_layers.checked_mul(array_layers + 1).map(|count| count / 2).expect(
-			"Invalid DX12 attachment layer count. The most likely cause is that the image layer count cannot fit in a descriptor heap.",
-		)
+		array_layers * (array_layers + 1) / 2
 	}
 
 	/// Returns the first slot of the ranges that start at `first_layer`: the ranges of every earlier first layer come
@@ -731,17 +649,20 @@ impl Device {
 	}
 
 	/// Maps one attachment's layer range to its stable slot in the retained CPU descriptor heap.
+	///
+	/// # Panics
+	///
+	/// Panics when the range is empty or reaches past the image's layers.
 	pub(crate) fn attachment_descriptor_slot(array_layers: u32, first_layer: u32, layer_count: u32) -> u32 {
-		Self::validate_attachment_layers(array_layers, first_layer, layer_count);
+		assert!(
+			layer_count > 0 && first_layer.checked_add(layer_count).is_some_and(|end| end <= array_layers),
+			"Invalid DX12 attachment layer range. The most likely cause is that the render pass requested layers outside the image. Select layers below the image's array layer count."
+		);
 		Self::attachment_descriptor_range_base(array_layers, first_layer) + layer_count - 1
 	}
 
 	/// Maps a retained CPU descriptor slot back to its first layer and layer count.
 	pub(crate) fn attachment_descriptor_layers(array_layers: u32, slot: u32) -> (u32, u32) {
-		assert!(
-			slot < Self::attachment_descriptor_count(array_layers),
-			"Invalid DX12 attachment descriptor slot. The most likely cause is that attachment materialization exceeded its retained descriptor heap."
-		);
 		let first_layer = (0..array_layers)
 			.rfind(|first_layer| Self::attachment_descriptor_range_base(array_layers, *first_layer) <= slot)
 			.unwrap_or(0);

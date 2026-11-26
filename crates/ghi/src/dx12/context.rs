@@ -50,17 +50,18 @@ pub struct Device {
 	counters: crate::counters::Counters,
 	/// The timestamp query heap and the mapped readback buffer it resolves into, created by the first counter write.
 	/// Stays `None` when counters are disabled, because no counter writes.
-	counter_storage: Option<CounterStorage>,
+	counter_storage: Option<QueryStorage>,
 	/// The pipeline statistics query heap and its mapped readback buffer, created by the first statistics counter.
-	statistics_storage: Option<StatisticsStorage>,
+	statistics_storage: Option<QueryStorage>,
 	/// The statistics counters a recording opened and hasn't ended, with the command buffer each began in, since a
 	/// statistics query must begin and end in one command list.
 	open_statistics: SmallVec<[(crate::CounterHandle, CommandBufferHandle); 4]>,
 	/// The timestamp frequency of the queue each frame sequence last recorded counters on.
 	counter_frequencies: [u64; crate::MAX_FRAMES_IN_FLIGHT],
 	untracked_present_work: bool,
-	render_target_views: HashMap<AttachmentViewKey, DescriptorHeap>,
-	depth_stencil_views: HashMap<AttachmentViewKey, DescriptorHeap>,
+	/// The RTVs or DSVs of each attachment image, by native resource and format; see
+	/// [`Device::materialize_attachment_views`].
+	attachment_views: HashMap<AttachmentViewKey, DescriptorHeap>,
 	retained_clear_uav_descriptors: HashMap<usize, RetainedCpuDescriptor>,
 	clear_uav_descriptor_pages: Vec<DescriptorHeapArena>,
 	free_clear_uav_descriptor_slots: Vec<(usize, u32)>,
@@ -82,64 +83,10 @@ pub struct Device {
 	pub(super) unordered_writes: HashMap<usize, bool>,
 	/// The heaps backing each image group's members, indexed by group.
 	image_group_heaps: Vec<SmallVec<[ID3D12Heap; 2]>>,
-	/// Command and resource counts that tests and diagnostics read.
-	native_counters: Dx12Counters,
 	/// Whether the device was created with the ray tracing feature on a GPU with DXR tier 1.1.
 	ray_tracing_supported: bool,
 	acceleration_structures: crate::dx12::acceleration_structures::AccelerationStructures,
 	shader_binding_tables: Vec<crate::dx12::ray_tracing::ShaderBindingTable>,
-}
-
-/// The `Dx12Counters` struct records how often the backend encodes or creates each kind of native object, so tests
-/// and diagnostics can check the commands a recording produced.
-#[derive(Default)]
-struct Dx12Counters {
-	render_target_view_allocation_count: usize,
-	depth_stencil_view_allocation_count: usize,
-	texture_copy_count: usize,
-	buffer_copy_count: usize,
-	buffer_clear_count: usize,
-	clear_descriptor_copy_call_count: usize,
-	native_command_list_execute_count: usize,
-	empty_command_list_skip_count: usize,
-	root_signature_bind_count: usize,
-	descriptor_heap_bind_count: usize,
-	set_base_write_count: usize,
-	#[cfg(test)]
-	set_base_write_records: Vec<SetBaseWriteRecord>,
-	push_constant_write_count: usize,
-	#[cfg(test)]
-	push_constant_write_records: Vec<PushConstantWriteRecord>,
-	descriptor_write_count: usize,
-	image_srv_descriptor_write_count: usize,
-	image_uav_descriptor_write_count: usize,
-	#[cfg(test)]
-	sampler_descriptor_write_records: Vec<SamplerDescriptorWriteRecord>,
-	pipeline_state_bind_count: usize,
-	compute_pipeline_state_create_attempt_count: usize,
-	graphics_pipeline_state_create_attempt_count: usize,
-	compute_dispatch_encode_count: usize,
-	descriptor_set_relocation_count: usize,
-	indirect_dispatch_encode_count: usize,
-	mesh_dispatch_encode_count: usize,
-	vertex_buffer_bind_count: usize,
-	index_buffer_bind_count: usize,
-	draw_encode_count: usize,
-	draw_indexed_encode_count: usize,
-	render_target_bind_count: usize,
-	render_target_clear_count: usize,
-	render_pass_end_count: usize,
-	depth_stencil_bind_count: usize,
-	depth_stencil_clear_count: usize,
-	viewport_set_count: usize,
-	scissor_set_count: usize,
-	primitive_topology_set_count: usize,
-	swapchain_backbuffer_bind_count: usize,
-	swapchain_present_transition_count: usize,
-	uav_barrier_count: usize,
-	texture_readback_resolve_count: usize,
-	debug_region_begin_count: usize,
-	debug_region_end_count: usize,
 }
 
 impl Drop for Device {
@@ -192,8 +139,7 @@ impl Device {
 		retain_field!(meshes);
 		retain_field!(swapchains);
 		retain_field!(synchronizers);
-		retain_field!(render_target_views);
-		retain_field!(depth_stencil_views);
+		retain_field!(attachment_views);
 		retain_field!(retained_clear_uav_descriptors);
 		retain_field!(clear_uav_descriptor_pages);
 		retain_field!(counter_storage);
@@ -210,7 +156,7 @@ impl Device {
 mod acceleration_structures;
 mod commands;
 mod counters;
-use counters::{CounterStorage, StatisticsStorage};
+use counters::QueryStorage;
 mod descriptors;
 mod dred;
 pub(crate) use dred::device_removed_report;
@@ -232,49 +178,34 @@ pub(crate) struct StoredQueue {
 	timestamp_frequency: u64,
 }
 
-/// Validates that a queue workload can use the backend's unified DIRECT command-list path.
+/// Validates that a queue workload can use the backend's unified DIRECT command-list path, which serves raster,
+/// ray-tracing, compute, and transfer work. Enhanced layouts persist across submissions, and DIRECT lists can legally
+/// consume layouts left by any of them.
 pub(crate) fn validate_d3d12_workloads(requested: WorkloadTypes) -> Result<(), &'static str> {
 	if requested.is_empty() {
-		return Err("Invalid DX12 workload selection. The most likely cause is that the queue was created without a workload.");
-	}
-
-	if requested.intersects(WorkloadTypes::VIDEO) {
-		return Err(
+		Err("Invalid DX12 workload selection. The most likely cause is that the queue was created without a workload.")
+	} else if requested.intersects(WorkloadTypes::VIDEO) {
+		Err(
 			"DX12 video workloads are unavailable. The most likely cause is that this backend's command-buffer path does not expose video queues.",
-		);
-	}
-
-	if requested.intersects(WorkloadTypes::IO) {
-		return Err(
+		)
+	} else if requested.intersects(WorkloadTypes::IO) {
+		Err(
 			"DX12 IO workloads are unavailable. The most likely cause is that this backend's command-buffer path does not expose IO queues.",
-		);
+		)
+	} else {
+		Ok(())
 	}
-
-	if requested
-		.intersects(WorkloadTypes::RASTER | WorkloadTypes::RAY_TRACING | WorkloadTypes::TRANSFER | WorkloadTypes::COMPUTE)
-	{
-		// Enhanced layouts persist across submissions, but this backend has no producer-side queue handoff.
-		// DIRECT lists can legally consume layouts left by raster, compute, and transfer work.
-		return Ok(());
-	}
-
-	Err(
-		"Invalid DX12 workload selection. The most likely cause is that the queue requests no raster, ray-tracing, transfer, or compute work.",
-	)
 }
 
 /// The `CommandBufferFrame` struct owns native recording state that can be reused after one frame sequence completes.
 struct CommandBufferFrame {
 	lifecycle: CommandBufferLifecycle,
-	allocator: Option<ID3D12CommandAllocator>,
-	command_list: Option<ID3D12GraphicsCommandList7>,
-	pending_clear_descriptor_copies: Vec<PendingDescriptorCopy>,
-	prepared_clear_descriptors: Vec<PreparedClearDescriptor>,
+	allocator: ID3D12CommandAllocator,
+	command_list: ID3D12GraphicsCommandList7,
 	/// The attachment view heaps the recording uses, kept until its submission completes.
 	retained_descriptor_heaps: Vec<ID3D12DescriptorHeap>,
 	retained_resources: Vec<ID3D12Resource>,
 	retained_resource_keys: HashSet<usize>,
-	retained_upload_resource_count: usize,
 	descriptor_sync_scratch: SmallVec<[(ShaderResourceDescriptor, RetainedDescriptor); 32]>,
 	present_resources: SmallVec<[ID3D12Resource; 2]>,
 	recorded_readbacks: SmallVec<[TextureCopyHandle; 4]>,
@@ -310,12 +241,9 @@ impl CommandBufferFrame {
 		self.recorded_work = false;
 		self.frame_synchronizer = None;
 		self.last_submission = None;
-		self.pending_clear_descriptor_copies.clear();
-		self.prepared_clear_descriptors.clear();
 		self.retained_descriptor_heaps.clear();
 		self.retained_resources.clear();
 		self.retained_resource_keys.clear();
-		self.retained_upload_resource_count = 0;
 		self.descriptor_sync_scratch.clear();
 		self.present_resources.clear();
 		self.recorded_readbacks.clear();
@@ -558,19 +486,6 @@ impl Drop for EnhancedBarrierBatch {
 	}
 }
 
-/// The `PendingDescriptorCopy` struct identifies one deferred retained-to-visible descriptor write.
-struct PendingDescriptorCopy {
-	destination: D3D12_CPU_DESCRIPTOR_HANDLE,
-	source: D3D12_CPU_DESCRIPTOR_HANDLE,
-}
-
-/// The `PreparedClearDescriptor` struct carries matching CPU and GPU handles into one recorded UAV clear.
-struct PreparedClearDescriptor {
-	resource: usize,
-	cpu: D3D12_CPU_DESCRIPTOR_HANDLE,
-	gpu: D3D12_GPU_DESCRIPTOR_HANDLE,
-}
-
 /// The `DescriptorHeap` struct caches native heap starts for allocation-free handle arithmetic.
 #[derive(Clone)]
 struct DescriptorHeap {
@@ -644,7 +559,6 @@ struct RenderTargetAttachment {
 	layer_count: u32,
 	/// The value the pass clears the target to, or `None` when it loads or discards the contents.
 	clear: Option<ClearValue>,
-	swapchain_backbuffer: bool,
 }
 
 /// The `Buffer` struct keeps one logical DX12 buffer: the storage of each of its copies, which GPU work and the CPU
@@ -873,33 +787,6 @@ pub(crate) struct NativePipelineLayout {
 	push_constant_ranges: Box<[PushConstantRange]>,
 }
 
-#[cfg(test)]
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SetBaseWriteRecord {
-	pub(crate) root_parameter_index: u32,
-	pub(crate) bases: SmallVec<[u32; 8]>,
-	pub(crate) compute_root: bool,
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PushConstantWriteRecord {
-	pub(crate) root_parameter_index: u32,
-	pub(crate) offset: u32,
-	pub(crate) size: u32,
-	pub(crate) compute_root: bool,
-}
-
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct SamplerDescriptorWriteRecord {
-	pub(crate) filter: D3D12_FILTER,
-	pub(crate) address_mode: D3D12_TEXTURE_ADDRESS_MODE,
-	pub(crate) max_anisotropy: u32,
-	pub(crate) min_lod: f32,
-	pub(crate) max_lod: f32,
-}
-
 pub(crate) struct Pipeline {
 	pub(crate) layout: PipelineLayoutHandle,
 	pub(crate) kind: PipelineKind,
@@ -966,7 +853,6 @@ struct Shader {
 	/// The name the shader was created with, for errors that concern it.
 	name: Option<Box<str>>,
 	stage: ShaderTypes,
-	spirv: Option<Vec<u8>>,
 	/// Shared so each pipeline that uses the shader borrows its bytecode instead of copying it.
 	dxil: Option<std::sync::Arc<[u8]>>,
 	/// The DXIL of each specialization of the shader, by its specialization map; see [`crate::shader::Sources::DXIL`].
@@ -1079,6 +965,31 @@ pub(crate) struct Swapchain {
 }
 
 impl Swapchain {
+	/// Releases the backbuffers, which DXGI requires before `ResizeBuffers`, and resizes the swapchain to
+	/// `image_count` buffers of `extent`.
+	///
+	/// # Panics
+	///
+	/// Panics when DXGI rejects the resize.
+	fn resize_buffers(&mut self, image_count: u8, extent: Extent) {
+		self.backbuffers = std::array::from_fn(|_| None);
+		self.acquired_sequences = [false; 8];
+		// SAFETY: The swapchain holds no backbuffer reference, and its flags repeat the ones it was created with.
+		unsafe {
+			self.swapchain.ResizeBuffers(
+				image_count as u32,
+				extent.width(),
+				extent.height(),
+				DXGI_FORMAT_B8G8R8A8_UNORM,
+				self.flags,
+			)
+		}
+		.expect("Failed to resize the DXGI swapchain buffers. The most likely cause is that the swapchain is still in use or the device was removed.");
+		self.extent = extent;
+		self.image_count = image_count;
+		self.next_image_index %= image_count;
+	}
+
 	/// How often the refresh interval of an unchanged monitor is read again, so a display mode change is picked up.
 	const REFRESH_RECHECK: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -1422,7 +1333,7 @@ impl crate::context::Context for Device {
 }
 
 use std::{
-	alloc::{self, Layout},
+	alloc::Layout,
 	sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -1511,7 +1422,7 @@ use windows::Win32::Graphics::Direct3D12::{
 	D3D12_UNORDERED_ACCESS_VIEW_DESC_0, D3D12_VERSIONED_ROOT_SIGNATURE_DESC, D3D12_VERSIONED_ROOT_SIGNATURE_DESC_0,
 	D3D12_VERTEX_BUFFER_VIEW, D3D12_VIEWPORT, D3D12GetInterface, ID3D12CommandAllocator, ID3D12CommandList, ID3D12CommandQueue,
 	ID3D12CommandSignature, ID3D12Debug, ID3D12Debug3, ID3D12DescriptorHeap, ID3D12Device10, ID3D12DeviceConfiguration,
-	ID3D12DeviceFactory, ID3D12Fence, ID3D12GraphicsCommandList6, ID3D12GraphicsCommandList7, ID3D12Heap, ID3D12InfoQueue,
+	ID3D12DeviceFactory, ID3D12Fence, ID3D12GraphicsCommandList7, ID3D12Heap, ID3D12InfoQueue,
 	ID3D12PipelineState, ID3D12ProtectedResourceSession, ID3D12Resource, ID3D12RootSignature, ID3D12SDKConfiguration1,
 };
 use windows::Win32::Graphics::Dxgi::Common::{

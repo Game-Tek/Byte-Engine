@@ -8,18 +8,14 @@ impl Device {
 		buffer_descriptors: &[BufferDescriptor],
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 
 		let mut views = SmallVec::<[D3D12_VERTEX_BUFFER_VIEW; 8]>::new();
 		for buffer_descriptor in buffer_descriptors {
 			let Some(resource) = self.buffer_resource_for_sequence(buffer_descriptor.buffer, sequence_index) else {
 				continue;
 			};
-			let Some(buffer) = self.buffer(buffer_descriptor.buffer) else {
-				continue;
-			};
+			let buffer = self.buffer(buffer_descriptor.buffer);
 			assert!(
 				buffer_descriptor.offset <= buffer.size,
 				"DX12 vertex buffer offset exceeds the buffer. The most likely cause is that BufferDescriptor::offset was built from stale mesh metadata. offset={}, buffer_size={}",
@@ -57,7 +53,6 @@ impl Device {
 			command_list.IASetVertexBuffers(0, Some(&views));
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.native_counters.vertex_buffer_bind_count += 1;
 	}
 
 	/// Binds a native DX12 index buffer view for raster input assembly.
@@ -67,15 +62,11 @@ impl Device {
 		buffer_descriptor: &BufferDescriptor,
 		sequence_index: u8,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		let Some(resource) = self.buffer_resource_for_sequence(buffer_descriptor.buffer, sequence_index) else {
 			return;
 		};
-		let Some(buffer) = self.buffer(buffer_descriptor.buffer) else {
-			return;
-		};
+		let buffer = self.buffer(buffer_descriptor.buffer);
 		let (format, index_element_size) = match buffer_descriptor.index_type {
 			Some(DataTypes::U16) => (DXGI_FORMAT_R16_UINT, std::mem::size_of::<u16>()),
 			Some(DataTypes::U32) => (DXGI_FORMAT_R32_UINT, std::mem::size_of::<u32>()),
@@ -120,7 +111,6 @@ impl Device {
 			command_list.IASetIndexBuffer(Some(&view));
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.native_counters.index_buffer_bind_count += 1;
 	}
 
 	/// Encodes a native DX12 non-indexed draw command.
@@ -132,14 +122,11 @@ impl Device {
 		first_vertex: u32,
 		first_instance: u32,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		unsafe {
 			command_list.DrawInstanced(vertex_count, instance_count, first_vertex, first_instance);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.native_counters.draw_encode_count += 1;
 	}
 
 	/// Encodes a native DX12 non-indexed draw whose counts come from one record of a GPU buffer.
@@ -150,16 +137,13 @@ impl Device {
 		entry_index: usize,
 		sequence_index: u8,
 	) {
-		let entry = crate::command_buffer::indirect_entry_range::<[u32; 4], N>(entry_index);
-		if self.execute_indirect_native(
+		self.execute_indirect_native(
 			command_buffer_handle,
 			base_buffer_handle,
 			sequence_index,
 			D3D12_INDIRECT_ARGUMENT_TYPE_DRAW,
-			|| entry,
-		) {
-			self.native_counters.draw_encode_count += 1;
-		}
+			crate::command_buffer::indirect_entry_range::<[u32; 4], N>(entry_index),
+		);
 	}
 
 	/// Encodes a native DX12 indexed draw command.
@@ -172,44 +156,31 @@ impl Device {
 		vertex_offset: i32,
 		first_instance: u32,
 	) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		unsafe {
 			command_list.DrawIndexedInstanced(index_count, instance_count, first_index, vertex_offset, first_instance);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.native_counters.draw_indexed_encode_count += 1;
 	}
 
 	/// Encodes a native DX12 mesh shader dispatch when a mesh pipeline is bound.
 	pub(crate) fn dispatch_meshes_native(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
-		pipeline_handle: Option<PipelineHandle>,
+		pipeline_handle: PipelineHandle,
 		x: u32,
 		y: u32,
 		z: u32,
 	) {
-		let Some(pipeline) = pipeline_handle.and_then(|pipeline_handle| self.pipelines.get(pipeline_handle.index() as usize))
-		else {
-			return;
-		};
-		if !matches!(pipeline.kind, PipelineKind::Raster) || !pipeline.has_mesh_shader {
+		if !self.pipelines[pipeline_handle.index() as usize].has_mesh_shader {
 			return;
 		}
-		let Some(command_list) = self
-			.command_list(command_buffer_handle)
-			.and_then(|command_list| command_list.cast::<ID3D12GraphicsCommandList6>().ok())
-		else {
-			return;
-		};
-
+		// ID3D12GraphicsCommandList7 extends ID3D12GraphicsCommandList6, which declares DispatchMesh.
+		let command_list = self.command_list(command_buffer_handle);
 		unsafe {
 			command_list.DispatchMesh(x, y, z);
 		}
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.native_counters.mesh_dispatch_encode_count += 1;
 	}
 
 	/// Encodes a native DX12 mesh shader dispatch whose workgroup counts come from one record of a GPU buffer, when
@@ -217,35 +188,26 @@ impl Device {
 	pub(crate) fn dispatch_meshes_indirect_native<const N: usize>(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
-		pipeline_handle: Option<PipelineHandle>,
+		pipeline_handle: PipelineHandle,
 		base_buffer_handle: BaseBufferHandle,
 		entry_index: usize,
 		sequence_index: u8,
 	) {
-		let Some(pipeline) = pipeline_handle.and_then(|pipeline_handle| self.pipelines.get(pipeline_handle.index() as usize))
-		else {
-			return;
-		};
-		if !matches!(pipeline.kind, PipelineKind::Raster) || !pipeline.has_mesh_shader {
+		if !self.pipelines[pipeline_handle.index() as usize].has_mesh_shader {
 			return;
 		}
-		let entry = crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index);
-		if self.execute_indirect_native(
+		self.execute_indirect_native(
 			command_buffer_handle,
 			base_buffer_handle,
 			sequence_index,
 			D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH_MESH,
-			|| entry,
-		) {
-			self.native_counters.mesh_dispatch_encode_count += 1;
-		}
+			crate::command_buffer::indirect_entry_range::<[u32; 3], N>(entry_index),
+		);
 	}
 
 	/// Binds a stored mesh and encodes a native DX12 indexed draw command.
 	pub(crate) fn draw_mesh_native(&mut self, command_buffer_handle: CommandBufferHandle, mesh_handle: MeshHandle) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		let Some(mesh) = self.meshes.get(mesh_handle.index() as usize) else {
 			return;
 		};
@@ -272,13 +234,11 @@ impl Device {
 			.vertex_buffer_views
 			.clear();
 		self.mark_command_buffer_work(command_buffer_handle);
-		self.native_counters.vertex_buffer_bind_count += 1;
-		self.native_counters.index_buffer_bind_count += 1;
-		self.native_counters.draw_indexed_encode_count += 1;
 	}
 
-	/// Returns a stable RTV descriptor for one native resource view, creating it on first use.
-	pub(crate) fn retained_render_target_view(
+	/// Returns a stable RTV, or DSV for a depth format, over some layers of one native resource, and keeps its heap
+	/// alive with the recording.
+	pub(crate) fn retained_attachment_view(
 		&mut self,
 		command_buffer_handle: CommandBufferHandle,
 		resource: &ID3D12Resource,
@@ -287,101 +247,63 @@ impl Device {
 		first_layer: u32,
 		layer_count: u32,
 	) -> D3D12_CPU_DESCRIPTOR_HANDLE {
-		let view = self.materialize_render_target_views(resource, format, array_layers);
+		let view = self.materialize_attachment_views(resource, format, array_layers);
 		// Mapping the selection to its slot also validates the requested layers.
 		let slot = Self::attachment_descriptor_slot(array_layers, first_layer, layer_count);
-		let handle = self.descriptor_cpu_handle(&view, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, slot);
+		let handle = self.descriptor_cpu_handle(&view, Self::attachment_heap_type(format), slot);
 		self.retain_descriptor_heap(command_buffer_handle, &view);
 		handle
 	}
 
-	/// Returns a stable DSV descriptor for one native resource view, creating it on first use.
-	pub(crate) fn retained_depth_stencil_view(
-		&mut self,
-		command_buffer_handle: CommandBufferHandle,
-		resource: &ID3D12Resource,
-		format: Formats,
-		array_layers: u32,
-		first_layer: u32,
-		layer_count: u32,
-	) -> D3D12_CPU_DESCRIPTOR_HANDLE {
-		let view = self.materialize_depth_stencil_views(resource, format, array_layers);
-		// Mapping the selection to its slot also validates the requested layers.
-		let slot = Self::attachment_descriptor_slot(array_layers, first_layer, layer_count);
-		let handle = self.descriptor_cpu_handle(&view, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, slot);
-		self.retain_descriptor_heap(command_buffer_handle, &view);
-		handle
+	/// Returns the descriptor heap type of an attachment's views: DSVs for a depth format, RTVs otherwise.
+	fn attachment_heap_type(format: Formats) -> windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE {
+		if format.is_depth() {
+			D3D12_DESCRIPTOR_HEAP_TYPE_DSV
+		} else {
+			D3D12_DESCRIPTOR_HEAP_TYPE_RTV
+		}
 	}
 
-	/// Materializes every RTV descriptor for one image in a single retained heap, and returns that heap.
-	pub(crate) fn materialize_render_target_views(
+	/// Returns the heap holding every attachment view of one image, one for each layer range, creating them on first
+	/// use.
+	pub(crate) fn materialize_attachment_views(
 		&mut self,
 		resource: &ID3D12Resource,
 		format: Formats,
 		array_layers: u32,
 	) -> DescriptorHeap {
 		let native_format = Self::dxgi_format(format).expect(
-			"Unsupported DX12 render-target format. The most likely cause is that the attachment uses a format without a native RTV mapping.",
+			"Unsupported DX12 attachment format. The most likely cause is that the attachment uses a format without a native RTV or DSV mapping.",
 		);
 		let key = AttachmentViewKey {
 			resource: Self::native_resource_key(resource),
 			format: native_format.0,
 		};
-		if let Some(view) = self.render_target_views.get(&key) {
+		if let Some(view) = self.attachment_views.get(&key) {
 			return view.clone();
 		}
 
+		let heap_type = Self::attachment_heap_type(format);
 		let descriptor_count = Self::attachment_descriptor_count(array_layers);
-		let heap =
-			self.create_attachment_descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_RTV, descriptor_count, "render-target view");
+		let heap = self.create_cpu_descriptor_heap(heap_type, descriptor_count);
 		for slot in 0..descriptor_count {
 			let (first_layer, layer_count) = Self::attachment_descriptor_layers(array_layers, slot);
-			let descriptor = Self::render_target_view_desc(format, array_layers, first_layer, layer_count);
-			let handle = self.descriptor_cpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, slot);
+			let handle = self.descriptor_cpu_handle(&heap, heap_type, slot);
 			unsafe {
-				self.device.CreateRenderTargetView(resource, Some(&descriptor), handle);
+				if format.is_depth() {
+					let descriptor = Self::depth_stencil_view_desc(format, array_layers, first_layer, layer_count);
+					self.device.CreateDepthStencilView(resource, Some(&descriptor), handle);
+				} else {
+					let descriptor = Self::render_target_view_desc(format, array_layers, first_layer, layer_count);
+					self.device.CreateRenderTargetView(resource, Some(&descriptor), handle);
+				}
 			}
 		}
-		self.render_target_views.insert(key, heap.clone());
-		self.native_counters.render_target_view_allocation_count += 1;
+		self.attachment_views.insert(key, heap.clone());
 		heap
 	}
 
-	/// Materializes every DSV descriptor for one image in a single retained heap, and returns that heap.
-	pub(crate) fn materialize_depth_stencil_views(
-		&mut self,
-		resource: &ID3D12Resource,
-		format: Formats,
-		array_layers: u32,
-	) -> DescriptorHeap {
-		let native_format = Self::dxgi_format(format).expect(
-			"Unsupported DX12 depth-stencil format. The most likely cause is that the attachment uses a format without a native DSV mapping.",
-		);
-		let key = AttachmentViewKey {
-			resource: Self::native_resource_key(resource),
-			format: native_format.0,
-		};
-		if let Some(view) = self.depth_stencil_views.get(&key) {
-			return view.clone();
-		}
-
-		let descriptor_count = Self::attachment_descriptor_count(array_layers);
-		let heap =
-			self.create_attachment_descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_DSV, descriptor_count, "depth-stencil view");
-		for slot in 0..descriptor_count {
-			let (first_layer, layer_count) = Self::attachment_descriptor_layers(array_layers, slot);
-			let descriptor = Self::depth_stencil_view_desc(format, array_layers, first_layer, layer_count);
-			let handle = self.descriptor_cpu_handle(&heap, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, slot);
-			unsafe {
-				self.device.CreateDepthStencilView(resource, Some(&descriptor), handle);
-			}
-		}
-		self.depth_stencil_views.insert(key, heap.clone());
-		self.native_counters.depth_stencil_view_allocation_count += 1;
-		heap
-	}
-
-	/// Materializes attachment descriptors alongside a newly created image resource.
+	/// Creates the attachment views of a newly created image resource that render targets or depth targets use.
 	pub(crate) fn materialize_image_attachment_views(
 		&mut self,
 		resource: &ID3D12Resource,
@@ -389,42 +311,8 @@ impl Device {
 		uses: Uses,
 		array_layers: u32,
 	) {
-		// A depth format attaches as a depth target whichever attachment use it was created with.
-		if uses.intersects(Uses::RenderTarget) && !format.is_depth() {
-			self.materialize_render_target_views(resource, format, array_layers);
-		}
-		if uses.intersects(Uses::DepthStencil) || (uses.intersects(Uses::RenderTarget) && format.is_depth()) {
-			self.materialize_depth_stencil_views(resource, format, array_layers);
-		}
-	}
-
-	/// Creates one CPU-only descriptor heap for a retained attachment view.
-	pub(crate) fn create_attachment_descriptor_heap(
-		&self,
-		heap_type: windows::Win32::Graphics::Direct3D12::D3D12_DESCRIPTOR_HEAP_TYPE,
-		descriptor_count: u32,
-		purpose: &str,
-	) -> DescriptorHeap {
-		let descriptor = D3D12_DESCRIPTOR_HEAP_DESC {
-			Type: heap_type,
-			NumDescriptors: descriptor_count,
-			Flags: Default::default(),
-			NodeMask: 0,
-		};
-		match unsafe { self.device.CreateDescriptorHeap::<ID3D12DescriptorHeap>(&descriptor) } {
-			Ok(native) => DescriptorHeap {
-				cpu_start: unsafe { native.GetCPUDescriptorHandleForHeapStart() },
-				gpu_start: None,
-				native,
-			},
-			Err(error) => {
-				let removed_reason = unsafe { self.device.GetDeviceRemovedReason() };
-				let message = format!(
-					"Failed to create a DX12 {purpose} descriptor heap: {error:?}. The most likely cause is descriptor heap resource exhaustion or device removal. Descriptor count: {descriptor_count}. Device removed reason: {removed_reason:?}"
-				);
-				self.log_dx12_error(&message);
-				panic!("{message}");
-			}
+		if uses.intersects(Uses::RenderTarget | Uses::DepthStencil) {
+			self.materialize_attachment_views(resource, format, array_layers);
 		}
 	}
 
@@ -444,9 +332,7 @@ impl Device {
 		sequence_index: u8,
 	) {
 		AttachmentInformation::render_pass_layer_count(attachments);
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		// A pass that clears or discards an attachment gives an image-group member new contents.
 		for attachment in attachments {
 			if let (crate::ImageOrSwapchain::Image(image), false) = (attachment.target, attachment.loads()) {
@@ -456,43 +342,17 @@ impl Device {
 			}
 		}
 
-		let mut target_resources = SmallVec::<[RenderTargetAttachment; 8]>::new();
-		let mut depth_resource = None;
+		let mut targets = SmallVec::<[RenderTargetAttachment; 8]>::new();
 		for attachment in attachments {
 			let format = self.attachment_format(attachment);
-			if format.is_depth() {
-				let image_handle = self.attachment_image_handle(attachment);
-				let Some(resource) = self.ensure_image_resource_for_sequence(image_handle, sequence_index) else {
-					continue;
-				};
-				let Some(image) = self.images.get(image_handle.index() as usize) else {
-					continue;
-				};
-				let (first_layer, layer_count) = attachment.layer_selection();
-				Self::validate_attachment_layers(image.array_layers, first_layer, layer_count);
-				depth_resource = Some((
-					image_handle,
-					resource,
-					image.format,
-					image.array_layers,
-					first_layer,
-					layer_count,
-					Self::attachment_clear(attachment),
-				));
-				continue;
-			}
-			let Some((image_handle, resource, swapchain_backbuffer)) =
+			let Some((image_handle, resource)) =
 				self.attachment_render_target_resource(command_buffer_handle, attachment, sequence_index)
 			else {
 				continue;
 			};
-			let array_layers = image_handle
-				.and_then(|image_handle| self.images.get(image_handle.index() as usize))
-				.map(|image| image.array_layers)
-				.unwrap_or(1);
+			let array_layers = image_handle.map_or(1, |image_handle| self.images[image_handle.index() as usize].array_layers);
 			let (first_layer, layer_count) = attachment.layer_selection();
-			Self::validate_attachment_layers(array_layers, first_layer, layer_count);
-			target_resources.push(RenderTargetAttachment {
+			targets.push(RenderTargetAttachment {
 				image_handle,
 				resource,
 				format,
@@ -500,152 +360,101 @@ impl Device {
 				first_layer,
 				layer_count,
 				clear: Self::attachment_clear(attachment),
-				swapchain_backbuffer,
 			});
 		}
-
-		if target_resources.is_empty() && depth_resource.is_none() {
+		if targets.is_empty() {
 			return;
 		}
+		// Integer images clear through a UAV; every other color target clears as a float render target.
+		let integer_clear = |target: &RenderTargetAttachment| {
+			target
+				.image_handle
+				.filter(|_| matches!(target.clear, Some(ClearValue::Integer(..))) && target.format == Formats::U32)
+		};
 
-		// Plan attachment transitions before recording any clears so independent attachments share
-		// one native Barrier call. Integer render targets transition through UAV in their clear.
+		// Plan attachment transitions before recording any clears so independent attachments share one native
+		// Barrier call. Integer render targets transition through UAV for their clear.
 		let mut attachment_barriers = EnhancedBarrierBatch::default();
-		for target in &target_resources {
-			let state = if matches!(target.clear, Some(ClearValue::Integer(..))) && target.format == Formats::U32 {
+		for target in &targets {
+			let state = if target.format.is_depth() {
+				TextureBarrierState::DEPTH_WRITE
+			} else if integer_clear(target).is_some() {
 				TextureBarrierState::unordered_access(D3D12_BARRIER_SYNC_CLEAR_UNORDERED_ACCESS_VIEW)
 			} else {
 				TextureBarrierState::RENDER_TARGET
 			};
-			if let Some(image_handle) = target.image_handle {
-				self.transition_tracked_image_into(image_handle, &target.resource, state, true, &mut attachment_barriers);
-			} else {
-				self.transition_swapchain_texture_into(
-					&target.resource,
-					TextureBarrierState::RENDER_TARGET,
-					&mut attachment_barriers,
-				);
+			match target.image_handle {
+				Some(image_handle) => {
+					self.transition_tracked_image_into(image_handle, &target.resource, state, true, &mut attachment_barriers);
+				}
+				None => {
+					self.transition_swapchain_texture_into(&target.resource, state, &mut attachment_barriers);
+				}
 			}
-		}
-		if let Some((image_handle, resource, ..)) = &depth_resource {
-			self.transition_tracked_image_into(
-				*image_handle,
-				resource,
-				TextureBarrierState::DEPTH_WRITE,
-				true,
-				&mut attachment_barriers,
-			);
 		}
 		attachment_barriers.submit(&command_list);
 
 		let mut handles = SmallVec::<[D3D12_CPU_DESCRIPTOR_HANDLE; 8]>::new();
-		let mut integer_clear_targets = SmallVec::<[(crate::BaseImageHandle, ID3D12Resource); 8]>::new();
-		if !target_resources.is_empty() {
-			for target in target_resources {
-				let handle = self.retained_render_target_view(
-					command_buffer_handle,
-					&target.resource,
-					target.format,
-					target.array_layers,
-					target.first_layer,
-					target.layer_count,
-				);
-				if target.swapchain_backbuffer {
-					self.native_counters.swapchain_backbuffer_bind_count += 1;
+		let mut depth_handle = None;
+		let mut post_clear_barriers = EnhancedBarrierBatch::default();
+		for target in &targets {
+			let handle = self.retained_attachment_view(
+				command_buffer_handle,
+				&target.resource,
+				target.format,
+				target.array_layers,
+				target.first_layer,
+				target.layer_count,
+			);
+			match (target.clear, integer_clear(target)) {
+				(Some(clear), _) if target.format.is_depth() => unsafe {
+					command_list.ClearDepthStencilView(handle, D3D12_CLEAR_FLAG_DEPTH, Self::clear_depth_value(clear), 0, None);
+				},
+				(Some(clear), Some(image_handle)) => {
+					self.record_image_clear(command_buffer_handle, image_handle, clear, sequence_index, false);
+					self.transition_tracked_image_into(
+						image_handle,
+						&target.resource,
+						TextureBarrierState::RENDER_TARGET,
+						true,
+						&mut post_clear_barriers,
+					);
 				}
-				if let Some(clear) = target.clear {
-					// Integer images clear through a UAV; every other target clears as a float render target.
-					let integer_image = target
-						.image_handle
-						.filter(|_| matches!(clear, ClearValue::Integer(..)) && target.format == Formats::U32);
-					if let Some(image_handle) = integer_image {
-						self.record_image_clear_with_final_state(
-							command_buffer_handle,
-							crate::ImageHandle(image_handle),
-							clear,
-							sequence_index,
-							None,
-							false,
-						);
-						integer_clear_targets.push((image_handle, target.resource));
-					} else {
-						unsafe { command_list.ClearRenderTargetView(handle, &Self::clear_color_f32(clear), None) };
-					}
-					self.mark_command_buffer_work(command_buffer_handle);
-					self.native_counters.render_target_clear_count += 1;
-				}
+				(Some(clear), None) => unsafe {
+					command_list.ClearRenderTargetView(handle, &Self::clear_color_f32(clear), None);
+				},
+				(None, _) => {}
+			}
+			if target.format.is_depth() {
+				depth_handle = Some(handle);
+			} else {
 				handles.push(handle);
 			}
-
-			self.native_counters.render_target_bind_count += 1;
-		}
-
-		let mut post_clear_barriers = EnhancedBarrierBatch::default();
-		for (image_handle, resource) in integer_clear_targets {
-			self.transition_tracked_image_into(
-				image_handle,
-				&resource,
-				TextureBarrierState::RENDER_TARGET,
-				true,
-				&mut post_clear_barriers,
-			);
 		}
 		post_clear_barriers.submit(&command_list);
 
-		let mut depth_handle = None;
-		if let Some((_, resource, format, array_layers, first_layer, layer_count, clear)) = depth_resource {
-			let handle = self.retained_depth_stencil_view(
-				command_buffer_handle,
-				&resource,
-				format,
-				array_layers,
-				first_layer,
-				layer_count,
-			);
-			if let Some(clear) = clear {
-				let depth = Self::clear_depth_value(clear);
-				unsafe {
-					command_list.ClearDepthStencilView(handle, D3D12_CLEAR_FLAG_DEPTH, depth, 0, None);
-				}
-				self.mark_command_buffer_work(command_buffer_handle);
-				self.native_counters.depth_stencil_clear_count += 1;
-			}
-			depth_handle = Some(handle);
-			self.native_counters.depth_stencil_bind_count += 1;
-		}
-
-		let depth_handle_pointer = depth_handle
-			.as_ref()
-			.map(|handle| handle as *const D3D12_CPU_DESCRIPTOR_HANDLE);
 		unsafe {
 			command_list.OMSetRenderTargets(
 				handles.len() as u32,
 				(!handles.is_empty()).then_some(handles.as_ptr()),
 				false,
-				depth_handle_pointer,
+				depth_handle.as_ref().map(|handle| handle as *const D3D12_CPU_DESCRIPTOR_HANDLE),
 			);
 		}
-		if !handles.is_empty() || depth_handle.is_some() {
-			self.mark_command_buffer_work(command_buffer_handle);
-		}
+		self.mark_command_buffer_work(command_buffer_handle);
 	}
 
 	pub(crate) fn end_render_pass_native(&mut self, command_buffer_handle: CommandBufferHandle) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 
 		unsafe {
 			command_list.OMSetRenderTargets(0, None, false, None);
 		}
-		self.native_counters.render_pass_end_count += 1;
 	}
 
 	/// Sets native DX12 viewport and scissor state for a render pass.
 	pub(crate) fn set_render_area_native(&mut self, command_buffer_handle: CommandBufferHandle, extent: Extent) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 
 		let viewport = D3D12_VIEWPORT {
 			TopLeftX: 0.0,
@@ -666,15 +475,11 @@ impl Device {
 			command_list.RSSetViewports(&[viewport]);
 			command_list.RSSetScissorRects(&[scissor]);
 		}
-		self.native_counters.viewport_set_count += 1;
-		self.native_counters.scissor_set_count += 1;
 	}
 
 	/// Sets the native DX12 scissor rectangle inside an active render pass.
 	pub(crate) fn set_scissor_native(&mut self, command_buffer_handle: CommandBufferHandle, origin: [u32; 2], extent: Extent) {
-		let Some(command_list) = self.command_list(command_buffer_handle) else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 
 		let scissor = RECT {
 			left: origin[0] as i32,
@@ -686,6 +491,5 @@ impl Device {
 		unsafe {
 			command_list.RSSetScissorRects(&[scissor]);
 		}
-		self.native_counters.scissor_set_count += 1;
 	}
 }

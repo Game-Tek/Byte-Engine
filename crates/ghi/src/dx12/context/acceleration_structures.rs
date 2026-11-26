@@ -144,7 +144,7 @@ impl Device {
 	/// Checks that `size` bytes from `buffer` lie in a buffer that geometry may be built from, at a multiple of
 	/// `alignment`.
 	fn check_geometry_range(&self, buffer: &BufferDescriptor, size: usize, alignment: usize) {
-		let resource = self.buffer(buffer.buffer);
+		let resource = self.buffers.get(buffer.buffer.index() as usize);
 		rt::check_geometry_range(
 			"DX12",
 			buffer,
@@ -354,9 +354,7 @@ impl Device {
 			return;
 		}
 		self.require_ray_tracing("build an acceleration structure");
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		let mut geometries = SmallVec::<[rt::TriangleGeometry; 16]>::new();
 		let mut scratch_sizes = SmallVec::<[u64; 8]>::new();
 		for &handle in handles {
@@ -442,9 +440,7 @@ impl Device {
 		instances: &[rt::Instance],
 	) {
 		self.require_ray_tracing("build an acceleration structure");
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		// The mutable step claims the frame's copy; everything after it only reads the structures.
 		let copy_index = frame_key.sequence_index;
 		let top_level = self.acceleration_structures.top_level_mut(structure);
@@ -533,9 +529,7 @@ impl Device {
 		if self.acceleration_structures.ready_compactions.is_empty() {
 			return;
 		}
-		let Some(command_list) = self.command_list(command_buffer_handle).cloned() else {
-			return;
-		};
+		let command_list = self.command_list(command_buffer_handle);
 		let copies = std::mem::take(&mut self.acceleration_structures.ready_compactions);
 		for copy in copies {
 			let Some(source) = self.acceleration_structures.bottom_levels.get(copy.handle) else {
@@ -600,9 +594,7 @@ impl Device {
 	///
 	/// Top-level copies keep what their last executed build wrote, so they need nothing else.
 	pub(crate) fn abandon_recorded_builds(&mut self, command_buffer_handle: CommandBufferHandle) {
-		let Some(command_buffer) = self.command_buffers.get_mut(command_buffer_handle.index() as usize) else {
-			return;
-		};
+		let command_buffer = &mut self.command_buffers[command_buffer_handle.index() as usize];
 		let builds = std::mem::take(&mut command_buffer.recorded_builds);
 		let structures = &mut self.acceleration_structures;
 		for bits in builds.bottom_levels {

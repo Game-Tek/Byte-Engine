@@ -213,10 +213,10 @@ impl AssetHandler for GLTFAssetHandler {
 
 		let source_id = ResourceId::new(base.as_ref());
 
-		let (data, dt) = context.resolve(source_id).await?;
+		let data = context.resolve(source_id).await?;
 		let spec = context.load_sidecar(source_id).await?;
 
-		let (gltf, binary_blob) = if dt == "glb" {
+		let (gltf, binary_blob) = if source_id.get_asset_type() == "glb" {
 			// Arena-backed source bytes borrow the bake allocator, so parsing stays in this task instead of crossing a thread boundary.
 			let glb = gltf::Glb::from_slice(&data).map_err(|_| LoadErrors::FailedToProcess)?;
 

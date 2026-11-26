@@ -39,7 +39,7 @@ impl AssetHandler for OGGAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (data, _) = context.resolve(url).await?;
+		let data = context.resolve(url).await?;
 
 		// The decoder lends each planar block until the next decode call, so the
 		// common sink consumes every block before requesting the next one.

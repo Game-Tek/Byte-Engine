@@ -135,7 +135,7 @@ pub trait StorageBackend: Send + Sync {
 			if self.version(id).await?.source.is_none() {
 				return Ok(None);
 			}
-			let (bytes, _) = self.resolve(id, &Global).await?;
+			let bytes = self.resolve(id, &Global).await?;
 			let text = std::str::from_utf8(&bytes).map_err(|_| SourceError::Unreadable)?;
 			parse_json(text).map(Some).map_err(|_| SourceError::Unreadable)
 		}
@@ -152,7 +152,7 @@ pub trait StorageBackend: Send + Sync {
 	/// The asset manager calls it only when a file's metadata differs from what a bake recorded.
 	fn content_hash<'a>(&'a self, url: ResourceId<'a>) -> impl Future<Output = Result<u64, SourceError>> + 'a {
 		async move {
-			let (bytes, _) = self.resolve(url, &Global).await?;
+			let bytes = self.resolve(url, &Global).await?;
 			Ok(super::provenance::content_fingerprint(&bytes))
 		}
 	}
@@ -402,7 +402,7 @@ pub(crate) enum VersionChange {
 	ContentDecides(u64),
 }
 
-type ResolveResult<'a> = Result<(AssetStorageBytes<'a>, String), SourceError>;
+type ResolveResult<'a> = Result<AssetStorageBytes<'a>, SourceError>;
 
 /// The `FileStorageBackend` struct resolves source assets relative to one local directory.
 pub struct FileStorageBackend {
@@ -763,7 +763,7 @@ pub mod tests {
 		async fn resolve<'a>(&'a self, url: ResourceId<'a>, allocator: &'a dyn std::alloc::Allocator) -> ResolveResult<'a> {
 			let mocked = self.0.lock().unwrap().get(url.get_base().as_ref()).cloned();
 			if let Some(bytes) = mocked {
-				return Ok((AssetStorageBytes::Owned(bytes), url.get_asset_type().to_string()));
+				return Ok(AssetStorageBytes::Owned(bytes));
 			}
 			super::read_asset_from_source(url, Some(std::path::Path::new(ASSETS_PATH)), allocator).await
 		}
@@ -822,7 +822,7 @@ pub mod tests {
 		let storage_backend = FileStorageBackend::new(directory.clone());
 
 		storage_backend.write("materials/floor.bemx", b"{ nodes: [] }").await.unwrap();
-		let (bytes, _) = storage_backend
+		let bytes = storage_backend
 			.resolve(ResourceId::new("materials/floor.bemx"), &Global)
 			.await
 			.unwrap();
@@ -848,8 +848,8 @@ pub mod tests {
 		fs::write(directory.join("skeleton"), b"buffer-bytes").unwrap();
 
 		let storage_backend = FileStorageBackend::new(directory.clone());
-		let (bytes, format) = storage_backend.resolve(ResourceId::new("skeleton"), &Global).await.unwrap();
-		assert_eq!((bytes.as_slice(), format.as_str()), (&b"buffer-bytes"[..], ""));
+		let bytes = storage_backend.resolve(ResourceId::new("skeleton"), &Global).await.unwrap();
+		assert_eq!(bytes.as_slice(), b"buffer-bytes");
 		let exact = ResourceId::new("Rocks/rock_Basecolor.jpg");
 		assert_ne!(storage_backend.version(exact).await, Ok(AssetVersion::missing()));
 		assert!(storage_backend.resolve(exact, &Global).await.is_ok());
@@ -871,13 +871,12 @@ pub mod tests {
 		fs::write(directory.join("studio.environment.bead.bead"), b"{ ignored: true }").unwrap();
 
 		let storage_backend = FileStorageBackend::new(directory.clone());
-		let (bytes, asset_type) = storage_backend
+		let bytes = storage_backend
 			.resolve(ResourceId::new("studio.environment.bead"), &Global)
 			.await
 			.expect("the compound BEAD declaration should resolve");
 
 		assert_eq!(bytes.as_slice(), b"environment");
-		assert_eq!(asset_type, "environment.bead");
 
 		let version = storage_backend
 			.version(ResourceId::new("studio.environment.bead"))
@@ -936,7 +935,7 @@ pub mod tests {
 		backend.add_file("explicit.test.bead", b"{ value: 3, }");
 		assert_eq!(backend.load_sidecar(id).await.unwrap().unwrap()["value"], 3);
 		backend.add_file("explicit.test.bead", b"invalid json5");
-		assert_eq!(backend.resolve(id, &Global).await.unwrap().0.as_slice(), b"source");
+		assert_eq!(backend.resolve(id, &Global).await.unwrap().as_slice(), b"source");
 		assert!(backend.load_sidecar(id).await.is_err());
 		backend.remove_file("explicit.test.bead");
 		assert!(backend.load_sidecar(id).await.unwrap().is_none());

@@ -23,12 +23,7 @@ impl AssetHandler for AudioGraphAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (source, format) = context.resolve(id).await?;
-
-		if format != "audiograph" {
-			return Err(LoadErrors::UnsupportedType);
-		}
-
+		let source = context.resolve(id).await?;
 		let graph = bake_audio_graph(id.as_ref(), &source).map_err(|cause| {
 			log::error!("Audio graph '{}' could not be baked. {cause}", id.as_ref());
 			LoadErrors::FailedToProcess

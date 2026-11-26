@@ -91,7 +91,7 @@ impl AssetHandler for LUTAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (data, _) = context.resolve(url).await?;
+		let data = context.resolve(url).await?;
 
 		// The source bytes borrow the bake allocator, so parsing stays in this task.
 		let parsed = Self::parse_lut(&data).map_err(|_| LoadErrors::FailedToProcess)?;
@@ -190,7 +190,7 @@ async fn bake_through(
 
 	let mut sources = Vec::with_capacity(2);
 	for shader in [LATTICE_SHADER, settings.through.as_str()] {
-		let (bytes, _) = context.resolve(ResourceId::new(shader)).await.map_err(|_| {
+		let bytes = context.resolve(ResourceId::new(shader)).await.map_err(|_| {
 			format!(
 				"Shader '{shader}', which LUT '{id}' is baked through, could not be read. The most likely cause is a `through` that names a file that doesn't exist. Point `through` at a pixel shader's `.besl` file."
 			)

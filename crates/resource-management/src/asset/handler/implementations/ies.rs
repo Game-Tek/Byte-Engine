@@ -35,7 +35,7 @@ impl AssetHandler for IESAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (source, _) = context.resolve(url).await?;
+		let source = context.resolve(url).await?;
 
 		let profile = parse_ies(&source).map_err(|error| {
 			context.error(format_args!("IES asset '{}': {error}", url.as_ref()));

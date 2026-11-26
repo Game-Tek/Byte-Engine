@@ -11,7 +11,7 @@ impl AssetHandler for ImageAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (data, dt) = context.resolve(url).await?;
+		let data = context.resolve(url).await?;
 
 		let allocator = context.allocator();
 
@@ -20,7 +20,7 @@ impl AssetHandler for ImageAssetHandler {
 		let spec = context.load_sidecar(url).await?;
 		let settings = image_settings(&context, url, spec.as_ref(), IMAGE_SETTINGS_KEY, semantic)?;
 
-		let (decoder, header) = SourceDecoder::open(&dt, &data, semantic).inspect_err(|_| {
+		let (decoder, header) = SourceDecoder::open(url.get_asset_type(), &data, semantic).inspect_err(|_| {
 			context.error(format_args!(
 				"Image '{}' could not be decoded. The most likely cause is malformed data or a file extension that doesn't match its contents. Re-export the image as PNG or JPEG with the matching extension.",
 				url.as_ref()

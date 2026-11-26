@@ -127,7 +127,7 @@ async fn load_authored_levels(
 	let mut levels = Vec::new();
 	for (level, id) in (1..settings.lods.max_levels).zip(ids) {
 		// A missing file is a gap the bake fills. The bake records its absence, so adding it later rebakes the model.
-		let Ok((data, _)) = context.resolve(ResourceId::new(&id)).await else {
+		let Ok(data) = context.resolve(ResourceId::new(&id)).await else {
 			continue;
 		};
 		// The scene owns its geometry, so the source bytes drop once it's parsed.
@@ -230,7 +230,7 @@ impl AssetHandler for FBXAssetHandler {
 
 		let source_id = ResourceId::new(base.as_ref());
 
-		let (data, _) = context.resolve(source_id).await?;
+		let data = context.resolve(source_id).await?;
 		let spec = context.load_sidecar(source_id).await?;
 
 		let fragment = url.get_fragment();

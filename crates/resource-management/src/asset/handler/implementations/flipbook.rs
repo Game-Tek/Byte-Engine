@@ -16,12 +16,7 @@ impl AssetHandler for FlipbookAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (source, format) = context.resolve(id).await?;
-
-		if format != "flipbook" {
-			return Err(LoadErrors::UnsupportedType);
-		}
-
+		let source = context.resolve(id).await?;
 		let source: FlipbookSource = serde_json::from_slice(&source).map_err(|error| {
 			log::error!(
 				"Flipbook asset could not be parsed for '{}': {error}. The most likely cause is invalid flipbook JSON.",

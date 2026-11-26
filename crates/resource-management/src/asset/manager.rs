@@ -498,7 +498,7 @@ impl AssetManager {
 	/// Reads the source asset `id` as the storage backend holds it. Next, write a changed version back with
 	/// [`Self::write_source`].
 	pub async fn read_source(&self, id: &str) -> Result<Vec<u8>, String> {
-		let (bytes, _) = self.storage_backend.resolve(ResourceId::new(id), &std::alloc::Global).await.map_err(|error| {
+		let bytes = self.storage_backend.resolve(ResourceId::new(id), &std::alloc::Global).await.map_err(|error| {
 			error.describe(id, || {
 				format!(
 					"Source asset '{id}' could not be read. The most likely cause is that no file has this ID, spelled with this case, under the asset directory. List the source assets to find its ID."
@@ -1802,7 +1802,7 @@ pub mod tests {
 		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
 			self.invocations.fetch_add(1, Ordering::SeqCst);
 
-			let (source, ..) = context.resolve(id).await?;
+			let source = context.resolve(id).await?;
 			context.load_sidecar(id).await?;
 
 			match id.get_base().as_ref() {
@@ -2008,12 +2008,7 @@ pub mod tests {
 		}
 
 		async fn bake<'a>(&'a self, context: BakeContext<'a>, id: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-			let (source, asset_type) = context.resolve(id).await?;
-
-			if asset_type != "environment.bead" {
-				return Err(LoadErrors::UnsupportedType);
-			}
-
+			let source = context.resolve(id).await?;
 			context.store_primary(ProcessedAsset::new(id, TestResource {}), &source).await
 		}
 	}
@@ -2429,7 +2424,7 @@ pub mod tests {
 			*self.invocations.lock().entry(id.to_string()).or_default() += 1;
 
 			let base = id.get_base();
-			let (source, ..) = context.resolve(ResourceId::new(base.as_ref())).await?;
+			let source = context.resolve(ResourceId::new(base.as_ref())).await?;
 			let script = String::from_utf8(source.to_vec()).map_err(|_| LoadErrors::FailedToProcess)?;
 			let mut payload = String::new();
 			let mut variant = false;

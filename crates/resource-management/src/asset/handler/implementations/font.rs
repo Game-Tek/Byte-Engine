@@ -11,7 +11,7 @@ impl AssetHandler for FontAssetHandler {
 	}
 
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (data, _) = context.resolve(url).await?;
+		let data = context.resolve(url).await?;
 
 		// The payload is the file itself, so a font the UI can't parse must fail here instead of at its first frame.
 		if ttf_parser::Face::parse(&data, 0).is_err() {

@@ -12,7 +12,7 @@ impl AssetHandler for EnvironmentMapAssetHandler {
 
 	/// Resolves the authored source image, converts high-precision samples to linear RGBA16F, and stores its IBL maps.
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (manifest, _) = context.resolve(url).await?;
+		let manifest = context.resolve(url).await?;
 
 		let source_id = parse_environment_source(&manifest).map_err(|cause| {
 			context.error(format_args!(
@@ -24,7 +24,7 @@ impl AssetHandler for EnvironmentMapAssetHandler {
 			LoadErrors::FailedToProcess
 		})?;
 		let source_url = ResourceId::new(&source_id);
-		let (encoded, _) = context.resolve(source_url).await.inspect_err(|error| {
+		let encoded = context.resolve(source_url).await.inspect_err(|error| {
 			if error.blames_source() {
 				context.error(format_args!(
 					"Environment-map source '{source_id}' could not be read. The most likely cause is that the asset-root-relative source ID does not exist or is inaccessible. See {}.",

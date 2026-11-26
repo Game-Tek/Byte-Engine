@@ -777,7 +777,7 @@ pub async fn read_asset_from_source<'a>(
 	url: ResourceId<'a>,
 	base_path: Option<&'a std::path::Path>,
 	allocator: &'a dyn Allocator,
-) -> Result<(AssetStorageBytes<'a>, String), SourceError> {
+) -> Result<AssetStorageBytes<'a>, SourceError> {
 	let base = url.get_base();
 
 	// No file can hold a web address.
@@ -792,9 +792,7 @@ pub async fn read_asset_from_source<'a>(
 		return Err(SourceError::Missing);
 	}
 	let path = base_path.join(base.as_ref());
-	let source_bytes = read_asset_bytes(&path, allocator).await?;
-
-	Ok((source_bytes, url.get_asset_type().to_string()))
+	read_asset_bytes(&path, allocator).await
 }
 
 /// Returns whether every component of `relative`, under `base`, names a directory entry spelled exactly as written.

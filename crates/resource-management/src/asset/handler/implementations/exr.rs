@@ -15,7 +15,7 @@ impl AssetHandler for EXRAssetHandler {
 
 	/// Decodes one EXR and stores its linear image without environment lighting maps.
 	async fn bake<'a>(&'a self, context: BakeContext<'a>, url: ResourceId<'a>) -> Result<PrimaryStored, LoadErrors> {
-		let (source, _) = context.resolve(url).await?;
+		let source = context.resolve(url).await?;
 
 		// Decoded EXR pixels are already linear, so only the semantic comes from the file name.
 		let semantic = guess_semantic_from_name(url.get_base());

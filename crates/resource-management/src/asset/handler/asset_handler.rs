@@ -240,13 +240,9 @@ impl asset::StorageBackend for TrackingStorageBackend<'_> {
 		&'a self,
 		url: ResourceId<'a>,
 		allocator: &'a dyn Allocator,
-	) -> Result<(AssetStorageBytes<'a>, String), asset::SourceError> {
-		self.tracked(
-			url,
-			|| self.inner.resolve(url, allocator),
-			|(bytes, _)| Some(bytes.as_slice()),
-		)
-		.await
+	) -> Result<AssetStorageBytes<'a>, asset::SourceError> {
+		self.tracked(url, || self.inner.resolve(url, allocator), |bytes| Some(bytes.as_slice()))
+			.await
 	}
 
 	async fn load_bead<'a>(&'a self, id: ResourceId<'a>) -> Result<Option<BEADType>, asset::SourceError> {
@@ -328,7 +324,7 @@ impl<'a> BakeContext<'a> {
 	}
 
 	/// Resolves only the requested source bytes with the bake allocator.
-	pub async fn resolve<'b>(&'b self, id: ResourceId<'b>) -> Result<(AssetStorageBytes<'b>, String), LoadErrors> {
+	pub async fn resolve<'b>(&'b self, id: ResourceId<'b>) -> Result<AssetStorageBytes<'b>, LoadErrors> {
 		self.asset_storage_backend
 			.resolve(id, self.allocator)
 			.await
